@@ -1,0 +1,33 @@
+# Use PyTorch official wheel index for CUDA builds
+--find-links https://download.pytorch.org/whl/torch_stable.html
+
+# Core
+numpy==1.26.4
+pandas==2.2.2
+scipy==1.13.1
+scikit-learn==1.4.2
+matplotlib==3.8.4
+pyyaml==6.0.1
+tqdm==4.66.4
+rich==13.7.1
+
+# PyTorch (CUDA 12.1)
+torch==2.3.1+cu121
+torchvision==0.18.1+cu121
+torchaudio==2.3.1+cu121
+
+# Training/Config
+lightning==2.3.0
+omegaconf==2.3.0
+hydra-core==1.3.2
+tensorboard==2.16.2
+
+# Time-series / XAI (as needed)
+statsmodels==0.14.2
+ruptures==1.1.9
+shap==0.45.1
+captum==0.7.0
+
+# NLP (ログのテキスト埋め込み等を使う場合)
+transformers==4.42.3
+tokenizers==0.19.1
