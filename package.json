@@ -1,0 +1,40 @@
+{
+  "name": "session-anomaly-detection",
+  "version": "1.0.0",
+  "description": "Web session operation sequence logging server for anomaly detection research",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js",
+    "dev": "nodemon server.js",
+    "lint": "eslint ."
+  },
+  "keywords": [
+    "express",
+    "session",
+    "logging",
+    "anomaly-detection",
+    "lstm",
+    "control-engineering"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
+    "winston": "^3.11.0",
+    "body-parser": "^1.20.2",
+    "cors": "^2.8.5",
+    "dotenv": "^16.4.5",
+    "axios": "^1.7.4",
+    "node-fetch": "^3.3.2",
+    "sqlite3": "^5.1.7"
+  },
+  "devDependencies": {
+    "nodemon": "^3.1.0",
+    "eslint": "^9.5.0"
+  },
+  "engines": {
+    "node": ">=20.12.2"
+  }
+}
