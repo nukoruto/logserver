@@ -1,1 +1,245 @@
-# logserver
+# Δt-aware Session Log Anomaly Detection (LSTM) with Simulink Visualization
+
+本リポジトリは、**セッション操作系列の行動モデル化**に基づく異常検知を目的に、
+- Δt（イベント間隔）を陽に扱う **LSTM 系列モデル**、
+- **異常スコアと閾値設計**（分位点/EVT-POT など）,
+- **説明可能性**（Δt 統計や寄与度の可視化）,
+- **Simulink による深層制御モデルの可視化と PID との比較**、ユーザ別制御ブロック分離
+
+を一体化した研究用実験基盤です。卒業研究「Simulinkを用いた深層制御モデルの可視化と比較」を踏まえ、
+セッション中の**操作内容とタイミング（Δt）**の両面から異常を定義し、
+**LSTM を制御器として解釈**する視点で可視化・比較・説明可能性を強化します。
+
+---
+
+## 1. 目的 / 背景
+
+- Web/アプリの**セッション操作系列**（例：ページ遷移・ボタン操作）を時系列としてモデル化し、
+  **通常の振る舞い**を学習、逸脱を**異常**とみなします。
+- 多くの先行研究が「イベント内容」中心であるのに対し、本研究は**Δt**を第1級特徴として扱い、
+  **遅延・間隔の乱れ**も異常の兆候とします。
+- **Simulink** で LSTM コントローラをブロック図化し、**PID** との比較や**ユーザ別制御ブロック**での振る舞い差を可視化します。
+
+---
+
+## 2. 主な機能
+
+- **セッション化 / 前処理**：ユーザID・タイムアウトでセッション分割、操作カテゴリ（抽象化）付与、Δt 計算
+- **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力、次イベント／Δt 予測による**予測誤差型**の異常検知
+- **異常スコア**：予測確率の逸脱 + Δt 予測誤差/尤度を統合
+- **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
+- **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
+- **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
+- **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
+
+---
+
+## 3. リポジトリ構成（推奨）
+
+```
+.
+├─ README.md
+├─ SRS.md
+├─ requirements.txt / environment.yml
+├─ configs/
+│   ├─ default.yaml
+│   └─ simulink.yaml
+├─ data/
+│   ├─ raw/        # 生ログ（匿名化推奨）
+│   ├─ interim/    # セッション化・パース後
+│   └─ processed/  # 特徴量化（ID列, Δt, 付随属性）
+├─ notebooks/
+│   ├─ 0_data_audit.ipynb
+│   ├─ 1_train_lstm.ipynb
+│   ├─ 2_eval_thresholding.ipynb
+│   └─ 3_explainability.ipynb
+├─ src/
+│   ├─ data/
+│   │   ├─ sessionize.py      # セッション化/抽象化/Δt計算
+│   │   └─ synth_logs.py      # 実験用ログの自作（正常/異常パターン注入）
+│   ├─ features/
+│   │   ├─ encoders.py        # イベントID埋め込み/Δtエンコード
+│   │   └─ batching.py        # パディング/マスク
+│   ├─ models/
+│   │   ├─ lstm_delta.py      # Δt入力対応LSTM, マルチヘッド出力（次イベント/Δt）
+│   │   └─ baselines.py       # n-gram, TCN 等（任意）
+│   ├─ training/
+│   │   ├─ trainer.py         # ループ/早期終了/ログ
+│   │   └─ metrics.py         # cross-entropy, MAE, AUC-PR 等
+│   ├─ scoring/
+│   │   ├─ anomaly.py         # 予測逸脱→異常スコア
+│   │   └─ threshold.py       # 分位点/EVT-POT しきい化
+│   ├─ explain/
+│   │   ├─ dt_stats.py        # Δt分布・区間要約
+│   │   └─ case_report.py     # ケース説明（テキスト/表）
+│   └─ simulink/
+│       ├─ export_weights.py  # .mat などで重みエクスポート
+│       ├─ import_lstm.m      # MATLAB側取込スクリプト
+│       └─ models/            # Simulink モデルファイル配置先
+└─ tests/
+   ├─ test_sessionize.py
+   └─ test_scoring.py
+```
+
+---
+
+## 4. セットアップ
+
+### 4.1 依存関係
+- Python 3.10+（PyTorch or TensorFlow いずれか、デフォルトは PyTorch）
+- NumPy / Pandas / Scikit-learn / PyYAML / SciPy / Matplotlib
+- （任意）`scikit-extremes` など EVT-POT 実装（同等関数を自前実装可）
+- （Simulink連携）MATLAB R2023b+ と Deep Learning Toolbox, Simulink
+
+```
+# pip
+pip install -r requirements.txt
+
+# conda（例）
+conda env create -f environment.yml
+conda activate sessad
+```
+
+### 4.2 データ配置
+- `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。
+- 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
+
+---
+
+## 5. 使い方（CLI の一例）
+
+```
+# 1) セッション化・特徴量化・Δt計算
+python -m src.data.sessionize --in data/raw/*.csv --out data/processed/ --session-timeout 30m --cat-map configs/action_map.yaml
+
+# 2) LSTM 学習（Δt 併用）
+python -m src.training.trainer --config configs/default.yaml
+
+# 3) スコアリングと閾値設計（分位点 or EVT-POT）
+python -m src.scoring.anomaly --in data/processed/ --model runs/last.ckpt --out runs/scores.parquet
+python -m src.scoring.threshold --scores runs/scores.parquet --method quantile --q 0.995
+
+# 4) 説明レポート（ケース単位）
+python -m src.explain.case_report --scores runs/scores.parquet --topk 50 --out runs/reports/
+```
+
+---
+
+## 6. モデル概要（LSTM + Δt）
+
+- **入力**：`(event_id, Δt, optional meta)` を時系列で与える。
+- **表現**：`event_id -> embedding`、`Δt -> 連続値正規化 or log-bin embedding`。
+- **出力**：
+  - `p(next_event | history)`（クロスエントロピー）
+  - `Δt_hat` または `p(Δt | history)`（MAE/ガウス尤度など）
+- **異常スコア**：
+  - `S_event = 1 - p(observed_next | history)`
+  - `S_dt = |Δt - Δt_hat|` あるいは `-log p(Δt | history)`
+  - `S = w1 * S_event + w2 * S_dt`（重みは config で指定）
+
+---
+
+## 7. 閾値設計
+
+- **分位点法**：`τ = Quantile_q(S_normal)`。未知ドメインでも堅牢。
+- **EVT-POT**：高分位のテールに一般化パレート分布（GPD）を当てはめ、確率保証のある `τ` を算出。
+- **粒度**：イベント単位 / セッション単位（集約関数：max, mean, topk-mean など）。
+
+---
+
+## 8. 説明可能性（Explainability）
+
+- **Δt統計**：ユーザ・セッション・操作カテゴリ別の分布要約（分位点、外れ値範囲）。
+- **ケース説明**：スコア寄与の高いタイムステップ、Δt の逸脱度合いをテキストと表で出力。
+- **制御器としての直観**：Simulink でブロック図表示し、フィードバック挙動を**PID**と比較することで、
+  速度・減衰・オーバーシュート等の“制御語彙”で解釈。
+
+---
+
+## 9. Simulink 連携ワークフロー
+
+1. **重みエクスポート**：`src/simulink/export_weights.py` で `.mat` 等に LSTM 重みを出力。
+2. **Simulink 取込**：`src/simulink/import_lstm.m` で Deep Learning Toolbox の LSTM Network として読み込み。
+3. **評価シナリオ**：同じ参照入力（正常テンポ/遅延/外乱）で **LSTM** と **PID** を並走。
+4. **可視化**：出力応答（追従誤差、立上り時間、整定時間、オーバーシュート）を数値比較。
+5. **ユーザ別制御ブロック**：ユーザセグメント毎に LSTM ブロックを切替（例：ルックアップテーブル + スイッチ）。
+
+> 図はリポジトリには含めませんが、Simulink モデルは `src/simulink/models/` に配置してください。
+
+---
+
+## 10. 実験用ログの自作
+
+- `src/data/synth_logs.py` にて**正常シナリオ**（定常テンポ、許容揺らぎ）と、
+  **異常シナリオ**（操作順序の破綻、**Δt の伸長/短縮**、スパイク）を注入。
+- 乱数シード固定で**再現可能**なデータ生成。
+
+---
+
+## 11. 設定ファイル（例：`configs/default.yaml`）
+
+- データ：入出力パス、セッションタイムアウト、操作カテゴリマップ
+- 特徴量：イベント語彙サイズ、埋め込み次元、Δt エンコード法（連続/ビン）
+- モデル：LSTM 層数・隠れ次元・ドロップアウト、損失の重み（event/dt）
+- 学習：エポック、バッチサイズ、最適化、early stopping
+- 異常スコア：重み `w1, w2`、集約関数
+- 閾値：`method ∈ {quantile, pot}`, `q`, `tail_fraction`
+- 乱数：seed、デバイス
+
+---
+
+## 12. 評価指標
+
+- **イベント単位**：AUC-PR, F1, Precision@k, Recall@k
+- **セッション単位**：F1、平均検知遅延（time-to-detect）
+- **制御比較（Simulink）**：ISE/IAE、立上り/整定時間、最大オーバーシュート
+
+---
+
+## 13. 再現性 / ロギング
+
+- 乱数シード固定、データ分割記録、学習ログ（ハイパパラメータ、検証スコア）を `runs/` に保存。
+- モデルは `runs/<datetime>/` に保存、`last.ckpt` シンボリックリンクを作成。
+
+---
+
+## 14. よくある質問（FAQ）
+
+- **Δt が欠損/ゼロの場合？**  
+  タイムスタンプの同時刻は微小値に置換、欠損は最近傍補完 or マスク。選択は `configs/default.yaml` で指定。
+
+- **Simulink を使わない場合？**  
+  Python 内の可視化のみで完結可能。Simulink 比較はオプション。
+
+- **PID のチューニングは？**  
+  Ziegler–Nichols 等の初期値 + グリッドサーチ/最適化。設定は `configs/simulink.yaml` に記述。
+
+---
+
+## 15. 引用 / ライセンス
+
+- 本研究成果を利用した場合は、卒業論文および関連セクション（2.3–2.9）を引用してください（IEEE形式推奨）。
+- データは匿名化・権利クリア済みのもののみ格納してください。
+- ライセンスは `LICENSE` を参照（未定の場合は研究用途のみ）。
+
+---
+
+## 16. 連絡先
+
+- Author: Your Name
+- Affiliation: Your Lab / University
+- Email: your.name@example.com
+
+---
+
+### 補足：本 README は **SRS.md**（要件定義）を補完し、研究実験を即時に再現/拡張できることを目標にしています。
+
+## クイックスタート
+1. 依存関係をインストール: `pip install -r requirements.txt`
+2. データ配置: `data/raw/` にログ CSV を置く（サンプルは `data/sample/`）。
+3. 前処理: `python -m src.data.sessionize --input data/raw --output data/processed`
+4. 学習: `python -m src.training.trainer --config configs/default.yaml`
+5. 評価: `python -m src.training.eval --config configs/default.yaml`
+
+
+参照: SRS.md / CONSTRAINTS.md / dev_prompt.md
