@@ -1,5 +1,14 @@
-const { ensureDatabase, run, all, get } = require('./database');
+﻿const { ensureDatabase, run, all, get } = require('./database');
 const logger = require('../utils/logger');
+
+const ensureColumn = async (column, type) => {
+  const info = await all('PRAGMA table_info(events)');
+  const exists = info.some((entry) => entry.name === column);
+  if (!exists) {
+    await run(`ALTER TABLE events ADD COLUMN ${column} ${type}`);
+    logger.info(`Added column ${column} to events table`);
+  }
+};
 
 const createSchema = async () => {
   await ensureDatabase();
@@ -15,9 +24,11 @@ const createSchema = async () => {
       status INTEGER,
       latency_ms INTEGER,
       metadata TEXT,
-      received_at TEXT NOT NULL DEFAULT (datetime('now'))
+      received_at TEXT NOT NULL DEFAULT (datetime('now')),
+      delta_t REAL
     )
   `);
+  await ensureColumn('delta_t', 'REAL');
   await run('CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_events_timestamp ON events(timestamp)');
@@ -34,10 +45,35 @@ const deserializeMetadata = (value) => {
   }
 };
 
+const fetchPreviousTimestamp = async (sessionId) => {
+  const row = await get(
+    `SELECT timestamp FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1`,
+    [sessionId]
+  );
+  if (!row) {
+    return null;
+  }
+  return new Date(row.timestamp);
+};
+
+const computeDeltaT = async (sessionId, timestamp) => {
+  const previous = await fetchPreviousTimestamp(sessionId);
+  if (!previous) {
+    return 0;
+  }
+  const current = new Date(timestamp);
+  const deltaSeconds = (current.getTime() - previous.getTime()) / 1000;
+  if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0) {
+    return 0;
+  }
+  return deltaSeconds;
+};
+
 const insertEvent = async (event) => {
+  const deltaT = await computeDeltaT(event.session_id, event.timestamp);
   const sql = `
-    INSERT INTO events (timestamp, session_id, user_id, event, method, path, status, latency_ms, metadata, received_at)
-    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    INSERT INTO events (timestamp, session_id, user_id, event, method, path, status, latency_ms, metadata, received_at, delta_t)
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
   `;
   const receivedAt = new Date().toISOString();
   const params = [
@@ -51,12 +87,14 @@ const insertEvent = async (event) => {
     event.latency_ms,
     serializeMetadata(event.metadata),
     receivedAt,
+    deltaT,
   ];
   const result = await run(sql, params);
   return {
     id: result.lastID,
     ...event,
     received_at: receivedAt,
+    delta_t: deltaT,
   };
 };
 
@@ -64,7 +102,6 @@ const insertEventsBulk = async (events) => {
   await run('BEGIN TRANSACTION');
   const inserted = [];
   try {
-    // sequential insertion keeps implementation simple and reliable for SQLite WAL mode
     for (const event of events) {
       // eslint-disable-next-line no-await-in-loop
       const created = await insertEvent(event);
@@ -119,6 +156,7 @@ const mapRow = (row) => ({
   latency_ms: row.latency_ms,
   metadata: deserializeMetadata(row.metadata),
   received_at: row.received_at,
+  delta_t: row.delta_t,
 });
 
 const getEvents = async (filters = {}, pagination = {}) => {

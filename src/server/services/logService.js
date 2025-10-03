@@ -1,4 +1,4 @@
-const config = require('../config');
+﻿const config = require('../config');
 const logger = require('../utils/logger');
 const { ValidationError } = require('../utils/errors');
 const { normalizeEventPayload, normalizeBatchPayload } = require('../utils/validators');
@@ -16,16 +16,16 @@ const ensurePagination = (rawLimit, rawOffset) => {
 const ingestEvent = async (payload) => {
   const event = normalizeEventPayload(payload);
   const stored = await repository.insertEvent(event);
-  await csvWriter.appendEvent(event);
-  logger.debug('Event ingested', { session_id: event.session_id, user_id: event.user_id });
+  await csvWriter.appendEvent(stored);
+  logger.debug('Event ingested', { session_id: stored.session_id, user_id: stored.user_id, delta_t: stored.delta_t });
   return stored;
 };
 
 const ingestBatch = async (payloads) => {
   const events = normalizeBatchPayload(payloads);
   const stored = await repository.insertEventsBulk(events);
-  await csvWriter.appendBatch(events);
-  logger.debug('Batch ingested', { count: events.length });
+  await csvWriter.appendBatch(stored);
+  logger.debug('Batch ingested', { count: stored.length });
   return stored;
 };
 

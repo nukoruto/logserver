@@ -28,3 +28,4 @@ captum==0.7.0
 # NLP (ログのテキスト埋め込み等を使う場合)
 transformers==4.42.3
 tokenizers==0.19.1
+pytest==8.2.2

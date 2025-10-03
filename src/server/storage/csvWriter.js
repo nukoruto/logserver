@@ -1,8 +1,8 @@
-const fs = require('fs/promises');
+﻿const fs = require('fs/promises');
 const path = require('path');
 const config = require('../config');
 
-const headerRow = 'timestamp,session_id,user_id,event,method,path,status,latency_ms,metadata';
+const headerRow = 'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata';
 const headerCache = new Set();
 
 const ensureHeader = async (filePath) => {
@@ -52,6 +52,7 @@ const appendEvent = async (event) => {
     event.path,
     event.status,
     event.latency_ms,
+    event.delta_t,
     event.metadata || {},
   ]
     .map(toCsvField)
@@ -63,7 +64,6 @@ const appendBatch = async (events) => {
   if (!Array.isArray(events) || events.length === 0) {
     return;
   }
-  // write events grouped by day to minimise file handles
   const groups = events.reduce((acc, event) => {
     const datePrefix = event.timestamp.slice(0, 10);
     if (!acc[datePrefix]) {
@@ -88,6 +88,7 @@ const appendBatch = async (events) => {
             event.path,
             event.status,
             event.latency_ms,
+            event.delta_t,
             event.metadata || {},
           ]
             .map(toCsvField)

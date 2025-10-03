@@ -235,11 +235,11 @@ python -m src.explain.case_report --scores runs/scores.parquet --topk 50 --out r
 ### 補足：本 README は **SRS.md**（要件定義）を補完し、研究実験を即時に再現/拡張できることを目標にしています。
 
 ## クイックスタート
-1. 依存関係をインストール: `pip install -r requirements.txt`
-2. データ配置: `data/raw/` にログ CSV を置く（サンプルは `data/sample/`）。
-3. 前処理: `python -m src.data.sessionize --input data/raw --output data/processed`
-4. 学習: `python -m src.training.trainer --config configs/default.yaml`
-5. 評価: `python -m src.training.eval --config configs/default.yaml`
-
+1. 依存関係をインストール: pip install -r requirements_cpu.txt
+2. データ配置: data/raw/ にログ CSV を置く（サンプルは data/sample/）
+3. 前処理: python -m scripts.preprocess --config configs/default.yaml
+4. 学習: python -m scripts.train --config configs/default.yaml
+5. 推論: python -m scripts.score --config configs/default.yaml
+6. 閾値と説明: python -m scripts.threshold --config configs/default.yaml → python -m scripts.explain --config configs/default.yaml
 
 参照: SRS.md / CONSTRAINTS.md / dev_prompt.md
