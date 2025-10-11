@@ -288,3 +288,6 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
 export function parseCsv(input: string | Readable, options: ParseCsvOptions = {}): CsvStreamParser {
   return new CsvStreamParser(input, options);
 }
+
+export { forEachUser } from './grouping.js';
+export type { UserGroupedRow, UserCallback } from './grouping.js';
