@@ -23,7 +23,6 @@
 ---
 
 ## 2. 主な機能
-
 - **セッション化 / 前処理**：ユーザID・タイムアウトでセッション分割、操作カテゴリ（抽象化）付与、Δt 計算
 - **擬似匿名化**：JWT 等のトークンは HMAC-SHA256 により UID 化し、生値を永続化しない
 - **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力、次イベント／Δt 予測による**予測誤差型**の異常検知
@@ -32,6 +31,7 @@
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
+- **NTP オフセット監視**：`chronyc tracking` または `ntpstat` を解析し、95 パーセンタイルが 50ms を超過した場合は `/healthz` を 503 に切り替えて警告ログを出力
 
 ---
 
@@ -122,6 +122,7 @@ conda activate sessad
 3. `LOG_DIR` や `CSV_ROTATION` など、運用に合わせて値を調整する。
 4. `.env` には秘匿情報が含まれるため **Git へコミットしないこと**。必要に応じて `.gitignore` や `git update-index --skip-worktree .env` を利用する。
 5. Node.js 側では `dotenv` により `.env` が自動ロードされる。別パスを使用したい場合は `CONFIG_PATH` 環境変数を指定する。
+6. NTP 計測コマンド（`chronyc` または `ntpstat`）が利用できない環境では、`NTP_MONITOR_DISABLED=true` を設定して監視を明示的に停止する。
 
 ---
 
@@ -140,6 +141,9 @@ python -m trainer.scripts.threshold --config trainer/configs/default.yaml
 
 # 4) 説明レポート（ケース単位）
 python -m trainer.scripts.explain --config trainer/configs/default.yaml
+
+# 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
+cd collector && node scripts/check-ntp.js
 ```
 
 ---
