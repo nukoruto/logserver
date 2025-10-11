@@ -23,6 +23,26 @@ export interface ThresholdEstimationOptions {
   fallbackPercentile?: number;
 }
 
+export interface LogHistogramOptions {
+  minBinCount?: number;
+  maxBinCount?: number;
+  decimals?: number;
+  logBase?: number;
+}
+
+export interface LogHistogramResult {
+  binEdges: number[];
+  binCounts: number[];
+  binCount: number;
+  logBinWidth: number;
+  domain: {
+    min: number;
+    max: number;
+    logMin: number;
+    logMax: number;
+  };
+}
+
 export interface AugmentedRow {
   algo_ver: typeof algoVersion;
   uid: string;
@@ -55,6 +75,20 @@ interface NormalizedOptions {
   sessionIdColumn?: string;
 }
 
+interface NormalizedLogHistogramOptions {
+  minBinCount: number;
+  maxBinCount: number;
+  decimals: number;
+  logBase: number;
+}
+
+const LOG_HISTOGRAM_DEFAULTS: NormalizedLogHistogramOptions = {
+  minBinCount: 32,
+  maxBinCount: 512,
+  decimals: 9,
+  logBase: Math.E
+};
+
 export class SessionSplitterError extends Error {
   constructor(message: string, cause?: unknown) {
     super(message);
@@ -77,6 +111,33 @@ function normalizeOptions(options: SessionSplitOptions = {}): NormalizedOptions 
     timestampColumn: options.timestampColumn ?? DEFAULT_OPTIONS.timestampColumn,
     userIdColumn: options.userIdColumn ?? DEFAULT_OPTIONS.userIdColumn,
     sessionIdColumn: options.sessionIdColumn
+  };
+}
+
+function normalizeLogHistogramOptions(
+  options: LogHistogramOptions = {}
+): NormalizedLogHistogramOptions {
+  const minCandidate = Math.floor(options.minBinCount ?? LOG_HISTOGRAM_DEFAULTS.minBinCount);
+  const maxCandidate = Math.floor(options.maxBinCount ?? LOG_HISTOGRAM_DEFAULTS.maxBinCount);
+  const decimalsCandidate = Math.floor(options.decimals ?? LOG_HISTOGRAM_DEFAULTS.decimals);
+  const logBaseCandidate = options.logBase ?? LOG_HISTOGRAM_DEFAULTS.logBase;
+
+  const clippedMin = Math.min(
+    LOG_HISTOGRAM_DEFAULTS.maxBinCount,
+    Math.max(LOG_HISTOGRAM_DEFAULTS.minBinCount, Math.max(1, minCandidate))
+  );
+  const clippedMax = Math.min(
+    LOG_HISTOGRAM_DEFAULTS.maxBinCount,
+    Math.max(clippedMin, Math.max(1, maxCandidate))
+  );
+  const decimals = Math.min(12, Math.max(0, decimalsCandidate));
+  const logBase = logBaseCandidate > 1 ? logBaseCandidate : LOG_HISTOGRAM_DEFAULTS.logBase;
+
+  return {
+    minBinCount: clippedMin,
+    maxBinCount: clippedMax,
+    decimals,
+    logBase
   };
 }
 
@@ -274,6 +335,63 @@ export function estimateThresholdsByUser(
   return result;
 }
 
+export function makeLogHistogram(
+  userLogDeltas: Iterable<number>,
+  options: LogHistogramOptions = {}
+): LogHistogramResult {
+  const normalized = normalizeLogHistogramOptions(options);
+  const values = collectPositiveFinite(userLogDeltas);
+  if (values.length === 0) {
+    return {
+      binEdges: [],
+      binCounts: [],
+      binCount: 0,
+      logBinWidth: 0,
+      domain: { min: Number.NaN, max: Number.NaN, logMin: Number.NaN, logMax: Number.NaN }
+    };
+  }
+
+  values.sort((a, b) => a - b);
+  const rawMin = values[0];
+  const rawMax = values[values.length - 1];
+  const roundedMin = roundMinBoundary(rawMin, normalized.decimals);
+  const roundedMax = roundMaxBoundary(rawMax, normalized.decimals);
+
+  const logValues = values.map((value) => logWithBase(value, normalized.logBase)).sort((a, b) => a - b);
+  const effectiveMin = roundedMin > 0 ? roundedMin : rawMin;
+  const logMin = logWithBase(effectiveMin, normalized.logBase);
+  const logMax = logWithBase(roundedMax, normalized.logBase);
+
+  if (!Number.isFinite(logMin) || !Number.isFinite(logMax) || logMax <= logMin) {
+    const singleEdgeMin = effectiveMin;
+    const singleEdgeMax = roundedMax;
+    return {
+      binEdges: [singleEdgeMin, singleEdgeMax],
+      binCounts: [values.length],
+      binCount: 1,
+      logBinWidth: 0,
+      domain: { min: singleEdgeMin, max: singleEdgeMax, logMin, logMax }
+    };
+  }
+
+  const layout = computeFreedmanLayout(logValues, logMin, logMax, normalized);
+  const binEdges = buildLogEdges(logMin, layout.logBinWidth, layout.binCount, normalized, effectiveMin, roundedMax);
+  const binCounts = computeHistogramCounts(values, binEdges);
+
+  return {
+    binEdges,
+    binCounts,
+    binCount: layout.binCount,
+    logBinWidth: layout.logBinWidth,
+    domain: {
+      min: binEdges[0],
+      max: binEdges[binEdges.length - 1],
+      logMin,
+      logMax
+    }
+  };
+}
+
 function percentile(values: number[], fraction: number): number {
   if (values.length === 0) {
     return 0;
@@ -365,4 +483,144 @@ function kneedleThreshold(sortedValues: number[]): number {
     }
   }
   return selected;
+}
+
+function collectPositiveFinite(values: Iterable<number>): number[] {
+  const result: number[] = [];
+  for (const value of values) {
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    result.push(value);
+  }
+  return result;
+}
+
+function computeFreedmanLayout(
+  sortedLogValues: number[],
+  logMin: number,
+  logMax: number,
+  options: NormalizedLogHistogramOptions
+): { binCount: number; logBinWidth: number } {
+  const range = logMax - logMin;
+  if (!(range > 0)) {
+    return { binCount: 1, logBinWidth: range };
+  }
+  const q1 = quantileFromSorted(sortedLogValues, 0.25);
+  const q3 = quantileFromSorted(sortedLogValues, 0.75);
+  const iqr = q3 - q1;
+  const n = sortedLogValues.length;
+  const denominator = Math.cbrt(n);
+  let width = iqr > 0 && Number.isFinite(iqr) && denominator > 0 ? (2 * iqr) / denominator : Number.NaN;
+  if (!(width > 0) || !Number.isFinite(width)) {
+    width = range / options.maxBinCount;
+  }
+  let estimated = Math.ceil(range / width);
+  if (!Number.isFinite(estimated) || estimated <= 0) {
+    estimated = options.maxBinCount;
+  }
+  const binCount = clampBinCount(estimated, options);
+  const logBinWidth = range / binCount;
+  return { binCount, logBinWidth };
+}
+
+function clampBinCount(value: number, options: NormalizedLogHistogramOptions): number {
+  const integer = Math.max(1, Math.floor(value));
+  const upper = Math.min(options.maxBinCount, LOG_HISTOGRAM_DEFAULTS.maxBinCount);
+  const lower = Math.max(options.minBinCount, LOG_HISTOGRAM_DEFAULTS.minBinCount);
+  return Math.min(upper, Math.max(lower, integer));
+}
+
+function quantileFromSorted(sorted: number[], fraction: number): number {
+  if (sorted.length === 0) {
+    return Number.NaN;
+  }
+  const clamped = Math.min(1, Math.max(0, fraction));
+  const position = clamped * (sorted.length - 1);
+  const lowerIndex = Math.floor(position);
+  const upperIndex = Math.ceil(position);
+  if (lowerIndex === upperIndex) {
+    return sorted[lowerIndex];
+  }
+  const weight = position - lowerIndex;
+  return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
+}
+
+function buildLogEdges(
+  logMin: number,
+  logBinWidth: number,
+  binCount: number,
+  options: NormalizedLogHistogramOptions,
+  minEdge: number,
+  maxEdge: number
+): number[] {
+  const edges = new Array<number>(binCount + 1);
+  for (let i = 0; i <= binCount; i += 1) {
+    const logValue = logMin + logBinWidth * i;
+    edges[i] = powWithBase(logValue, options.logBase);
+  }
+  const minRounded = roundMinBoundary(minEdge, options.decimals);
+  edges[0] = minRounded > 0 ? minRounded : minEdge;
+  const minStep = options.decimals > 0 ? 1 / 10 ** options.decimals : Number.EPSILON;
+  for (let i = 1; i < edges.length - 1; i += 1) {
+    const rounded = roundFixed(edges[i], options.decimals);
+    edges[i] = rounded > edges[i - 1] ? rounded : roundFixed(edges[i - 1] + minStep, options.decimals);
+  }
+  const lastIndex = edges.length - 1;
+  const roundedMax = roundMaxBoundary(maxEdge, options.decimals);
+  const candidateMax = Math.max(roundedMax, edges[lastIndex - 1] + minStep);
+  edges[lastIndex] = roundFixed(candidateMax, options.decimals);
+  return edges;
+}
+
+function computeHistogramCounts(sortedValues: number[], edges: number[]): number[] {
+  if (edges.length <= 1) {
+    return sortedValues.length > 0 ? [sortedValues.length] : [];
+  }
+  const counts = new Array<number>(edges.length - 1).fill(0);
+  let index = 0;
+  for (const value of sortedValues) {
+    while (index < counts.length - 1 && value >= edges[index + 1]) {
+      index += 1;
+    }
+    counts[index] += 1;
+  }
+  return counts;
+}
+
+function roundFixed(value: number, decimals: number): number {
+  if (decimals <= 0) {
+    return Math.round(value);
+  }
+  const factor = 10 ** decimals;
+  return Math.round(value * factor) / factor;
+}
+
+function roundMinBoundary(value: number, decimals: number): number {
+  if (decimals <= 0) {
+    return Math.floor(value);
+  }
+  const factor = 10 ** decimals;
+  const rounded = Math.floor(value * factor) / factor;
+  return rounded > 0 ? rounded : value;
+}
+
+function roundMaxBoundary(value: number, decimals: number): number {
+  if (decimals <= 0) {
+    return Math.ceil(value);
+  }
+  const factor = 10 ** decimals;
+  const rounded = Math.ceil(value * factor) / factor;
+  return rounded;
+}
+
+function logWithBase(value: number, base: number): number {
+  return Math.log(value) / Math.log(base);
+}
+
+function powWithBase(exponent: number, base: number): number {
+  return base === Math.E ? Math.exp(exponent) : base ** exponent;
 }
