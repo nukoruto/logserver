@@ -6,6 +6,7 @@ const anomalyInjector = require('./generator/anomalyInjector');
 const timeDeviationDetector = require('./detector/timeDeviationDetector');
 const protocolValidator = require('./detector/protocolValidator');
 const { labelSequence } = require('./labeler');
+const { persistSimulationRun } = require('./persistence/simWriter');
 
 module.exports = {
   scenario,
@@ -14,4 +15,5 @@ module.exports = {
   timeDeviationDetector,
   protocolValidator,
   labelSequence,
+  persistSimulationRun,
 };
