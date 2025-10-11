@@ -3,7 +3,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.dataio.sessionize import SessionConfig, sessionize
+from trainer.logserver.dataio.sessionize import SessionConfig, sessionize
 
 
 def test_sessionize_computes_delta(tmp_path: Path) -> None:

@@ -40,45 +40,50 @@
 .
 ├─ README.md
 ├─ SRS.md
-├─ requirements.txt / environment.yml
-├─ configs/
-│   ├─ default.yaml
-│   └─ simulink.yaml
-├─ data/
-│   ├─ raw/        # 生ログ（匿名化推奨）
-│   ├─ interim/    # セッション化・パース後
-│   └─ processed/  # 特徴量化（ID列, Δt, 付随属性）
-├─ notebooks/
-│   ├─ 0_data_audit.ipynb
-│   ├─ 1_train_lstm.ipynb
-│   ├─ 2_eval_thresholding.ipynb
-│   └─ 3_explainability.ipynb
-├─ src/
-│   ├─ data/
-│   │   ├─ sessionize.py      # セッション化/抽象化/Δt計算
-│   │   └─ synth_logs.py      # 実験用ログの自作（正常/異常パターン注入）
-│   ├─ features/
-│   │   ├─ encoders.py        # イベントID埋め込み/Δtエンコード
-│   │   └─ batching.py        # パディング/マスク
-│   ├─ models/
-│   │   ├─ lstm_delta.py      # Δt入力対応LSTM, マルチヘッド出力（次イベント/Δt）
-│   │   └─ baselines.py       # n-gram, TCN 等（任意）
-│   ├─ training/
-│   │   ├─ trainer.py         # ループ/早期終了/ログ
-│   │   └─ metrics.py         # cross-entropy, MAE, AUC-PR 等
-│   ├─ scoring/
-│   │   ├─ anomaly.py         # 予測逸脱→異常スコア
-│   │   └─ threshold.py       # 分位点/EVT-POT しきい化
-│   ├─ explain/
-│   │   ├─ dt_stats.py        # Δt分布・区間要約
-│   │   └─ case_report.py     # ケース説明（テキスト/表）
-│   └─ simulink/
-│       ├─ export_weights.py  # .mat などで重みエクスポート
-│       ├─ import_lstm.m      # MATLAB側取込スクリプト
-│       └─ models/            # Simulink モデルファイル配置先
-└─ tests/
-   ├─ test_sessionize.py
-   └─ test_scoring.py
+├─ CONSTRAINTS.md
+├─ Makefile
+├─ collector/
+│   ├─ package.json
+│   ├─ package-lock.json
+│   ├─ server.js
+│   └─ src/
+│       ├─ app.js
+│       ├─ config/
+│       ├─ middleware/
+│       ├─ routes/
+│       ├─ services/
+│       ├─ storage/
+│       └─ utils/
+├─ trainer/
+│   ├─ configs/
+│   │   ├─ default.yaml
+│   │   └─ simulink.yaml
+│   ├─ scripts/
+│   │   ├─ preprocess.py
+│   │   ├─ train.py
+│   │   ├─ score.py
+│   │   ├─ threshold.py
+│   │   ├─ explain.py
+│   │   └─ export_simulink.py
+│   ├─ src/logserver/
+│   │   ├─ dataio/
+│   │   ├─ features/
+│   │   ├─ models/
+│   │   ├─ scoring/
+│   │   ├─ explain/
+│   │   ├─ simulink/
+│   │   └─ training/
+│   ├─ tests/
+│   │   ├─ test_sessionize.py
+│   │   ├─ test_features.py
+│   │   └─ test_trainer.py
+│   └─ requirements_*.txt
+├─ contract/
+│   └─ README.md
+├─ artifacts/
+│   └─ .gitkeep
+└─ outputs/
+    └─ .gitkeep
 ```
 
 ---
@@ -110,17 +115,17 @@ conda activate sessad
 
 ```
 # 1) セッション化・特徴量化・Δt計算
-python -m src.data.sessionize --in data/raw/*.csv --out data/processed/ --session-timeout 30m --cat-map configs/action_map.yaml
+python -m trainer.scripts.preprocess --config trainer/configs/default.yaml
 
 # 2) LSTM 学習（Δt 併用）
-python -m src.training.trainer --config configs/default.yaml
+python -m trainer.scripts.train --config trainer/configs/default.yaml
 
 # 3) スコアリングと閾値設計（分位点 or EVT-POT）
-python -m src.scoring.anomaly --in data/processed/ --model runs/last.ckpt --out runs/scores.parquet
-python -m src.scoring.threshold --scores runs/scores.parquet --method quantile --q 0.995
+python -m trainer.scripts.score --config trainer/configs/default.yaml
+python -m trainer.scripts.threshold --config trainer/configs/default.yaml
 
 # 4) 説明レポート（ケース単位）
-python -m src.explain.case_report --scores runs/scores.parquet --topk 50 --out runs/reports/
+python -m trainer.scripts.explain --config trainer/configs/default.yaml
 ```
 
 ---

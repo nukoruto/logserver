@@ -9,8 +9,8 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from src.features.encoders import encode_dataframe
-from src.scoring.anomaly import AnomalyScorer, ScoringConfig
+from trainer.logserver.features.encoders import encode_dataframe
+from trainer.logserver.scoring.anomaly import AnomalyScorer, ScoringConfig
 
 
 def _load_config(path: Path) -> dict:
@@ -69,6 +69,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Score events with the trained model")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML configuration")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/default.yaml",
+        help="Path to YAML configuration",
+    )
     args = parser.parse_args()
     main(Path(args.config))

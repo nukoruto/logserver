@@ -11,8 +11,8 @@ from typing import Dict
 import torch
 from scipy.io import savemat
 
-from src.features.encoders import FeaturePack
-from src.models.lstm_delta import DeltaAwareLSTM, LSTMConfig
+from ..features.encoders import FeaturePack
+from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
 
 
 @dataclass
@@ -80,6 +80,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Export trained weights for Simulink")
-    parser.add_argument("--config", default="configs/simulink.yaml", help="YAML configuration file")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/simulink.yaml",
+        help="YAML configuration file",
+    )
     args = parser.parse_args()
     main(Path(args.config))

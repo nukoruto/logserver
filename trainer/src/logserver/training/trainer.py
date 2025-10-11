@@ -15,9 +15,14 @@ import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
-from src.features.batching import SessionDataset, SessionExample, build_sessions, collate_examples
-from src.features.encoders import FeaturePack
-from src.models.lstm_delta import DeltaAwareLSTM, LSTMConfig
+from ..features.batching import (
+    SessionDataset,
+    SessionExample,
+    build_sessions,
+    collate_examples,
+)
+from ..features.encoders import FeaturePack
+from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
 
 
 @dataclass
