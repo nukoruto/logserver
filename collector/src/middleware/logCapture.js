@@ -1,5 +1,10 @@
 const config = require('../config');
 const { jwtToUid } = require('../security/uid');
+const {
+  DEFAULT_OPERATION_CATEGORY,
+  HTTP_METHODS,
+  LogRecordValidationError,
+} = require('../schema/logRecord');
 
 const HEADER_AUTHORIZATION = 'authorization';
 const HEADER_COOKIE = 'cookie';
@@ -177,6 +182,8 @@ const deleteHeader = (headers, name) => {
   delete headers[name.toUpperCase()];
 };
 
+const ALLOWED_METHODS = new Set(HTTP_METHODS);
+
 const logCapture = (req, res, next) => {
   const headers = req.headers || {};
   const authorization = firstHeaderValue(headers[HEADER_AUTHORIZATION]);
@@ -184,9 +191,24 @@ const logCapture = (req, res, next) => {
 
   ensureLocals(res);
 
+  const rawMethod = normalise(req.method) || '';
+  const method = rawMethod.toUpperCase();
+  if (!ALLOWED_METHODS.has(method)) {
+    const error = new LogRecordValidationError('Unsupported HTTP method for log capture', [
+      {
+        path: ['method'],
+        message: `method must be one of ${HTTP_METHODS.join(', ')}`,
+        expected: HTTP_METHODS,
+        received: rawMethod || req.method,
+      },
+    ]);
+    next(error);
+    return;
+  }
+
   const logframe = {
     timestamp_utc: new Date().toISOString(),
-    method: normalise(req.method) || '',
+    method,
     path: normalise(req.originalUrl || req.url) || '',
     referer:
       normalise(firstHeaderValue(headers[HEADER_REFERRER])) ||
@@ -196,7 +218,7 @@ const logCapture = (req, res, next) => {
     ip: extractClientIp(req),
     session_id: extractSessionId(req, cookie),
     uid: extractUid(authorization),
-    op_category: '',
+    op_category: DEFAULT_OPERATION_CATEGORY,
   };
 
   res.locals.__logframe = logframe;

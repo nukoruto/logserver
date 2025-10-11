@@ -1,22 +1,15 @@
 import { mkdir, open } from 'fs/promises';
 import type { FileHandle } from 'fs/promises';
 import path from 'path';
+import {
+  type LogRecord,
+  LogRecordValidationError,
+  validateLogRecord,
+} from '../schema/logRecord';
 
 type Rotation = 'daily' | 'hourly';
 
-type CsvRecord = {
-  timestamp_utc: string;
-  uid?: string;
-  session_id?: string;
-  method?: string;
-  path?: string;
-  referer?: string;
-  user_agent?: string;
-  ip?: string;
-  op_category?: string;
-  status_code?: number;
-  latency_ms?: number;
-};
+type CsvRecord = LogRecord;
 
 type CsvSinkOptions = {
   dir: string;
@@ -92,7 +85,15 @@ class CsvSink {
       return Promise.reject(new Error('CsvSink is shutting down'));
     }
 
-    const entry = this.normaliseRecord(record);
+    let entry: CsvRecord;
+    try {
+      entry = validateLogRecord(record);
+    } catch (error) {
+      if (error instanceof LogRecordValidationError) {
+        return Promise.reject(error);
+      }
+      return Promise.reject(error instanceof Error ? error : new Error(String(error)));
+    }
     const { key } = buildKey(entry.timestamp_utc, this.rotation);
     const serialized = this.serialize(entry);
 
@@ -114,43 +115,6 @@ class CsvSink {
     this.shuttingDown = true;
     await this.queue;
     await this.closeHandle();
-  }
-
-  private normaliseRecord(record: CsvRecord): CsvRecord {
-    const timestamp = typeof record.timestamp_utc === 'string' && record.timestamp_utc
-      ? record.timestamp_utc
-      : new Date().toISOString();
-
-    const normalised: CsvRecord = {
-      timestamp_utc: timestamp,
-      uid: this.toCellValue(record.uid),
-      session_id: this.toCellValue(record.session_id),
-      method: this.toCellValue(record.method),
-      path: this.toCellValue(record.path),
-      referer: this.toCellValue(record.referer),
-      user_agent: this.toCellValue(record.user_agent),
-      ip: this.toCellValue(record.ip),
-      op_category: this.toCellValue(record.op_category),
-    };
-
-    if (typeof record.status_code === 'number' && Number.isFinite(record.status_code)) {
-      normalised.status_code = record.status_code;
-    }
-    if (typeof record.latency_ms === 'number' && Number.isFinite(record.latency_ms)) {
-      normalised.latency_ms = record.latency_ms;
-    }
-
-    return normalised;
-  }
-
-  private toCellValue(value: unknown): string {
-    if (value === undefined || value === null) {
-      return '';
-    }
-    if (typeof value === 'string') {
-      return value;
-    }
-    return String(value);
   }
 
   private async rotateIfNeeded(key: string, timestampUtc: string): Promise<void> {

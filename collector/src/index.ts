@@ -1,5 +1,6 @@
 import type { Request, Response, NextFunction } from 'express';
 import CsvSink, { type CsvRecord, type Rotation } from './sink/csvSink';
+import { LogRecordValidationError, validateLogRecord } from './schema/logRecord';
 import config from './config';
 import logger from './utils/logger';
 
@@ -63,10 +64,24 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
       record.latency_ms = Number(elapsedMs.toFixed(3));
     }
 
-    void csvSink.write(record).catch((error: unknown) => {
+    try {
+      const validated = validateLogRecord(record);
+      void csvSink.write(validated).catch((error: unknown) => {
+        if (error instanceof LogRecordValidationError) {
+          logger.error('Rejected CSV logframe due to schema violation', { issues: error.issues });
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('Failed to write CSV logframe', { error: message });
+      });
+    } catch (error) {
+      if (error instanceof LogRecordValidationError) {
+        logger.error('Discarded CSV logframe due to schema violation', { issues: error.issues });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
-      logger.error('Failed to write CSV logframe', { error: message });
-    });
+      logger.error('Failed to validate CSV logframe', { error: message });
+    }
   };
 
   res.once('finish', flush);
