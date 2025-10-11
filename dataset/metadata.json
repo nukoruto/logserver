@@ -1,0 +1,56 @@
+{
+  "dataset_name": "logserver-session-seed",
+  "version": "2024-06-01",
+  "schema": {
+    "timestamp_utc": "string (RFC 3339, UTC)",
+    "uid": "string (HMAC-SHA256(jwt) base64url)",
+    "session_id": "string",
+    "method": "string (HTTP verb)",
+    "path": "string",
+    "referer": "string",
+    "user_agent": "string",
+    "ip": "string (RFC 5737 documentation range)",
+    "op_category": "string ∈ {AUTH, READ, UPDATE}",
+    "event": "string",
+    "status": "integer",
+    "latency_ms": "integer",
+    "delta_t": "float (seconds)",
+    "anomaly_score": "float",
+    "anomaly_label": "integer {0,1}"
+  },
+  "collection_purpose": "Reproduce Δt-aware LSTM anomaly detection experiments for session operations, aligning with SRS.md section 1.",
+  "pseudonymization": {
+    "method": "HMAC-SHA256",
+    "key_derivation": "JWT_HMAC_KEY environment variable (Base64) decoded to bytes",
+    "formula": "uid = base64url( HMAC_SHA256(key=JWT_HMAC_KEY, message=raw_jwt) )",
+    "deterministic": true
+  },
+  "ntp_reference": {
+    "standard": "RFC 5905 (NTPv4)",
+    "tooling": "chronyc tracking",
+    "max_offset_seconds": 0.05,
+    "evidence_log": "logs/ntp-YYYYMMDDThhmmssZ.txt"
+  },
+  "csv_generation": {
+    "raw_capture": "npm --prefix collector run seed",
+    "sessionization": "python -m trainer.scripts.preprocess --config trainer/configs/default.yaml",
+    "scoring": "python -m trainer.scripts.score --config trainer/configs/default.yaml",
+    "thresholding": "python -m trainer.scripts.threshold --config trainer/configs/default.yaml",
+    "explainability": "python -m trainer.scripts.explain --config trainer/configs/default.yaml",
+    "trainer_config_digest": "sha256:8377ebbe432aed767c5bed66f84fb02f119a5e9e841112f03d48f61a07db44a5",
+    "docker_image": "node:20-alpine",
+    "python_version": "3.11"
+  },
+  "random_seeds": {
+    "collector_seed": "0x5eedc0de",
+    "training_seed": 42,
+    "numpy_seed": 42,
+    "torch_seed": 42
+  },
+  "known_biases": [
+    "Synthetic sessions follow a fixed login→browse→edit→logout template with bounded randomization, under-representing failure paths.",
+    "Latency distribution is uniform between 45-480 ms and lacks heavy-tail behaviours seen in production.",
+    "IP addresses are allocated from documentation ranges and do not reflect geolocation diversity."
+  ],
+  "generation_command": "docker compose up -d collector && npm --prefix collector run seed && python -m trainer.scripts.preprocess --config trainer/configs/default.yaml && python -m trainer.scripts.train --config trainer/configs/default.yaml && python -m trainer.scripts.score --config trainer/configs/default.yaml && python -m trainer.scripts.threshold --config trainer/configs/default.yaml && python -m trainer.scripts.explain --config trainer/configs/default.yaml"
+}

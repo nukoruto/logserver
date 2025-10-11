@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#111827"/>
+  <text x="40" y="80" font-family="'Fira Code', monospace" font-size="36" fill="#f97316">Docker compose up</text>
+  <text x="40" y="140" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">$ docker compose up -d collector</text>
+  <text x="40" y="190" font-family="'Fira Code', monospace" font-size="24" fill="#e2e8f0">[+] Running 1/1</text>
+  <text x="40" y="240" font-family="'Fira Code', monospace" font-size="24" fill="#a5b4fc"> ✔ Container logserver-collector-1  Started</text>
+  <text x="40" y="320" font-family="'Fira Code', monospace" font-size="20" fill="#94a3b8">Container status screen capture substitute.</text>
+</svg>

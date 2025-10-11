@@ -1,0 +1,7 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#0f172a"/>
+  <text x="40" y="80" font-family="'Fira Code', monospace" font-size="36" fill="#a855f7">CSV audit</text>
+  <text x="40" y="140" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">$ npm --prefix collector run audit -- --dir artifacts/csv</text>
+  <text x="40" y="190" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">{"files": 1, "rows": 1540, "findings": 0}</text>
+  <text x="40" y="320" font-family="'Fira Code', monospace" font-size="20" fill="#94a3b8">JSON summary indicates clean dataset.</text>
+</svg>
