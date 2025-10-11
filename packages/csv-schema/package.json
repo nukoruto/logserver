@@ -19,7 +19,7 @@
   "scripts": {
     "build": "pnpm run typecheck && tsup src/index.ts --dts --format esm,cjs --sourcemap --clean",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test test/parseCsv.test.ts test/forEachUser.test.ts test/computeDeltas.test.ts"
+    "test": "tsx --test test/parseCsv.test.ts test/forEachUser.test.ts test/computeDeltas.test.ts test/assignSessions.test.ts"
   },
   "dependencies": {
     "csv-parse": "^5.5.6"

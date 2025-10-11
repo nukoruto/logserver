@@ -301,3 +301,11 @@ export type {
   DeltaComputationStats,
   DeltaTimeLabel
 } from './delta.js';
+export {
+  assignSessions
+} from './session.js';
+export type {
+  AssignSessionsOptions,
+  SessionAnnotatedRow,
+  SessionIdentifierContext
+} from './session.js';
