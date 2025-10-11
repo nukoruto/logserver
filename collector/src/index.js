@@ -1,6 +1,10 @@
 const { CsvSink } = require('./sink/csvSink');
 const config = require('./config');
 const logger = require('./utils/logger');
+const {
+  LogRecordValidationError,
+  validateLogRecord,
+} = require('./schema/logRecord');
 
 const toRotation = (input) => {
   if (typeof input === 'string' && input.toLowerCase() === 'hourly') {
@@ -58,10 +62,24 @@ const csvSinkMiddleware = (_req, res, next) => {
       record.latency_ms = Number(elapsedMs.toFixed(3));
     }
 
-    csvSink.write(record).catch((error) => {
+    try {
+      const validated = validateLogRecord(record);
+      csvSink.write(validated).catch((error) => {
+        if (error instanceof LogRecordValidationError) {
+          logger.error('Rejected CSV logframe due to schema violation', { issues: error.issues });
+          return;
+        }
+        const message = error instanceof Error ? error.message : String(error);
+        logger.error('Failed to write CSV logframe', { error: message });
+      });
+    } catch (error) {
+      if (error instanceof LogRecordValidationError) {
+        logger.error('Discarded CSV logframe due to schema violation', { issues: error.issues });
+        return;
+      }
       const message = error instanceof Error ? error.message : String(error);
-      logger.error('Failed to write CSV logframe', { error: message });
-    });
+      logger.error('Failed to validate CSV logframe', { error: message });
+    }
   };
 
   res.once('finish', flush);

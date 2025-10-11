@@ -56,7 +56,7 @@ describe('logCapture middleware', () => {
       ip: '203.0.113.1',
       session_id: 'abc123',
       uid: expectedUid,
-      op_category: '',
+      op_category: 'READ',
     });
     expect(typeof res.locals.__logframe.timestamp_utc).toBe('string');
     expect(res.locals.__logframe.timestamp_utc.endsWith('Z')).toBe(true);
@@ -88,9 +88,31 @@ describe('logCapture middleware', () => {
       ip: '',
       session_id: '',
       uid: '',
-      op_category: '',
+      op_category: 'READ',
     });
     expect(res.locals.__logframe.timestamp_utc.endsWith('Z')).toBe(true);
     expect(next).toHaveBeenCalledTimes(1);
+  });
+
+  it('rejects unsupported HTTP methods with validation error', async () => {
+    const { default: logCapture } = await import('../../src/middleware/logCapture');
+
+    const req: any = {
+      method: 'PATCH',
+      url: '/any',
+      headers: {},
+      socket: {},
+      connection: {},
+    };
+    const res: any = { locals: {} };
+    const next = jest.fn();
+
+    logCapture(req, res, next);
+
+    expect(next).toHaveBeenCalledTimes(1);
+    const error = next.mock.calls[0][0];
+    expect(error).toBeInstanceOf(Error);
+    expect(error.statusCode).toBe(500);
+    expect(error.issues).toBeDefined();
   });
 });

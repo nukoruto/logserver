@@ -8,7 +8,7 @@ describe('opCategory middleware', () => {
       locals: {
         __logframe: {
           method: 'POST',
-          op_category: '',
+          op_category: 'READ',
         },
       },
     };
