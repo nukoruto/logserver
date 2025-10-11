@@ -1,0 +1,52 @@
+name: CI
+
+on:
+  push:
+    branches:
+      - '**'
+  pull_request:
+
+jobs:
+  collector:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: collector
+        shell: bash
+    env:
+      NODE_ENV: test
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.12.2
+          cache: npm
+          cache-dependency-path: collector/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Lint
+        run: npm run lint
+
+      - name: Unit tests
+        run: npm test -- --runInBand
+
+      - name: Build
+        run: npm run build
+
+      - name: End-to-end smoke test
+        env:
+          CSV_LOG_DIR: ${{ runner.temp }}/csv-logs
+        run: |
+          mkdir -p "$CSV_LOG_DIR"
+          npm run e2e -- --log-dir "$CSV_LOG_DIR" --port 8123
+
+      - name: Audit CSV output
+        env:
+          CSV_LOG_DIR: ${{ runner.temp }}/csv-logs
+        run: |
+          npm run audit -- --dir "$CSV_LOG_DIR" --fail-on-error
