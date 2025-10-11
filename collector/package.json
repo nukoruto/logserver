@@ -8,6 +8,9 @@
     "dev": "nodemon server.js",
     "lint": "eslint .",
     "test": "jest --config jest.config.cjs",
+    "build": "tsc --project tsconfig.json",
+    "e2e": "ts-node --project tsconfig.json scripts/run-e2e.ts",
+    "audit": "ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"target\":\"ES2020\"} ../scripts/audit.ts",
     "seed": "ts-node scripts/seed.ts"
   },
   "keywords": [
