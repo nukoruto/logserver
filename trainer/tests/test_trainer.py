@@ -3,8 +3,8 @@ from pathlib import Path
 
 import pandas as pd
 
-from src.features.encoders import build_feature_pack, encode_dataframe
-from src.training.trainer import TrainerConfig, train_model
+from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
+from trainer.logserver.training.trainer import TrainerConfig, train_model
 
 
 def test_train_model_produces_artifacts(tmp_path: Path) -> None:

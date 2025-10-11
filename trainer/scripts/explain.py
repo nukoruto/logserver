@@ -8,8 +8,15 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src.explain.case_report import build_case_records, export_case_report
-from src.explain.dt_stats import GroupingConfig, compute_dt_statistics, export_stats
+from trainer.logserver.explain.case_report import (
+    build_case_records,
+    export_case_report,
+)
+from trainer.logserver.explain.dt_stats import (
+    GroupingConfig,
+    compute_dt_statistics,
+    export_stats,
+)
 
 
 def _load_config(path: Path) -> dict:
@@ -41,6 +48,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Generate explainability artefacts")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML configuration")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/default.yaml",
+        help="Path to YAML configuration",
+    )
     args = parser.parse_args()
     main(Path(args.config))

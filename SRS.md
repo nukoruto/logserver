@@ -140,17 +140,24 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - 過学習: 厳格な検証分割、早期終了、外部検証データ
 
 ## 15. 実装方針（ディレクトリ）
-- repo/  
-  - README.md  
-  - SRS.md  
-  - configs/（実験設定 YAML）  
-  - data/（固定スナップショット）  
-  - scripts/（収集、前処理、学習、推論、可視化）  
-  - models/（保存、追跡）  
-  - simulink/（.slx と .m、ワークスペース入出力）  
-  - reports/（指標 JSON、図表）  
-  - tests/（ユニット/統合テスト）  
+- repo/
+  - README.md
+  - SRS.md
+  - CONSTRAINTS.md
   - Makefile
+  - collector/（ログ収集サーバ。Node.js/Express 実装）
+    - package.json / package-lock.json
+    - server.js
+    - src/（config, middleware, routes, services, storage, utils）
+  - trainer/（Python 3.11 + PyTorch 学習・推論基盤）
+    - configs/（実験設定 YAML）
+    - scripts/（前処理、学習、推論、閾値、説明、Simulink エクスポート CLI）
+    - src/logserver/（dataio, features, models, scoring, explain, simulink, training）
+    - tests/（pytest ベースの単体・統合テスト）
+    - requirements_*.txt（CPU/GPU 向け依存定義）
+  - contract/（データ契約ドキュメントと設定）
+  - artifacts/（収集成果物、Git 管理外）
+  - outputs/（学習成果物、Git 管理外）
 
 ## 16. 追跡性マトリクス（抜粋）
 - FR-01: Δt を特徴量として入力 → scripts/preprocess.py → tests/test_preprocess.py  

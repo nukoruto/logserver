@@ -1,28 +1,29 @@
-﻿PYTHON=python
-CONFIG?=configs/default.yaml
+PYTHON ?= python
+CONFIG ?= trainer/configs/default.yaml
+SIMULINK_CONFIG ?= trainer/configs/simulink.yaml
 
 .PHONY: preprocess train score threshold explain export-simulink tests lint
 
 preprocess:
-`t$(PYTHON) -m scripts.preprocess --config $(CONFIG)
+$(PYTHON) -m trainer.scripts.preprocess --config $(CONFIG)
 
 train:
-`t$(PYTHON) -m scripts.train --config $(CONFIG)
+$(PYTHON) -m trainer.scripts.train --config $(CONFIG)
 
 score:
-`t$(PYTHON) -m scripts.score --config $(CONFIG)
+$(PYTHON) -m trainer.scripts.score --config $(CONFIG)
 
 threshold:
-`t$(PYTHON) -m scripts.threshold --config $(CONFIG)
+$(PYTHON) -m trainer.scripts.threshold --config $(CONFIG)
 
 explain:
-`t$(PYTHON) -m scripts.explain --config $(CONFIG)
+$(PYTHON) -m trainer.scripts.explain --config $(CONFIG)
 
 export-simulink:
-`t$(PYTHON) -m scripts.export_simulink --config configs/simulink.yaml
+$(PYTHON) -m trainer.scripts.export_simulink --config $(SIMULINK_CONFIG)
 
 tests:
-`tpytest
+pytest
 
 lint:
-`t$(PYTHON) -m ruff check src scripts tests
+$(PYTHON) -m ruff check trainer/src trainer/scripts trainer/tests

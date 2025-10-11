@@ -7,7 +7,7 @@ from pathlib import Path
 
 import yaml
 
-from src.dataio.sessionize import SessionConfig, sessionize
+from trainer.logserver.dataio.sessionize import SessionConfig, sessionize
 
 
 def _load_config(path: Path) -> dict:
@@ -35,6 +35,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Preprocess raw logs")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML configuration")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/default.yaml",
+        help="Path to YAML configuration",
+    )
     args = parser.parse_args()
     main(Path(args.config))

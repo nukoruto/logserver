@@ -5,7 +5,10 @@ from __future__ import annotations
 
 from pathlib import Path
 
-from src.simulink.export_weights import load_config, export_for_simulink
+from trainer.logserver.simulink.export_weights import (
+    export_for_simulink,
+    load_config,
+)
 
 
 def main(config_path: Path) -> None:
@@ -17,6 +20,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Export trained model for Simulink usage")
-    parser.add_argument("--config", default="configs/simulink.yaml", help="Path to YAML configuration")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/simulink.yaml",
+        help="Path to YAML configuration",
+    )
     args = parser.parse_args()
     main(Path(args.config))

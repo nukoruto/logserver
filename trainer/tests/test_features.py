@@ -1,7 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 import pandas as pd
 
-from src.features.encoders import build_feature_pack, encode_dataframe
+from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
 
 
 def test_encode_dataframe_returns_arrays() -> None:

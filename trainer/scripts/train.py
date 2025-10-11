@@ -8,8 +8,8 @@ from pathlib import Path
 import pandas as pd
 import yaml
 
-from src.features.encoders import build_feature_pack, encode_dataframe
-from src.training.trainer import TrainerConfig, train_model
+from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
+from trainer.logserver.training.trainer import TrainerConfig, train_model
 
 
 def _load_config(path: Path) -> dict:
@@ -53,6 +53,10 @@ if __name__ == "__main__":  # pragma: no cover
     import argparse
 
     parser = argparse.ArgumentParser(description="Train Δt-aware LSTM model")
-    parser.add_argument("--config", default="configs/default.yaml", help="Path to YAML configuration")
+    parser.add_argument(
+        "--config",
+        default="trainer/configs/default.yaml",
+        help="Path to YAML configuration",
+    )
     args = parser.parse_args()
     main(Path(args.config))
