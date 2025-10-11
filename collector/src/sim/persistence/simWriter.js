@@ -6,7 +6,136 @@ const crypto = require('node:crypto');
 const config = require('../../config');
 const { labelSequence } = require('../labeler');
 
-const CSV_HEADER = 'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata';
+const CSV_HEADER =
+  'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label';
+
+const EXTRA_COLUMN_NAMES = ['dt_sec', 'log_dt', 'z', 'z_clipped', 'time_label'];
+
+const clamp = (value, min, max) => {
+  if (!Number.isFinite(value)) {
+    return Number.NaN;
+  }
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+};
+
+const sanitizeNumeric = (value) => {
+  if (typeof value !== 'number') {
+    return null;
+  }
+  if (!Number.isFinite(value)) {
+    return null;
+  }
+  return value;
+};
+
+const computeMeanAndStd = (values) => {
+  if (!Array.isArray(values) || values.length === 0) {
+    return { mean: 0, std: 0 };
+  }
+  const count = values.length;
+  const sum = values.reduce((acc, value) => acc + value, 0);
+  const mean = sum / count;
+  const variance =
+    values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / count;
+  const std = Number.isFinite(variance) && variance > 0 ? Math.sqrt(variance) : 0;
+  return { mean, std };
+};
+
+const normalizeLabel = (value) => {
+  if (typeof value !== 'string') {
+    return 'unknown';
+  }
+  const trimmed = value.trim().toLowerCase();
+  return trimmed === 'ok' ? 'ok' : 'unknown';
+};
+
+const extrasResolvers = {
+  dt_sec: null,
+  log_dt: null,
+  z: null,
+  z_clipped: null,
+  time_label: null,
+};
+
+const augmentRows = (rows, extras = {}) => {
+  if (!Array.isArray(rows)) {
+    throw new TypeError('rows must be an array');
+  }
+
+  const resolvers = { ...extrasResolvers };
+  for (const column of EXTRA_COLUMN_NAMES) {
+    const resolver = extras[column];
+    if (resolver !== undefined && typeof resolver !== 'function') {
+      throw new TypeError(`${column} override must be a function when provided`);
+    }
+    resolvers[column] = resolver ?? null;
+  }
+
+  const sanitizedRows = rows.map((event) =>
+    event && typeof event === 'object' ? { ...event } : {}
+  );
+
+  const dtValues = sanitizedRows.map((event, index) => {
+    const fallback = sanitizeNumeric(extractDeltaSeconds(event));
+    const resolved = resolvers.dt_sec
+      ? sanitizeNumeric(resolvers.dt_sec(event, index, sanitizedRows, fallback))
+      : fallback;
+    return resolved !== null && resolved > 0 ? resolved : null;
+  });
+
+  const positiveDtValues = dtValues.filter((value) => value !== null);
+  const { mean, std } = computeMeanAndStd(positiveDtValues);
+
+  return sanitizedRows.map((event, index) => {
+    const dtSec = dtValues[index];
+    const logFallback = dtSec !== null && dtSec > 0 ? Math.log(dtSec) : null;
+    const logDt = resolvers.log_dt
+      ? sanitizeNumeric(resolvers.log_dt(event, index, sanitizedRows, logFallback)) ?? logFallback
+      : logFallback;
+
+    let zScore = null;
+    if (dtSec !== null) {
+      zScore = std > 0 ? (dtSec - mean) / std : 0;
+    }
+    if (resolvers.z) {
+      const override = resolvers.z(event, index, sanitizedRows, zScore);
+      const numeric = sanitizeNumeric(override);
+      if (numeric !== null) {
+        zScore = numeric;
+      }
+    }
+
+    const clippedFallback = zScore === null ? null : clamp(zScore, -5, 5);
+    const zClipped = resolvers.z_clipped
+      ? sanitizeNumeric(
+          resolvers.z_clipped(event, index, sanitizedRows, clippedFallback)
+        ) ?? clippedFallback
+      : clippedFallback;
+
+    const labelFallback = dtSec === null ? 'unknown' : 'ok';
+    const labelOverride = resolvers.time_label
+      ? resolvers.time_label(event, index, sanitizedRows, labelFallback)
+      : null;
+    const timeLabel = labelOverride
+      ? normalizeLabel(labelOverride)
+      : normalizeLabel(labelFallback);
+
+    return {
+      ...event,
+      dt_sec: dtSec,
+      log_dt: logDt,
+      z: zScore,
+      z_clipped: zClipped,
+      time_label: timeLabel,
+    };
+  });
+};
 
 const toCsvField = (value) => {
   if (value === undefined || value === null) {
@@ -133,9 +262,10 @@ const serializeMetadata = (metadata) => {
   return metadata;
 };
 
-const formatCsvRows = (events) => {
+const formatCsvRows = (events, extras) => {
+  const augmented = augmentRows(events, extras);
   const rows = [CSV_HEADER];
-  for (const event of events) {
+  for (const event of augmented) {
     const metadata = serializeMetadata(event.metadata);
     const row = [
       event.timestamp,
@@ -148,6 +278,11 @@ const formatCsvRows = (events) => {
       event.latency_ms,
       extractDeltaSeconds(event),
       metadata,
+      event.dt_sec,
+      event.log_dt,
+      event.z,
+      event.z_clipped,
+      event.time_label,
     ].map(toCsvField);
     rows.push(row.join(','));
   }
@@ -183,7 +318,7 @@ const persistSimulationRun = async (input) => {
   const csvPath = path.join(outputDir, csvFileName);
   const manifestPath = path.join(outputDir, manifestFileName);
 
-  const csvContent = formatCsvRows(labeled);
+  const csvContent = formatCsvRows(labeled, input?.featureOverrides);
   await fs.writeFile(csvPath, csvContent, { encoding: 'utf8' });
 
   const hash = crypto.createHash('sha256').update(csvContent, 'utf8').digest('hex');
@@ -259,4 +394,5 @@ module.exports = {
   persistSimulationRun,
   summarizeDeltas,
   buildAnomalySummary,
+  augmentRows,
 };
