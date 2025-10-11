@@ -1,15 +1,31 @@
-const express = require('express');
-const logCapture = require('../middleware/logCapture');
-const { csvSink } = require('../index');
-const { ntpMonitor } = require('../services/ntpMonitor');
+import express from 'express';
+import logCapture from '../middleware/logCapture';
+import { csvSink } from '../index';
+import { ntpMonitor, type NtpHealthStatus } from '../services/ntpMonitor';
+import type { CsvSinkHealthStatus } from '../sink/csvSink';
+
+export type OverallHealthState = 'ok' | 'degraded' | 'initializing' | 'shutting_down';
+
+export interface CombinedHealthStatus {
+  healthy: boolean;
+  status: OverallHealthState;
+  reasons: string[];
+  components: {
+    csvSink: CsvSinkHealthStatus;
+    ntp: NtpHealthStatus;
+  };
+}
 
 const router = express.Router();
 
-const deriveOverallHealth = (csvStatus, ntpStatus) => {
+export const deriveOverallHealth = (
+  csvStatus: CsvSinkHealthStatus,
+  ntpStatus: NtpHealthStatus
+): CombinedHealthStatus => {
   const sinkHealthy = csvStatus.healthy;
   const ntpHealthy = ntpStatus.disabled ? true : ntpStatus.healthy;
 
-  const reasons = [];
+  const reasons: string[] = [];
 
   if (!sinkHealthy) {
     reasons.push(csvStatus.state === 'shutting_down' ? 'csv_sink_shutting_down' : 'csv_sink_unavailable');
@@ -19,7 +35,7 @@ const deriveOverallHealth = (csvStatus, ntpStatus) => {
     reasons.push(ntpStatus.state === 'initializing' ? 'ntp_initializing' : 'ntp_degraded');
   }
 
-  let status = 'ok';
+  let status: OverallHealthState = 'ok';
 
   if (reasons.length === 0) {
     status = 'ok';
@@ -35,6 +51,10 @@ const deriveOverallHealth = (csvStatus, ntpStatus) => {
     healthy: sinkHealthy && ntpHealthy,
     status,
     reasons,
+    components: {
+      csvSink: csvStatus,
+      ntp: ntpStatus,
+    },
   };
 };
 
@@ -79,7 +99,5 @@ router.get('/', (_req, res) => {
   res.status(overall.healthy ? 200 : 503).json(response);
 });
 
-module.exports = router;
-module.exports.deriveOverallHealth = deriveOverallHealth;
-module.exports.default = router;
-module.exports.__esModule = true;
+export { router };
+export default router;

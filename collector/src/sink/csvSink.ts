@@ -74,6 +74,14 @@ class CsvSink {
 
   private shuttingDown = false;
 
+  private pendingWrites = 0;
+
+  private totalWritten = 0;
+
+  private lastError: string | null = null;
+
+  private lastSuccessAt: Date | null = null;
+
   constructor(options: CsvSinkOptions) {
     this.dir = options.dir;
     this.rotation = options.rotation;
@@ -97,10 +105,24 @@ class CsvSink {
     const { key } = buildKey(entry.timestamp_utc, this.rotation);
     const serialized = this.serialize(entry);
 
-    const operation = this.queue.then(async () => {
-      await this.rotateIfNeeded(key, entry.timestamp_utc);
-      await this.append(serialized);
-    });
+    this.pendingWrites += 1;
+
+    const operation = this.queue
+      .then(async () => {
+        try {
+          await this.rotateIfNeeded(key, entry.timestamp_utc);
+          await this.append(serialized);
+          this.totalWritten += 1;
+          this.lastSuccessAt = new Date();
+          this.lastError = null;
+        } catch (error) {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+      })
+      .finally(() => {
+        this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+      });
 
     this.queue = operation.catch(() => undefined);
 
@@ -154,6 +176,41 @@ class CsvSink {
     this.activeKey = null;
   }
 
+  public getMetrics(): { totalWritten: number; queueDepth: number } {
+    return {
+      totalWritten: this.totalWritten,
+      queueDepth: this.pendingWrites,
+    };
+  }
+
+  public getHealthStatus(): {
+    healthy: boolean;
+    state: 'ok' | 'degraded' | 'shutting_down';
+    shuttingDown: boolean;
+    lastError: string | null;
+    lastSuccessAt: Date | null;
+    pendingWrites: number;
+    totalWritten: number;
+  } {
+    const shuttingDown = this.shuttingDown;
+    const hasError = this.lastError !== null;
+    const state: 'ok' | 'degraded' | 'shutting_down' = shuttingDown
+      ? 'shutting_down'
+      : hasError
+        ? 'degraded'
+        : 'ok';
+
+    return {
+      healthy: !shuttingDown && !hasError,
+      state,
+      shuttingDown,
+      lastError: this.lastError,
+      lastSuccessAt: this.lastSuccessAt,
+      pendingWrites: this.pendingWrites,
+      totalWritten: this.totalWritten,
+    };
+  }
+
   private serialize(record: CsvRecord): string {
     const values = this.headers.map((key) => {
       const raw = (record as Record<string, unknown>)[key];
@@ -176,5 +233,7 @@ class CsvSink {
 }
 
 export type { CsvRecord, CsvSinkOptions, Rotation };
+export type CsvSinkMetrics = ReturnType<CsvSink['getMetrics']>;
+export type CsvSinkHealthStatus = ReturnType<CsvSink['getHealthStatus']>;
 export { CsvSink };
 export default CsvSink;

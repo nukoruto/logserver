@@ -271,4 +271,7 @@ export class NtpMonitor {
   }
 }
 
+const ntpMonitor = new NtpMonitor();
+
+export { ntpMonitor };
 export default NtpMonitor;
