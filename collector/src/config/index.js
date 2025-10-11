@@ -31,6 +31,14 @@ const parseOrigins = (raw) => {
     .filter(Boolean);
 };
 
+const parseRotation = (value) => {
+  if (!value) {
+    return 'daily';
+  }
+  const normalized = String(value).trim().toLowerCase();
+  return normalized === 'hourly' ? 'hourly' : 'daily';
+};
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   port: Number.parseInt(process.env.PORT, 10) || 8000,
@@ -39,6 +47,7 @@ const config = {
     process.env.SQLITE_PATH ||
     path.resolve(process.cwd(), 'data', 'db', 'events.sqlite3'),
   csvRoot: process.env.CSV_ROOT || path.resolve(process.cwd(), 'data', 'raw'),
+  csvRotation: parseRotation(process.env.CSV_ROTATION),
   jwtSecret: process.env.JWT_SECRET || '',
   security: {
     jwtHmacKey: process.env.JWT_HMAC_KEY || '',
