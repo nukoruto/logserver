@@ -6,6 +6,7 @@ const requestLogger = require('./middleware/requestLogger');
 const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');
 const eventRoutes = require('./routes/events');
+const { csvSinkMiddleware } = require('./index');
 const { createSchema } = require('./storage/eventRepository');
 
 const app = express();
@@ -27,6 +28,7 @@ app.use(cors(corsOptions));
 app.use(express.json({ limit: config.requestLimit }));
 app.use(express.urlencoded({ extended: false }));
 app.use(requestLogger);
+app.use(csvSinkMiddleware);
 
 app.use('/api/v1/health', healthRoutes);
 app.use('/api/v1/events', eventRoutes);
