@@ -352,9 +352,9 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
 
 ## 16. 連絡先
 
-- Author: Your Name
-- Affiliation: Your Lab / University
-- Email: your.name@example.com
+- Author: Komei Ogata
+- Affiliation: Tanaka Lab. / National institute of Technology, Kurume College
+- Email: df360a@gmail.com
 
 ---
 
