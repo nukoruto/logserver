@@ -9,6 +9,8 @@ import type { CsvSinkMetrics } from '../sink/csvSink';
 export interface MetricsSnapshot {
   writtenTotal: number;
   queueDepth: number;
+  retryQueueDepth: number;
+  dropTotal: number;
   ntpOffsetMs: number | null;
 }
 
@@ -36,6 +38,12 @@ export const formatPrometheusMetrics = (snapshot: MetricsSnapshot): string => {
     '# HELP logserver_queue_depth Number of log entries currently queued for CSV persistence.',
     '# TYPE logserver_queue_depth gauge',
     `logserver_queue_depth ${formatValue(snapshot.queueDepth)}`,
+    '# HELP logserver_retry_queue_depth Number of log entries waiting in the retry buffer.',
+    '# TYPE logserver_retry_queue_depth gauge',
+    `logserver_retry_queue_depth ${formatValue(snapshot.retryQueueDepth)}`,
+    '# HELP logserver_drop_total Total log entries dropped due to retry queue overflow or shutdown.',
+    '# TYPE logserver_drop_total counter',
+    `logserver_drop_total ${formatValue(snapshot.dropTotal)}`,
     '# HELP logserver_ntp_offset_ms Most recent absolute NTP clock offset in milliseconds.',
     '# TYPE logserver_ntp_offset_ms gauge',
     `logserver_ntp_offset_ms ${formatValue(snapshot.ntpOffsetMs)}`,
@@ -51,6 +59,8 @@ router.get('/', (_req, res) => {
   const snapshot: MetricsSnapshot = {
     writtenTotal: metrics.totalWritten,
     queueDepth: metrics.queueDepth,
+    retryQueueDepth: metrics.retryQueueDepth,
+    dropTotal: metrics.dropTotal,
     ntpOffsetMs: typeof ntpStatus.lastOffsetMs === 'number' ? ntpStatus.lastOffsetMs : null,
   };
 

@@ -10,6 +10,7 @@ const baseSinkStatus = (): CsvSinkHealthStatus => ({
   lastSuccessAt: new Date('2024-01-01T00:00:00.000Z'),
   pendingWrites: 0,
   totalWritten: 10,
+  dropTotal: 0,
 });
 
 const baseNtpStatus = (): NtpHealthStatus => ({
