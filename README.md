@@ -109,6 +109,19 @@ conda activate sessad
 - `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
 
+### 4.3 環境変数ファイル (.env)
+1. 雛形 `.env.example` を `.env` にコピーする。
+   ```bash
+   cp .env.example .env
+   ```
+2. `JWT_HMAC_KEY` には 128bit 以上の鍵（Base64 または Hex）を設定する。例:
+   ```bash
+   openssl rand -base64 32
+   ```
+3. `LOG_DIR` や `CSV_ROTATION` など、運用に合わせて値を調整する。
+4. `.env` には秘匿情報が含まれるため **Git へコミットしないこと**。必要に応じて `.gitignore` や `git update-index --skip-worktree .env` を利用する。
+5. Node.js 側では `dotenv` により `.env` が自動ロードされる。別パスを使用したい場合は `CONFIG_PATH` 環境変数を指定する。
+
 ---
 
 ## 5. 使い方（CLI の一例）
