@@ -54,6 +54,10 @@ class CsvSink {
     this.handle = null;
     this.queue = Promise.resolve();
     this.shuttingDown = false;
+    this.pendingWrites = 0;
+    this.totalWritten = 0;
+    this.lastError = null;
+    this.lastSuccessAt = null;
   }
 
   write(record) {
@@ -73,10 +77,24 @@ class CsvSink {
     const { key } = buildKey(entry.timestamp_utc, this.rotation);
     const serialized = this.serialize(entry);
 
-    const operation = this.queue.then(async () => {
-      await this.rotateIfNeeded(key, entry.timestamp_utc);
-      await this.append(serialized);
-    });
+    this.pendingWrites += 1;
+
+    const operation = this.queue
+      .then(async () => {
+        try {
+          await this.rotateIfNeeded(key, entry.timestamp_utc);
+          await this.append(serialized);
+          this.totalWritten += 1;
+          this.lastSuccessAt = new Date();
+          this.lastError = null;
+        } catch (error) {
+          this.lastError = error instanceof Error ? error.message : String(error);
+          throw error;
+        }
+      })
+      .finally(() => {
+        this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+      });
 
     this.queue = operation.catch(() => undefined);
 
@@ -128,6 +146,29 @@ class CsvSink {
     await this.handle.close();
     this.handle = null;
     this.activeKey = null;
+  }
+
+  getMetrics() {
+    return {
+      totalWritten: this.totalWritten,
+      queueDepth: this.pendingWrites,
+    };
+  }
+
+  getHealthStatus() {
+    const shuttingDown = this.shuttingDown;
+    const hasError = this.lastError !== null;
+    const state = shuttingDown ? 'shutting_down' : hasError ? 'degraded' : 'ok';
+
+    return {
+      healthy: !shuttingDown && !hasError,
+      state,
+      shuttingDown,
+      lastError: this.lastError,
+      lastSuccessAt: this.lastSuccessAt,
+      pendingWrites: this.pendingWrites,
+      totalWritten: this.totalWritten,
+    };
   }
 
   serialize(record) {

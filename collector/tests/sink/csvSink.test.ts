@@ -306,4 +306,39 @@ describe('CsvSink', () => {
     const files = await fs.readdir(tmpDir);
     expect(files).toHaveLength(0);
   });
+
+  it('exposes metrics and health status for monitoring', async () => {
+    const sink = new CsvSink({ dir: tmpDir, rotation: 'daily' });
+
+    const pending = sink.write({
+      timestamp_utc: '2024-08-01T00:00:00.000Z',
+      method: 'POST',
+      path: '/ingest',
+      op_category: 'READ',
+      referer: '',
+      user_agent: '',
+      uid: '',
+      session_id: '',
+      ip: '',
+    });
+
+    const during = sink.getMetrics();
+    expect(during.queueDepth).toBeGreaterThanOrEqual(1);
+
+    await pending;
+
+    const after = sink.getMetrics();
+    expect(after.totalWritten).toBe(1);
+    expect(after.queueDepth).toBe(0);
+
+    const health = sink.getHealthStatus();
+    expect(health.healthy).toBe(true);
+    expect(health.state).toBe('ok');
+
+    await sink.shutdown();
+
+    const shut = sink.getHealthStatus();
+    expect(shut.healthy).toBe(false);
+    expect(shut.state).toBe('shutting_down');
+  });
 });
