@@ -1,0 +1,19 @@
+{
+  "name": "@logserver/session-splitter-cli",
+  "version": "0.1.0",
+  "description": "CLI for session splitter library",
+  "bin": {
+    "session-splitter": "dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc -p tsconfig.json"
+  },
+  "dependencies": {
+    "@logserver/session-splitter": "workspace:*",
+    "commander": "^12.1.0"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}
