@@ -6,8 +6,10 @@ import {
   bimodalityTest,
   estimateThresholdsByUser,
   kneeThreshold,
+  makeSid,
   makeLogHistogram,
-  otsuThreshold
+  otsuThreshold,
+  deriveDatasetKey
 } from '../dist/index.js';
 
 function buildUnimodalDeltas(count) {
@@ -32,10 +34,13 @@ function percentile(sortedValues, fraction) {
 
 test('unimodal distributions fall back to knee threshold', () => {
   const deltas = buildUnimodalDeltas(240);
+  const datasetKey = deriveDatasetKey('c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=');
+  const sessionStartEpoch = Math.trunc(Date.parse('2024-01-01T00:00:00.000Z') / 1000);
+  const sid = makeSid('user-1', sessionStartEpoch, algoVersion, datasetKey);
   const rows = deltas.map((delta, index) => ({
     algo_ver: algoVersion,
     uid: 'user-1',
-    generatedSessionId: 'user-1#0',
+    generatedSessionId: sid,
     sessionSequence: 0,
     sessionIndex: index,
     timestampUtc: '2024-01-01T00:00:00.000Z',

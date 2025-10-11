@@ -44,6 +44,15 @@ program
       sessionIdColumn: cliOptions.sessionIdColumn
     };
 
+    const jwtHmacKey = process.env.JWT_HMAC_KEY;
+    if (!jwtHmacKey) {
+      console.error('JWT_HMAC_KEY environment variable is required to derive session IDs');
+      process.exitCode = 1;
+      return;
+    }
+
+    splitOptions.jwtHmacKey = jwtHmacKey;
+
     const rows: AugmentedRow[] = [];
 
     try {
