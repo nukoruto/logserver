@@ -7,6 +7,7 @@ const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');
 const metricsRoutes = require('./routes/metrics');
 const eventRoutes = require('./routes/events');
+const simulationRoutes = require('./routes/simulations');
 const { csvSinkMiddleware } = require('./index');
 const { createSchema } = require('./storage/eventRepository');
 const { ntpMonitor } = require('./services/ntpMonitor');
@@ -35,6 +36,7 @@ app.use(csvSinkMiddleware);
 app.use(['/api/v1/health', '/healthz'], healthRoutes);
 app.use(['/api/v1/metrics', '/metrics'], metricsRoutes);
 app.use('/api/v1/events', eventRoutes);
+app.use('/api/v1/simulations', simulationRoutes);
 
 app.use((req, res) => {
   res.status(404).json({ error: 'Not Found' });

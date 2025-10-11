@@ -43,6 +43,8 @@
 ├─ SRS.md
 ├─ CONSTRAINTS.md
 ├─ Makefile
+├─ configs/
+│   └─ scenario_default.json
 ├─ collector/
 │   ├─ package.json
 │   ├─ package-lock.json
@@ -178,6 +180,60 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 # 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
 cd collector && node scripts/check-ntp.js
+```
+
+### 5.6 シナリオ生成 CLI / API
+
+- シナリオ定義は `configs/scenario_default.json` に外部化されており、環境変数 `SIM_SCENARIO_FILE` を指定すれば任意ファイルを優先読み込みします。
+- CLI からは `ts-node` 経由で `scripts/simulate.ts` を実行し、件数・異常タイプ・シードなどを指定できます。
+
+```bash
+node -r ts-node/register/transpile-only scripts/simulate.ts \
+  --count 50 \
+  --anomalies time,auth \
+  --seed 42 \
+  --output-dir data/sim \
+  --run-id cli-demo-001 \
+  --pretty
+```
+
+- CLI の出力および `/api/v1/simulations` POST のレスポンスは以下のフォーマットで統一されています（抜粋）。GUI では `summary` や `params` を利用してメタ情報を表示できます。
+
+```json
+{
+  "scenarioId": "default-flow",
+  "generated_at": "2024-11-01T09:00:00.000Z",
+  "params": {
+    "count": 50,
+    "anomalies": ["timeDeviation", "authenticationBypass"],
+    "seed": "42",
+    "scenario_path": "configs/scenario_default.json",
+    "anomaly_rate": 0.2,
+    "persist": true
+  },
+  "summary": {
+    "events": 50,
+    "sessions": 4,
+    "anomalies": {
+      "normal": 44,
+      "time_deviation": 4,
+      "auth_failure": 2
+    }
+  },
+  "files": {
+    "csvPath": "data/sim/simEvents-cli-demo-001.csv",
+    "manifestPath": "data/sim/scenario-cli-demo-001.json"
+  },
+  "events": [
+    {
+      "timestamp": "2024-11-01T09:00:00.500Z",
+      "session_id": "sess-default-flow-001",
+      "event": "login",
+      "latency_ms": 142,
+      "metadata": { "scenario": { "from": "start", "to": "authenticated" } }
+    }
+  ]
+}
 ```
 
 ---
