@@ -1,7 +1,11 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const os = require('node:os');
-const { persistSimulationRun, summarizeDeltas } = require('../../src/sim/persistence/simWriter');
+const {
+  persistSimulationRun,
+  summarizeDeltas,
+  augmentRows,
+} = require('../../src/sim/persistence/simWriter');
 
 describe('simWriter.persistSimulationRun', () => {
   let tempDir: string;
@@ -73,7 +77,9 @@ describe('simWriter.persistSimulationRun', () => {
 
     const csvContent = await fs.readFile(result.csvPath, 'utf8');
     const rows = csvContent.trim().split('\n');
-    expect(rows[0]).toBe('timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata');
+    expect(rows[0]).toBe(
+      'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label'
+    );
     expect(rows).toHaveLength(events.length + 1);
 
     const parseCsvRow = (row: string): string[] => {
@@ -104,10 +110,30 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const parsedRows = rows.slice(1).map(parseCsvRow);
-    const metadataRows = parsedRows.map((columns: string[]) => JSON.parse(columns[9] || '{}'));
+    const metadataRows = parsedRows.map((columns: string[]) =>
+      JSON.parse(columns[9] || '{}')
+    );
     expect(metadataRows[0].anomaly).toBe('normal');
     expect(metadataRows[1].anomaly).toBe('protocol_violation');
     expect(metadataRows[2].anomaly).toBe('time_deviation');
+
+    const dtValues = parsedRows.map((columns: string[]) => columns[10]);
+    expect(dtValues).toEqual(['1.5', '3.5', '4']);
+
+    const logDtValues = parsedRows.map((columns: string[]) => Number(columns[11]));
+    expect(logDtValues[0]).toBeCloseTo(Math.log(1.5), 6);
+    expect(logDtValues[1]).toBeCloseTo(Math.log(3.5), 6);
+    expect(logDtValues[2]).toBeCloseTo(Math.log(4), 6);
+
+    const zValues = parsedRows.map((columns: string[]) => Number(columns[12]));
+    expect(zValues[0]).toBeLessThan(0);
+    expect(zValues[2]).toBeGreaterThan(0);
+
+    const clippedValues = parsedRows.map((columns: string[]) => Number(columns[13]));
+    expect(clippedValues).toEqual(zValues);
+
+    const labelValues = parsedRows.map((columns: string[]) => columns[14]);
+    expect(labelValues).toEqual(['ok', 'ok', 'ok']);
 
     const manifestRaw = await fs.readFile(result.manifestPath, 'utf8');
     const manifest = JSON.parse(manifestRaw);
@@ -156,5 +182,31 @@ describe('simWriter.persistSimulationRun', () => {
     expect(stats.mean).toBeNull();
     expect(stats.median).toBeNull();
     expect(stats.stddev).toBeNull();
+  });
+
+  it('augmentRows で Δt 付与とラベルを生成し、オーバーライド関数を受け付ける', () => {
+    const rows = [
+      { deltaSeconds: 0, metadata: {} },
+      { deltaSeconds: null, metadata: {} },
+      { deltaSeconds: 10, metadata: {} },
+    ];
+
+    const augmented = augmentRows(rows);
+    expect(augmented[0].dt_sec).toBeNull();
+    expect(augmented[1].dt_sec).toBeNull();
+    expect(augmented[2].dt_sec).toBe(10);
+    expect(augmented[0].time_label).toBe('unknown');
+    expect(augmented[2].time_label).toBe('ok');
+    expect(augmented[2].z).toBe(0);
+    expect(augmented[2].z_clipped).toBe(0);
+
+    const overridden = augmentRows(rows, {
+      dt_sec: () => 5,
+      time_label: () => 'ok',
+      z_clipped: () => 42,
+    });
+    expect(overridden[0].dt_sec).toBe(5);
+    expect(overridden[1].time_label).toBe('ok');
+    expect(overridden[2].z_clipped).toBe(42);
   });
 });
