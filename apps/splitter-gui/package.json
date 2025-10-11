@@ -1,0 +1,19 @@
+{
+  "name": "@logserver/splitter-gui",
+  "version": "0.1.0",
+  "description": "Electron GUI for the session splitter",
+  "main": "dist/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-static.mjs"
+  },
+  "dependencies": {
+    "@logserver/session-splitter": "workspace:*",
+    "electron": "^29.3.0"
+  },
+  "devDependencies": {
+    "@types/electron": "^1.6.0",
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}

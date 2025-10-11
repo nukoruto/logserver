@@ -1,0 +1,48 @@
+<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="UTF-8" />
+    <title>Session Splitter GUI</title>
+    <style>
+      body {
+        font-family: 'Segoe UI', sans-serif;
+        margin: 16px;
+      }
+      header {
+        margin-bottom: 12px;
+      }
+      #output {
+        white-space: pre;
+        background-color: #0f172a;
+        color: #f1f5f9;
+        padding: 12px;
+        border-radius: 8px;
+        max-height: 400px;
+        overflow: auto;
+      }
+      label {
+        display: block;
+        margin-bottom: 8px;
+      }
+    </style>
+  </head>
+  <body>
+    <header>
+      <h1>Session Splitter GUI</h1>
+      <p>アルゴリズム版: <span id="algo-version"></span></p>
+    </header>
+    <section>
+      <label>
+        アイドルタイムアウト秒数:
+        <input id="idle-timeout" type="number" min="1" placeholder="1800" />
+      </label>
+      <button id="select-file">CSV を選択</button>
+      <p id="status">ファイルを選択して処理を開始してください。</p>
+    </section>
+    <section>
+      <h2>出力</h2>
+      <pre id="output">{}</pre>
+    </section>
+    <script type="module" src="../renderer.js"></script>
+  </body>
+</html>
