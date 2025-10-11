@@ -1,0 +1,97 @@
+{
+  "id": "default-flow",
+  "version": "2024-11-01",
+  "description": "Default session FSM leveraged by CLI/API generators; externalized for GUI/CLI overrides.",
+  "states": ["start", "authenticated", "browsing", "editing", "saving", "completed"],
+  "initialState": "start",
+  "terminalStates": ["completed"],
+  "defaultDeltaSeconds": {
+    "distribution": "normal",
+    "mean": 2.0,
+    "stdDev": 1.0,
+    "min": 0.2,
+    "max": 6.0
+  },
+  "transitions": [
+    {
+      "from": "start",
+      "to": "authenticated",
+      "event": "login",
+      "probability": 1.0,
+      "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/login"},
+      "deltaSeconds": { "min": 0.0, "max": 0.6 }
+    },
+    {
+      "from": "authenticated",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.8,
+      "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
+      "deltaSeconds": { "min": 0.5, "max": 2.0 }
+    },
+    {
+      "from": "authenticated",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.2,
+      "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "browsing",
+      "to": "editing",
+      "event": "edit",
+      "probability": 0.6,
+      "metadata": {"op_category": "UPDATE", "method": "POST", "path": "/workspace/edit"},
+      "deltaSeconds": { "min": 1.0, "max": 3.5 }
+    },
+    {
+      "from": "browsing",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.25,
+      "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
+      "deltaSeconds": { "min": 0.8, "max": 2.2 }
+    },
+    {
+      "from": "browsing",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.15,
+      "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "editing",
+      "to": "saving",
+      "event": "save",
+      "probability": 0.7,
+      "metadata": {"op_category": "UPDATE", "method": "PUT", "path": "/workspace/save"},
+      "deltaSeconds": { "min": 0.6, "max": 2.0 }
+    },
+    {
+      "from": "editing",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.2,
+      "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
+      "deltaSeconds": { "min": 0.8, "max": 2.5 }
+    },
+    {
+      "from": "editing",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.1,
+      "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "saving",
+      "to": "completed",
+      "event": "logout",
+      "probability": 1.0,
+      "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    }
+  ]
+}
