@@ -5,6 +5,8 @@ describe('metrics route helpers', () => {
     const snapshot: MetricsSnapshot = {
       writtenTotal: 42,
       queueDepth: 3,
+      retryQueueDepth: 1,
+      dropTotal: 2,
       ntpOffsetMs: 1.25,
     };
 
@@ -21,6 +23,8 @@ describe('metrics route helpers', () => {
     const snapshot: MetricsSnapshot = {
       writtenTotal: 0,
       queueDepth: 0,
+      retryQueueDepth: 0,
+      dropTotal: 0,
       ntpOffsetMs: null,
     };
 

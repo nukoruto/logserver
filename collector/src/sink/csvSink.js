@@ -1,5 +1,6 @@
 const { mkdir, open } = require('fs/promises');
 const path = require('path');
+const logger = require('../utils/logger');
 const {
   LogRecordValidationError,
   validateLogRecord,
@@ -20,6 +21,10 @@ const DEFAULT_HEADERS = [
   'status_code',
   'latency_ms',
 ];
+
+const DEFAULT_MAX_IN_MEMORY_QUEUE = 2048;
+const DEFAULT_RETRY_BASE_DELAY_MS = 250;
+const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
 
 const toTimestamp = (input) => {
   const date = new Date(input);
@@ -49,7 +54,12 @@ class CsvSink {
   constructor(options) {
     this.dir = options.dir;
     this.rotation = options.rotation;
-    this.headers = options.headers || DEFAULT_HEADERS;
+    this.headers = options.headers ?? DEFAULT_HEADERS;
+    this.maxInMemoryQueue = options.maxInMemoryQueue ?? DEFAULT_MAX_IN_MEMORY_QUEUE;
+    this.retryBaseDelayMs = options.retryBaseDelayMs ?? DEFAULT_RETRY_BASE_DELAY_MS;
+    this.retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
+    this.retryQueue = [];
+    this.retryTimer = null;
     this.activeKey = null;
     this.handle = null;
     this.queue = Promise.resolve();
@@ -58,6 +68,7 @@ class CsvSink {
     this.totalWritten = 0;
     this.lastError = null;
     this.lastSuccessAt = null;
+    this.dropTotal = 0;
   }
 
   write(record) {
@@ -77,20 +88,41 @@ class CsvSink {
     const { key } = buildKey(entry.timestamp_utc, this.rotation);
     const serialized = this.serialize(entry);
 
+    const pending = {
+      key,
+      timestampUtc: entry.timestamp_utc,
+      serialized,
+      attempt: 0,
+      nextAttemptAt: Date.now(),
+    };
+
+    return this.enqueue(pending);
+  }
+
+  async shutdown() {
+    if (this.shuttingDown) {
+      await this.queue;
+      return;
+    }
+    this.shuttingDown = true;
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    if (this.retryQueue.length > 0) {
+      const dropped = this.retryQueue.splice(0, this.retryQueue.length);
+      this.recordDrop('shutdown', dropped);
+    }
+    await this.queue;
+    await this.closeHandle();
+  }
+
+  enqueue(entry) {
     this.pendingWrites += 1;
 
     const operation = this.queue
       .then(async () => {
-        try {
-          await this.rotateIfNeeded(key, entry.timestamp_utc);
-          await this.append(serialized);
-          this.totalWritten += 1;
-          this.lastSuccessAt = new Date();
-          this.lastError = null;
-        } catch (error) {
-          this.lastError = error instanceof Error ? error.message : String(error);
-          throw error;
-        }
+        await this.tryWrite(entry);
       })
       .finally(() => {
         this.pendingWrites = Math.max(0, this.pendingWrites - 1);
@@ -101,14 +133,101 @@ class CsvSink {
     return operation;
   }
 
-  async shutdown() {
+  async tryWrite(entry) {
+    try {
+      await this.rotateIfNeeded(entry.key, entry.timestampUtc);
+      await this.append(entry.serialized);
+      this.totalWritten += 1;
+      this.lastSuccessAt = new Date();
+      this.lastError = null;
+    } catch (error) {
+      this.lastError = error instanceof Error ? error.message : String(error);
+      entry.attempt += 1;
+      this.scheduleRetry(entry);
+      throw error;
+    }
+  }
+
+  scheduleRetry(entry) {
     if (this.shuttingDown) {
-      await this.queue;
+      this.recordDrop('shutdown', entry);
       return;
     }
-    this.shuttingDown = true;
-    await this.queue;
-    await this.closeHandle();
+    if (this.retryQueue.length >= this.maxInMemoryQueue) {
+      this.recordDrop('queue_overflow', entry);
+      return;
+    }
+
+    const baseDelay = this.retryBaseDelayMs;
+    const computedDelay = baseDelay * Math.pow(2, Math.max(0, entry.attempt - 1));
+    const delay = Math.min(this.retryMaxDelayMs, computedDelay);
+    entry.nextAttemptAt = Date.now() + delay;
+
+    this.retryQueue.push(entry);
+    this.retryQueue.sort((a, b) => a.nextAttemptAt - b.nextAttemptAt);
+    this.scheduleRetryTimer();
+  }
+
+  scheduleRetryTimer() {
+    if (this.retryTimer) {
+      clearTimeout(this.retryTimer);
+      this.retryTimer = null;
+    }
+    const next = this.retryQueue[0];
+    if (!next) {
+      return;
+    }
+    const waitMs = Math.max(0, next.nextAttemptAt - Date.now());
+    this.retryTimer = setTimeout(() => {
+      this.retryTimer = null;
+      void this.flushRetryQueue();
+    }, waitMs);
+  }
+
+  async flushRetryQueue() {
+    if (this.shuttingDown) {
+      return;
+    }
+    const now = Date.now();
+    const ready = [];
+    while (this.retryQueue.length > 0 && this.retryQueue[0].nextAttemptAt <= now) {
+      const entry = this.retryQueue.shift();
+      if (entry) {
+        ready.push(entry);
+      }
+    }
+
+    for (const entry of ready) {
+      this.pendingWrites += 1;
+      const operation = this.queue
+        .then(async () => {
+          await this.tryWrite(entry);
+        })
+        .finally(() => {
+          this.pendingWrites = Math.max(0, this.pendingWrites - 1);
+        });
+      this.queue = operation.catch(() => undefined);
+    }
+
+    if (this.retryQueue.length > 0) {
+      this.scheduleRetryTimer();
+    }
+  }
+
+  recordDrop(reason, entries) {
+    const bucket = Array.isArray(entries) ? entries : [entries];
+    if (bucket.length === 0) {
+      return;
+    }
+    this.dropTotal += bucket.length;
+    const maxAttempt = bucket.reduce((acc, entry) => Math.max(acc, entry.attempt), 0);
+    logger.error('DROP csv logframe from retry queue', {
+      reason,
+      dropped: bucket.length,
+      queueLength: this.retryQueue.length,
+      maxQueue: this.maxInMemoryQueue,
+      maxAttempt,
+    });
   }
 
   async rotateIfNeeded(key, timestampUtc) {
@@ -151,7 +270,9 @@ class CsvSink {
   getMetrics() {
     return {
       totalWritten: this.totalWritten,
-      queueDepth: this.pendingWrites,
+      queueDepth: this.pendingWrites + this.retryQueue.length,
+      dropTotal: this.dropTotal,
+      retryQueueDepth: this.retryQueue.length,
     };
   }
 
@@ -166,8 +287,9 @@ class CsvSink {
       shuttingDown,
       lastError: this.lastError,
       lastSuccessAt: this.lastSuccessAt,
-      pendingWrites: this.pendingWrites,
+      pendingWrites: this.pendingWrites + this.retryQueue.length,
       totalWritten: this.totalWritten,
+      dropTotal: this.dropTotal,
     };
   }
 

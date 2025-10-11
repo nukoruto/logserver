@@ -83,6 +83,7 @@ router.get('/', (_req, res) => {
         last_success_at: csvStatus.lastSuccessAt ? csvStatus.lastSuccessAt.toISOString() : null,
         pending_writes: csvStatus.pendingWrites,
         total_written: csvStatus.totalWritten,
+        drop_total: csvStatus.dropTotal,
       },
       ntp: {
         disabled: ntpStatus.disabled,
