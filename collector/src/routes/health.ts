@@ -1,5 +1,7 @@
 import express from 'express';
+import sanitize from '../middleware/sanitize';
 import logCapture from '../middleware/logCapture';
+import opCategory from '../middleware/opCategory';
 import { csvSink } from '../index';
 import { ntpMonitor, type NtpHealthStatus } from '../services/ntpMonitor';
 import type { CsvSinkHealthStatus } from '../sink/csvSink';
@@ -58,7 +60,9 @@ export const deriveOverallHealth = (
   };
 };
 
+router.use(sanitize);
 router.use(logCapture);
+router.use(opCategory('READ'));
 
 router.get('/', (_req, res) => {
   const csvStatus = csvSink.getHealthStatus();

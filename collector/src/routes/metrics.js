@@ -1,8 +1,15 @@
 const express = require('express');
+const sanitize = require('../middleware/sanitize');
+const logCapture = require('../middleware/logCapture');
+const opCategory = require('../middleware/opCategory');
 const { csvSink } = require('../index');
 const { ntpMonitor } = require('../services/ntpMonitor');
 
 const router = express.Router();
+
+router.use(sanitize);
+router.use(logCapture);
+router.use(opCategory('READ'));
 
 const formatValue = (value) => {
   if (value === null || value === undefined || Number.isNaN(value)) {
