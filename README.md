@@ -119,6 +119,33 @@ conda activate sessad
    ```bash
    openssl rand -base64 32
    ```
+
+### 4.4 Docker コンテナ (収集サーバ)
+
+収集サーバは `node:20-alpine` ベースの Docker イメージを同梱しています。再現性の高い実行環境が必要な場合は、以下でコンテナを起動してください。
+
+```bash
+docker compose up --build
+```
+
+- `LOG_DIR` は `/var/log/logserver` としてボリューム化され、ホスト側の `./artifacts/` に永続化されます。
+- `GPU_MODE` を `ada6000` または `4060` に設定すると、エントリポイントが `CUDA_VISIBLE_DEVICES` を自動調整します（学習系と同一規約）。
+- `.env` をルートに配置すると Compose が自動で読み込みます。研究用の既定鍵として `c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=` を用意しています。
+
+コンテナ起動後、`http://localhost:8000/api/v1/health` が 200 を返却すれば準備完了です。停止は `docker compose down` を利用してください。
+
+### 4.5 サンプルデータ生成
+
+研究用の安定した統計量をもつ CSV を生成するために、ヘッドレスクライアントによるセッション操作のシードスクリプトを用意しています。
+
+```bash
+cd collector
+npm run seed
+```
+
+- `JWT_HMAC_KEY` が未設定の場合は上記コマンドが再現性保証用の固定キーを自動適用します。
+- デフォルトで 220 セッション、1,000 行以上のイベントを `/api/v1/events` に送信し、`artifacts/` 以下へ CSV を蓄積します。
+- `SEED_SESSION_COUNT` や `SEED_INTERVAL_MS` 等の環境変数でシナリオを調整できます。
 3. `LOG_DIR` や `CSV_ROTATION` など、運用に合わせて値を調整する。
 4. `.env` には秘匿情報が含まれるため **Git へコミットしないこと**。必要に応じて `.gitignore` や `git update-index --skip-worktree .env` を利用する。
 5. Node.js 側では `dotenv` により `.env` が自動ロードされる。別パスを使用したい場合は `CONFIG_PATH` 環境変数を指定する。

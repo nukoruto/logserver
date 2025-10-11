@@ -1,0 +1,22 @@
+version: '3.9'
+services:
+  collector:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    working_dir: /app/collector
+    command: ["node", "server.js"]
+    ports:
+      - "8000:8000"
+    environment:
+      NODE_ENV: production
+      LOG_DIR: /var/log/logserver
+      CSV_ROOT: /var/log/logserver
+      GPU_MODE: ${GPU_MODE:-ada6000}
+      JWT_HMAC_KEY: ${JWT_HMAC_KEY:-c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=}
+    volumes:
+      - ./artifacts:/var/log/logserver
+      - ./collector/data:/app/collector/data
+      - ./contract:/app/contract:ro
+    entrypoint: ["logserver-entrypoint"]
+    restart: unless-stopped
