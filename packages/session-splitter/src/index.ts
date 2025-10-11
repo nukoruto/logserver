@@ -1,4 +1,5 @@
 import { createReadStream } from 'node:fs';
+import { createHmac, hkdfSync } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { parse } from 'csv-parse';
 
@@ -16,6 +17,8 @@ export interface SessionSplitOptions {
   timestampColumn?: string;
   userIdColumn?: string;
   sessionIdColumn?: string;
+  jwtHmacKey?: string | Buffer;
+  datasetKey?: string | Buffer;
 }
 
 export interface ThresholdEstimationOptions {
@@ -79,6 +82,7 @@ interface SessionTracker {
   counter: number;
   generatedSessionId: string;
   sessionStartMs: number;
+  sessionStartEpochSeconds: number;
   lastTimestampMs: number;
   sessionIndex: number;
   lastOriginalSessionId?: string;
@@ -89,6 +93,7 @@ interface NormalizedOptions {
   timestampColumn: string;
   userIdColumn: string;
   sessionIdColumn?: string;
+  datasetKey: Buffer;
 }
 
 interface NormalizedLogHistogramOptions {
@@ -111,6 +116,99 @@ const MIN_COMPONENT_WEIGHT = 0.1;
 const MIN_VARIANCE = 1e-6;
 const EM_MAX_ITERATIONS = 128;
 const EM_TOLERANCE = 1e-6;
+const SID_INFO = Buffer.from('sid', 'utf8');
+const HKDF_OUTPUT_LENGTH = 32;
+const HEX_PATTERN = /^[0-9a-fA-F]+$/;
+
+function isProbablyHex(value: string): boolean {
+  return HEX_PATTERN.test(value) && value.length % 2 === 0;
+}
+
+function decodeBase64Strict(value: string, label: string): Buffer {
+  try {
+    const decoded = Buffer.from(value, 'base64');
+    if (decoded.length === 0) {
+      throw new SessionSplitterError(`${label} decoded to empty buffer`);
+    }
+    const normalisedInput = value.replace(/=+$/u, "");
+    const reencoded = decoded.toString('base64').replace(/=+$/u, "");
+    if (normalisedInput !== reencoded) {
+      throw new SessionSplitterError(`${label} contained invalid base64 characters`);
+    }
+    return decoded;
+  } catch (error) {
+    if (error instanceof SessionSplitterError) {
+      throw error;
+    }
+    throw new SessionSplitterError(`${label} must be base64 or hex encoded`);
+  }
+}
+
+function parseSecret(raw: string | Buffer, label: string): Buffer {
+  if (Buffer.isBuffer(raw)) {
+    if (raw.length === 0) {
+      throw new SessionSplitterError(`${label} cannot be empty`);
+    }
+    return Buffer.from(raw);
+  }
+  if (typeof raw !== 'string') {
+    throw new SessionSplitterError(`${label} must be provided as a string or Buffer`);
+  }
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new SessionSplitterError(`${label} cannot be empty`);
+  }
+  if (isProbablyHex(trimmed)) {
+    const buffer = Buffer.from(trimmed, 'hex');
+    if (buffer.length === 0) {
+      throw new SessionSplitterError(`${label} decoded to empty buffer`);
+    }
+    return buffer;
+  }
+  return decodeBase64Strict(trimmed, label);
+}
+
+export function deriveDatasetKey(jwtHmacKey: string | Buffer): Buffer {
+  const ikm = parseSecret(jwtHmacKey, 'JWT_HMAC_KEY');
+  const derived = hkdfSync('sha256', ikm, Buffer.alloc(0), SID_INFO, HKDF_OUTPUT_LENGTH);
+  return Buffer.from(derived);
+}
+
+export function makeSid(
+  uid: string,
+  tStartEpochSeconds: number,
+  algoVer: string,
+  datasetKey: Buffer
+): string {
+  if (typeof uid !== 'string' || uid.length === 0) {
+    throw new SessionSplitterError('uid is required to generate session identifier');
+  }
+  if (!Number.isFinite(tStartEpochSeconds)) {
+    throw new SessionSplitterError('tStartEpochSeconds must be finite');
+  }
+  if (typeof algoVer !== 'string' || algoVer.length === 0) {
+    throw new SessionSplitterError('algoVer is required to generate session identifier');
+  }
+  if (!Buffer.isBuffer(datasetKey) || datasetKey.length === 0) {
+    throw new SessionSplitterError('datasetKey must be a non-empty Buffer');
+  }
+  const epoch = Math.trunc(tStartEpochSeconds);
+  const message = `${uid}|${epoch}|${algoVer}`;
+  return createHmac('sha256', datasetKey).update(message, 'utf8').digest('hex');
+}
+
+function resolveDatasetKey(options: SessionSplitOptions): Buffer {
+  if (options.datasetKey) {
+    return parseSecret(options.datasetKey, 'datasetKey');
+  }
+  const source = options.jwtHmacKey ?? process.env.JWT_HMAC_KEY;
+  if (!source) {
+    throw new SessionSplitterError(
+      'JWT_HMAC_KEY is required to derive deterministic session identifiers'
+    );
+  }
+  return deriveDatasetKey(source);
+}
 
 export class SessionSplitterError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -125,15 +223,18 @@ export class SessionSplitterError extends Error {
 const DEFAULT_OPTIONS: NormalizedOptions = {
   idleTimeoutSeconds: 1800,
   timestampColumn: "timestamp_utc",
-  userIdColumn: "uid"
+  userIdColumn: "uid",
+  datasetKey: Buffer.alloc(0)
 };
 
 function normalizeOptions(options: SessionSplitOptions = {}): NormalizedOptions {
+  const datasetKey = resolveDatasetKey(options);
   return {
     idleTimeoutSeconds: options.idleTimeoutSeconds ?? DEFAULT_OPTIONS.idleTimeoutSeconds,
     timestampColumn: options.timestampColumn ?? DEFAULT_OPTIONS.timestampColumn,
     userIdColumn: options.userIdColumn ?? DEFAULT_OPTIONS.userIdColumn,
-    sessionIdColumn: options.sessionIdColumn
+    sessionIdColumn: options.sessionIdColumn,
+    datasetKey
   };
 }
 
@@ -175,13 +276,16 @@ function startNewSession(
   userId: string,
   timestampMs: number,
   tracker: SessionTracker | undefined,
-  originalSessionId: string | undefined
+  originalSessionId: string | undefined,
+  datasetKey: Buffer
 ): SessionTracker {
   const nextCounter = tracker ? tracker.counter + 1 : 0;
+  const sessionStartEpochSeconds = Math.trunc(timestampMs / 1000);
   return {
     counter: nextCounter,
-    generatedSessionId: `${userId}#${nextCounter}`,
+    generatedSessionId: makeSid(userId, sessionStartEpochSeconds, algoVersion, datasetKey),
     sessionStartMs: timestampMs,
+    sessionStartEpochSeconds,
     lastTimestampMs: timestampMs,
     sessionIndex: 0,
     lastOriginalSessionId: originalSessionId
@@ -253,7 +357,13 @@ export async function* splitSessions(
       let deltaSeconds: number | null = null;
 
       if (!tracker) {
-        nextTracker = startNewSession(uid, timestampMs, tracker, originalSessionId);
+        nextTracker = startNewSession(
+          uid,
+          timestampMs,
+          tracker,
+          originalSessionId,
+          normalized.datasetKey
+        );
         splitReason = "initial";
       } else {
         deltaSeconds = (timestampMs - tracker.lastTimestampMs) / 1000;
@@ -265,15 +375,33 @@ export async function* splitSessions(
 
         if (deltaSeconds < 0) {
           splitReason = "timestamp_regression";
-          nextTracker = startNewSession(uid, timestampMs, tracker, originalSessionId);
+          nextTracker = startNewSession(
+            uid,
+            timestampMs,
+            tracker,
+            originalSessionId,
+            normalized.datasetKey
+          );
           deltaSeconds = null;
         } else if (deltaSeconds > idleTimeout) {
           splitReason = "idle_timeout";
-          nextTracker = startNewSession(uid, timestampMs, tracker, originalSessionId);
+          nextTracker = startNewSession(
+            uid,
+            timestampMs,
+            tracker,
+            originalSessionId,
+            normalized.datasetKey
+          );
           deltaSeconds = null;
         } else if (sessionIdChanged) {
           splitReason = "session_id_change";
-          nextTracker = startNewSession(uid, timestampMs, tracker, originalSessionId);
+          nextTracker = startNewSession(
+            uid,
+            timestampMs,
+            tracker,
+            originalSessionId,
+            normalized.datasetKey
+          );
           deltaSeconds = null;
         } else {
           nextTracker = updateExistingSession(tracker, timestampMs, originalSessionId);
