@@ -2,7 +2,7 @@ import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { parse } from 'csv-parse';
 
-export const algoVersion = "otsu+kneedle-v1" as const;
+export const algoVersion = "otsu+bimodalknee-v2" as const;
 
 export type SplitReason =
   | "initial"
@@ -46,6 +46,10 @@ export interface LogHistogramResult {
 export interface LogOtsuThresholdResult {
   tauLog: number;
   quality: number;
+}
+
+export interface BimodalityTestResult {
+  bicDifference: number;
 }
 
 export interface AugmentedRow {
@@ -93,6 +97,13 @@ const LOG_HISTOGRAM_DEFAULTS: NormalizedLogHistogramOptions = {
   decimals: 9,
   logBase: Math.E
 };
+
+const LOG_OTSU_QUALITY_MIN = 0.25;
+const MIN_BIMODAL_SAMPLES = 6;
+const MIN_COMPONENT_WEIGHT = 0.1;
+const MIN_VARIANCE = 1e-6;
+const EM_MAX_ITERATIONS = 128;
+const EM_TOLERANCE = 1e-6;
 
 export class SessionSplitterError extends Error {
   constructor(message: string, cause?: unknown) {
@@ -329,10 +340,14 @@ export function estimateThresholdsByUser(
     if (deltas.length < minimumSamples) {
       threshold = percentile(deltas, fallbackPercentile);
     } else {
+      const histogram = makeLogHistogram(deltas);
+      const { quality } = otsuThreshold(histogram);
+      const { bicDifference } = bimodalityTest(deltas.map((value) => Math.log(value)));
       const otsu = otsuThresholdOnSorted(deltas);
       const kneedle = kneedleThreshold(deltas);
       const quantile = percentile(deltas, fallbackPercentile);
-      threshold = Math.max(otsu, kneedle, quantile);
+      const shouldUseKnee = bicDifference <= 0 || quality < LOG_OTSU_QUALITY_MIN;
+      threshold = shouldUseKnee ? Math.max(kneedle, quantile) : Math.max(otsu, kneedle, quantile);
     }
     result.set(uid, threshold);
   }
@@ -572,6 +587,222 @@ function kneedleThreshold(sortedValues: number[]): number {
     }
   }
   return selected;
+}
+
+export function bimodalityTest(logValuesInput: Iterable<number>): BimodalityTestResult {
+  const logValues: number[] = [];
+  for (const value of logValuesInput) {
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (!Number.isFinite(value)) {
+      continue;
+    }
+    logValues.push(value);
+  }
+  if (logValues.length < MIN_BIMODAL_SAMPLES) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+  logValues.sort((a, b) => a - b);
+
+  const { mean: singleMean, variance: singleVariance } = computeMeanAndVariance(logValues);
+  if (!(singleVariance > 0) || !Number.isFinite(singleVariance)) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+
+  const logLikelihoodSingle = gaussianLogLikelihood(logValues, singleMean, singleVariance);
+  if (!Number.isFinite(logLikelihoodSingle)) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+
+  const mixture = fitTwoComponentGaussian(logValues, singleMean, singleVariance);
+  if (!mixture) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+
+  const pooledVariance = (mixture.variance1 + mixture.variance2) / 2;
+  const pooledStd = Math.sqrt(Math.max(MIN_VARIANCE, pooledVariance));
+  const separation = Math.abs(mixture.mean1 - mixture.mean2);
+  const singleStd = Math.sqrt(Math.max(MIN_VARIANCE, singleVariance));
+  if (
+    !(pooledStd > 0) ||
+    !(singleStd > 0) ||
+    separation < pooledStd * 0.75 ||
+    separation < singleStd * 0.75
+  ) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+
+  const logLikelihoodDouble = gaussianMixtureLogLikelihood(logValues, mixture);
+  if (!Number.isFinite(logLikelihoodDouble)) {
+    return { bicDifference: Number.NEGATIVE_INFINITY };
+  }
+
+  const n = logValues.length;
+  const bicSingle = -2 * logLikelihoodSingle + 2 * Math.log(n);
+  const bicDouble = -2 * logLikelihoodDouble + 5 * Math.log(n);
+  const rawDifference = bicSingle - bicDouble;
+  const bicDifference = Number.isFinite(rawDifference) ? rawDifference : Number.NEGATIVE_INFINITY;
+  return { bicDifference };
+}
+
+interface GaussianMixtureParams {
+  weight1: number;
+  weight2: number;
+  mean1: number;
+  mean2: number;
+  variance1: number;
+  variance2: number;
+}
+
+function computeMeanAndVariance(values: number[]): { mean: number; variance: number } {
+  const n = values.length;
+  let sum = 0;
+  for (const value of values) {
+    sum += value;
+  }
+  const mean = sum / n;
+  let sumSq = 0;
+  for (const value of values) {
+    const diff = value - mean;
+    sumSq += diff * diff;
+  }
+  const variance = Math.max(MIN_VARIANCE, sumSq / n);
+  return { mean, variance };
+}
+
+function gaussianLogPdf(value: number, mean: number, variance: number): number {
+  const clampedVariance = Math.max(MIN_VARIANCE, variance);
+  return -0.5 * (Math.log(2 * Math.PI * clampedVariance) + ((value - mean) ** 2) / clampedVariance);
+}
+
+function gaussianLogLikelihood(values: number[], mean: number, variance: number): number {
+  const clampedVariance = Math.max(MIN_VARIANCE, variance);
+  let sum = 0;
+  for (const value of values) {
+    sum += gaussianLogPdf(value, mean, clampedVariance);
+  }
+  return sum;
+}
+
+function fitTwoComponentGaussian(
+  sortedValues: number[],
+  initialMean: number,
+  initialVariance: number
+): GaussianMixtureParams | null {
+  const n = sortedValues.length;
+  let mean1 = sortedValues[Math.max(0, Math.floor(n / 3) - 1)];
+  let mean2 = sortedValues[Math.min(n - 1, Math.floor((2 * n) / 3))];
+  if (mean1 === mean2) {
+    mean1 = sortedValues[Math.max(0, Math.floor(n / 4))];
+    mean2 = sortedValues[Math.min(n - 1, Math.floor((3 * n) / 4))];
+    if (mean1 === mean2) {
+      mean1 -= 1e-3;
+      mean2 += 1e-3;
+    }
+  }
+  let variance1 = Math.max(MIN_VARIANCE, initialVariance);
+  let variance2 = Math.max(MIN_VARIANCE, initialVariance);
+  let weight1 = 0.5;
+  let weight2 = 0.5;
+
+  for (let iteration = 0; iteration < EM_MAX_ITERATIONS; iteration += 1) {
+    let sumGamma1 = 0;
+    let sumGamma2 = 0;
+    let meanNumerator1 = 0;
+    let meanNumerator2 = 0;
+    let maxParameterShift = 0;
+    const responsibilities: number[] = new Array(sortedValues.length);
+
+    for (let index = 0; index < sortedValues.length; index += 1) {
+      const value = sortedValues[index];
+      const logP1 = Math.log(weight1) + gaussianLogPdf(value, mean1, variance1);
+      const logP2 = Math.log(weight2) + gaussianLogPdf(value, mean2, variance2);
+      const maxLog = Math.max(logP1, logP2);
+      const exp1 = Math.exp(logP1 - maxLog);
+      const exp2 = Math.exp(logP2 - maxLog);
+      const denom = exp1 + exp2;
+      const responsibility1 = denom === 0 ? 0.5 : exp1 / denom;
+      const responsibility2 = 1 - responsibility1;
+
+      sumGamma1 += responsibility1;
+      sumGamma2 += responsibility2;
+      meanNumerator1 += responsibility1 * value;
+      meanNumerator2 += responsibility2 * value;
+      responsibilities[index] = responsibility1;
+    }
+
+    if (!(sumGamma1 > 0) || !(sumGamma2 > 0)) {
+      return null;
+    }
+
+    const newWeight1 = Math.min(1 - MIN_COMPONENT_WEIGHT, Math.max(MIN_COMPONENT_WEIGHT, sumGamma1 / n));
+    const newWeight2 = 1 - newWeight1;
+
+    const newMean1 = meanNumerator1 / sumGamma1;
+    const newMean2 = meanNumerator2 / sumGamma2;
+
+    let varianceNumerator1 = 0;
+    let varianceNumerator2 = 0;
+    for (let index = 0; index < sortedValues.length; index += 1) {
+      const value = sortedValues[index];
+      const responsibility1 = responsibilities[index];
+      const responsibility2 = 1 - responsibility1;
+      const diff1 = value - newMean1;
+      const diff2 = value - newMean2;
+      varianceNumerator1 += responsibility1 * diff1 * diff1;
+      varianceNumerator2 += responsibility2 * diff2 * diff2;
+    }
+
+    const newVariance1 = Math.max(MIN_VARIANCE, varianceNumerator1 / sumGamma1);
+    const newVariance2 = Math.max(MIN_VARIANCE, varianceNumerator2 / sumGamma2);
+
+    maxParameterShift = Math.max(
+      Math.abs(newWeight1 - weight1),
+      Math.abs(newMean1 - mean1),
+      Math.abs(newMean2 - mean2),
+      Math.abs(newVariance1 - variance1),
+      Math.abs(newVariance2 - variance2)
+    );
+
+    weight1 = newWeight1;
+    weight2 = newWeight2;
+    mean1 = newMean1;
+    mean2 = newMean2;
+    variance1 = newVariance1;
+    variance2 = newVariance2;
+
+    if (maxParameterShift < EM_TOLERANCE) {
+      break;
+    }
+  }
+
+  if (!Number.isFinite(weight1) || !Number.isFinite(weight2)) {
+    return null;
+  }
+
+  return { weight1, weight2, mean1, mean2, variance1, variance2 };
+}
+
+function gaussianMixtureLogLikelihood(values: number[], params: GaussianMixtureParams): number {
+  const { weight1, weight2, mean1, mean2, variance1, variance2 } = params;
+  if (!(weight1 > 0) || !(weight2 > 0)) {
+    return Number.NEGATIVE_INFINITY;
+  }
+  let sum = 0;
+  for (const value of values) {
+    const logP1 = Math.log(weight1) + gaussianLogPdf(value, mean1, variance1);
+    const logP2 = Math.log(weight2) + gaussianLogPdf(value, mean2, variance2);
+    const maxLog = Math.max(logP1, logP2);
+    const exp1 = Math.exp(logP1 - maxLog);
+    const exp2 = Math.exp(logP2 - maxLog);
+    const denom = exp1 + exp2;
+    if (denom <= 0 || !Number.isFinite(denom)) {
+      return Number.NEGATIVE_INFINITY;
+    }
+    sum += maxLog + Math.log(denom);
+  }
+  return sum;
 }
 
 function collectPositiveFinite(values: Iterable<number>): number[] {
