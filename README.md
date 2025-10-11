@@ -109,6 +109,7 @@ conda activate sessad
 ### 4.2 データ配置
 - `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
+- `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
 
 ### 4.3 環境変数ファイル (.env)
 1. 雛形 `.env.example` を `.env` にコピーする。
@@ -150,6 +151,12 @@ npm run seed
 4. `.env` には秘匿情報が含まれるため **Git へコミットしないこと**。必要に応じて `.gitignore` や `git update-index --skip-worktree .env` を利用する。
 5. Node.js 側では `dotenv` により `.env` が自動ロードされる。別パスを使用したい場合は `CONFIG_PATH` 環境変数を指定する。
 6. NTP 計測コマンド（`chronyc` または `ntpstat`）が利用できない環境では、`NTP_MONITOR_DISABLED=true` を設定して監視を明示的に停止する。
+
+主な環境変数（一部抜粋）:
+
+| 変数名 | 既定値 | 説明 |
+| --- | --- | --- |
+| `SIM_LOG_DIR` | `data/sim` | シミュレーションで生成されたイベント CSV とマニフェストの保存先。絶対パス／相対パスいずれも指定可能。 |
 
 ---
 

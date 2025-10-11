@@ -61,6 +61,7 @@ const config = {
     'data',
     'raw'
   ),
+  simLogRoot: resolvePath(process.env.SIM_LOG_DIR, 'data', 'sim'),
   csvRotation: parseRotation(process.env.CSV_ROTATION),
   jwtSecret: process.env.JWT_SECRET || '',
   security: {
