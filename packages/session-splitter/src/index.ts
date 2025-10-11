@@ -1,6 +1,8 @@
-import { createReadStream } from 'node:fs';
-import { createHmac, hkdfSync } from 'node:crypto';
+import { createReadStream, promises as fsPromises } from 'node:fs';
+import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { Readable } from 'node:stream';
+import { fileURLToPath } from 'node:url';
+import path from 'node:path';
 import { parse } from 'csv-parse';
 
 export const algoVersion = "otsu+bimodalknee-v2" as const;
@@ -77,6 +79,45 @@ export interface AugmentedRow {
 }
 
 export type ThresholdMap = Map<string, number> & { readonly algo_ver: typeof algoVersion };
+
+export interface ThresholdDetail {
+  fd_bins: number;
+  tau_otsu: number | null;
+  tau_knee: number | null;
+  tau_final: number;
+  DeltaT: number;
+  bimodality_test: number | null;
+}
+
+export interface ThresholdComputationResult {
+  thresholds: ThresholdMap;
+  perUser: Map<string, ThresholdDetail>;
+  k: number;
+  scan_step: number;
+}
+
+export interface ThresholdMetaInput {
+  algo_ver: typeof algoVersion;
+  epsilon: number;
+  ntp_p95_ms: number;
+  ingress_jitter_ms: number;
+  fd_bins: Record<string, number>;
+  tau_otsu: Record<string, number | null>;
+  tau_knee: Record<string, number | null>;
+  tau_final: Record<string, number>;
+  DeltaT: Record<string, number>;
+  bimodality_test: Record<string, number | null>;
+  k: number;
+  scan_step: number;
+  hkdf_info: string;
+  kid: string;
+  datasetPath: string;
+  thresholds_by_uid: Record<string, number>;
+}
+
+export interface ThresholdMeta extends Omit<ThresholdMetaInput, 'datasetPath'> {
+  dataset_hash: string;
+}
 
 interface SessionTracker {
   counter: number;
@@ -439,12 +480,12 @@ export async function* splitSessions(
   }
 }
 
-export function estimateThresholdsByUser(
+function estimateThresholdsInternal(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
-): ThresholdMap {
+): ThresholdComputationResult {
   const { minimumSamples = 5, fallbackPercentile = 0.95 } = options;
-  const perUser = new Map<string, number[]>();
+  const grouped = new Map<string, number[]>();
 
   for (const row of rows) {
     if (row.deltaSeconds === null || !Number.isFinite(row.deltaSeconds)) {
@@ -453,42 +494,84 @@ export function estimateThresholdsByUser(
     if (row.deltaSeconds <= 0) {
       continue;
     }
-    const list = perUser.get(row.uid) ?? [];
+    const list = grouped.get(row.uid) ?? [];
     list.push(row.deltaSeconds);
-    perUser.set(row.uid, list);
+    grouped.set(row.uid, list);
   }
 
-  const result = new Map<string, number>() as ThresholdMap;
-  Object.defineProperty(result, "algo_ver", {
+  const thresholds = new Map<string, number>() as ThresholdMap;
+  Object.defineProperty(thresholds, "algo_ver", {
     value: algoVersion,
     enumerable: true,
     configurable: false,
     writable: false
   });
 
-  for (const [uid, deltas] of perUser.entries()) {
+  const details = new Map<string, ThresholdDetail>();
+  const kneeOptions = normalizeKneeOptions();
+
+  for (const [uid, deltas] of grouped.entries()) {
     if (deltas.length === 0) {
       continue;
     }
     deltas.sort((a, b) => a - b);
     let threshold: number;
+    let detail: ThresholdDetail;
     if (deltas.length < minimumSamples) {
       threshold = percentile(deltas, fallbackPercentile);
+      const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
+      detail = {
+        fd_bins: 0,
+        tau_otsu: null,
+        tau_knee: null,
+        tau_final: Math.log(safeThreshold),
+        DeltaT: threshold,
+        bimodality_test: null
+      };
     } else {
       const histogram = makeLogHistogram(deltas);
       const { tauLog, quality } = otsuThreshold(histogram);
-      const { bicDifference } = bimodalityTest(deltas.map((value) => Math.log(value)));
+      const logValues = deltas.map((value) => Math.log(value));
+      const { bicDifference } = bimodalityTest(logValues);
       const otsu = otsuThresholdOnSorted(deltas);
       const sigmaLog = computeLogStandardDeviation(deltas);
-      const kneedle = kneeThreshold(deltas, tauLog, sigmaLog);
+      const kneedle = kneeThreshold(deltas, tauLog, sigmaLog, kneeOptions);
       const quantile = percentile(deltas, fallbackPercentile);
       const shouldUseKnee = bicDifference <= 0 || quality < LOG_OTSU_QUALITY_MIN;
       threshold = shouldUseKnee ? Math.max(kneedle, quantile) : Math.max(otsu, kneedle, quantile);
+      const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
+      const tauOtsu = Number.isFinite(tauLog) ? tauLog : null;
+      const tauKnee = kneedle > 0 && Number.isFinite(kneedle) ? Math.log(kneedle) : null;
+      const tauFinal = Math.log(safeThreshold);
+      const bic = Number.isFinite(bicDifference) ? bicDifference : null;
+      detail = {
+        fd_bins: histogram.binCount,
+        tau_otsu: tauOtsu,
+        tau_knee: tauKnee,
+        tau_final: tauFinal,
+        DeltaT: threshold,
+        bimodality_test: bic
+      };
     }
-    result.set(uid, threshold);
+    thresholds.set(uid, threshold);
+    details.set(uid, detail);
   }
 
-  return result;
+  return { thresholds, perUser: details, k: kneeOptions.kSigma, scan_step: kneeOptions.logStep };
+}
+
+export function estimateThresholdsWithMeta(
+  rows: Iterable<AugmentedRow>,
+  options: ThresholdEstimationOptions = {}
+): ThresholdComputationResult {
+  return estimateThresholdsInternal(rows, options);
+}
+
+export function estimateThresholdsByUser(
+  rows: Iterable<AugmentedRow>,
+  options: ThresholdEstimationOptions = {}
+): ThresholdMap {
+  return estimateThresholdsInternal(rows, options).thresholds;
 }
 
 export function makeLogHistogram(
@@ -1276,4 +1359,66 @@ function logWithBase(value: number, base: number): number {
 
 function powWithBase(exponent: number, base: number): number {
   return base === Math.E ? Math.exp(exponent) : base ** exponent;
+}
+
+async function computeFileSha256(filePath: string): Promise<string> {
+  const hash = createHash('sha256');
+  return new Promise<string>((resolve, reject) => {
+    const stream = createReadStream(filePath);
+    stream.on('data', (chunk: Buffer | string) => {
+      if (typeof chunk === 'string') {
+        hash.update(Buffer.from(chunk));
+      } else {
+        hash.update(chunk);
+      }
+    });
+    stream.on('error', (error: unknown) => {
+      reject(error);
+    });
+    stream.on('end', () => {
+      resolve(hash.digest('hex'));
+    });
+  });
+}
+
+function resolveMetaPath(target: string | URL): string {
+  if (target instanceof URL) {
+    return fileURLToPath(target);
+  }
+  return target;
+}
+
+export async function writeMeta(metaPath: string | URL, meta: ThresholdMetaInput): Promise<ThresholdMeta> {
+  const requiredKeys: Array<keyof ThresholdMetaInput> = [
+    'algo_ver',
+    'epsilon',
+    'ntp_p95_ms',
+    'ingress_jitter_ms',
+    'fd_bins',
+    'tau_otsu',
+    'tau_knee',
+    'tau_final',
+    'DeltaT',
+    'bimodality_test',
+    'k',
+    'scan_step',
+    'hkdf_info',
+    'kid',
+    'datasetPath',
+    'thresholds_by_uid'
+  ];
+  for (const key of requiredKeys) {
+    if (!(key in meta)) {
+      throw new SessionSplitterError(`meta field \"${String(key)}\" is required to write meta.json`);
+    }
+  }
+
+  const datasetHash = await computeFileSha256(meta.datasetPath);
+  const { datasetPath, ...rest } = meta;
+  const payload: ThresholdMeta = { ...rest, dataset_hash: datasetHash };
+  const outputPath = resolveMetaPath(metaPath);
+  const directory = path.dirname(outputPath);
+  await fsPromises.mkdir(directory, { recursive: true });
+  await fsPromises.writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8' });
+  return payload;
 }
