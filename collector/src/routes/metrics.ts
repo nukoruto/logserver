@@ -1,4 +1,7 @@
 import express from 'express';
+import sanitize from '../middleware/sanitize';
+import logCapture from '../middleware/logCapture';
+import opCategory from '../middleware/opCategory';
 import { csvSink } from '../index';
 import { ntpMonitor } from '../services/ntpMonitor';
 import type { CsvSinkMetrics } from '../sink/csvSink';
@@ -10,6 +13,10 @@ export interface MetricsSnapshot {
 }
 
 const router = express.Router();
+
+router.use(sanitize);
+router.use(logCapture);
+router.use(opCategory('READ'));
 
 const formatValue = (value: number | null | undefined): string => {
   if (value === null || value === undefined || Number.isNaN(value)) {

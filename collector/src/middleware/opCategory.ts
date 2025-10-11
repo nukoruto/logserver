@@ -4,8 +4,11 @@ type OperationCategory = (typeof OPERATION_CATEGORIES)[number];
 
 type RequestLike = Record<string, unknown>;
 
+const OP_CATEGORY_FLAG = '__opCategorySet__' as const;
+
 type Logframe = Record<string, unknown> & {
   op_category?: OperationCategory | string;
+  [OP_CATEGORY_FLAG]?: boolean;
 };
 
 type Locals = Record<string, unknown> & {
@@ -48,11 +51,12 @@ const opCategory = (category: OperationCategory): Middleware => {
     const logframe = ensureLogframe(locals);
 
     logframe.op_category = category;
+    logframe[OP_CATEGORY_FLAG] = true;
 
     next();
   };
 };
 
 export type { OperationCategory };
-export { opCategory };
+export { OP_CATEGORY_FLAG, opCategory };
 export default opCategory;

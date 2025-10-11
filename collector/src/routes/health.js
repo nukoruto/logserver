@@ -1,5 +1,7 @@
 const express = require('express');
+const sanitize = require('../middleware/sanitize');
 const logCapture = require('../middleware/logCapture');
+const opCategory = require('../middleware/opCategory');
 const { csvSink } = require('../index');
 const { ntpMonitor } = require('../services/ntpMonitor');
 
@@ -38,7 +40,9 @@ const deriveOverallHealth = (csvStatus, ntpStatus) => {
   };
 };
 
+router.use(sanitize);
 router.use(logCapture);
+router.use(opCategory('READ'));
 
 router.get('/', (_req, res) => {
   const csvStatus = csvSink.getHealthStatus();

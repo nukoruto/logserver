@@ -18,6 +18,7 @@ describe('opCategory middleware', () => {
 
     expect(res.locals.__logframe.op_category).toBe('AUTH');
     expect(res.locals.__logframe.method).toBe('POST');
+    expect(res.locals.__logframe.__opCategorySet__).toBe(true);
     expect(next).toHaveBeenCalledTimes(1);
   });
 
@@ -33,6 +34,7 @@ describe('opCategory middleware', () => {
 
     expect(res.locals.__logframe).toBeDefined();
     expect(res.locals.__logframe.op_category).toBe('UPDATE');
+    expect(res.locals.__logframe.__opCategorySet__).toBe(true);
     expect(next).toHaveBeenCalledTimes(1);
   });
 });
