@@ -39,14 +39,28 @@ const parseRotation = (value) => {
   return normalized === 'hourly' ? 'hourly' : 'daily';
 };
 
+const resolvePath = (rawValue, ...fallback) => {
+  if (rawValue && typeof rawValue === 'string') {
+    const trimmed = rawValue.trim();
+    if (trimmed) {
+      return path.isAbsolute(trimmed)
+        ? trimmed
+        : path.resolve(process.cwd(), trimmed);
+    }
+  }
+  return path.resolve(process.cwd(), ...fallback);
+};
+
 const config = {
   env: process.env.NODE_ENV || 'development',
   port: Number.parseInt(process.env.PORT, 10) || 8000,
   requestLimit: process.env.REQUEST_LIMIT || '2mb',
-  sqlitePath:
-    process.env.SQLITE_PATH ||
-    path.resolve(process.cwd(), 'data', 'db', 'events.sqlite3'),
-  csvRoot: process.env.CSV_ROOT || path.resolve(process.cwd(), 'data', 'raw'),
+  sqlitePath: resolvePath(process.env.SQLITE_PATH, 'data', 'db', 'events.sqlite3'),
+  csvRoot: resolvePath(
+    process.env.LOG_DIR || process.env.CSV_ROOT,
+    'data',
+    'raw'
+  ),
   csvRotation: parseRotation(process.env.CSV_ROTATION),
   jwtSecret: process.env.JWT_SECRET || '',
   security: {

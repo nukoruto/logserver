@@ -7,7 +7,8 @@
     "start": "node server.js",
     "dev": "nodemon server.js",
     "lint": "eslint .",
-    "test": "jest --config jest.config.cjs"
+    "test": "jest --config jest.config.cjs",
+    "seed": "ts-node scripts/seed.ts"
   },
   "keywords": [
     "express",
@@ -28,6 +29,7 @@
     "jsonwebtoken": "^9.0.2",
     "morgan": "^1.10.0",
     "node-fetch": "^3.3.2",
+    "undici": "^6.19.7",
     "sqlite3": "^5.1.7",
     "winston": "^3.11.0",
     "zod": "^4.1.12"
@@ -38,6 +40,7 @@
     "jest": "^30.2.0",
     "nodemon": "^3.1.0",
     "ts-jest": "^29.4.5",
+    "ts-node": "^10.9.2",
     "typescript": "^5.9.3"
   },
   "engines": {

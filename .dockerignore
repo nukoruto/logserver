@@ -1,0 +1,13 @@
+.git
+**/node_modules
+artifacts
+outputs
+trainer
+contract
+README.md
+SRS.md
+CONSTRAINTS.md
+dev_prompt.md
+Makefile
+.dockerignore
+**/dist
