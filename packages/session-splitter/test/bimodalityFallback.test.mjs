@@ -5,6 +5,7 @@ import {
   algoVersion,
   bimodalityTest,
   estimateThresholdsByUser,
+  kneeThreshold,
   makeLogHistogram,
   otsuThreshold
 } from '../dist/index.js';
@@ -12,30 +13,6 @@ import {
 function buildUnimodalDeltas(count) {
   const values = Array.from({ length: count }, (_, index) => 1 + (index % 5) * 1e-4);
   return values.sort((a, b) => a - b);
-}
-
-function kneedleThreshold(sortedValues) {
-  if (sortedValues.length === 0) {
-    return 0;
-  }
-  const min = sortedValues[0];
-  const max = sortedValues[sortedValues.length - 1];
-  if (min === max) {
-    return max;
-  }
-  let maxDiff = -Infinity;
-  let selected = max;
-  const denominator = sortedValues.length - 1;
-  for (let i = 0; i < sortedValues.length; i += 1) {
-    const normalizedIndex = denominator === 0 ? 0 : i / denominator;
-    const normalizedValue = (sortedValues[i] - min) / (max - min);
-    const diff = normalizedValue - normalizedIndex;
-    if (diff > maxDiff) {
-      maxDiff = diff;
-      selected = sortedValues[i];
-    }
-  }
-  return selected;
 }
 
 function percentile(sortedValues, fraction) {
@@ -76,11 +53,16 @@ test('unimodal distributions fall back to knee threshold', () => {
   const logValues = deltas.map((value) => Math.log(value));
   const { bicDifference } = bimodalityTest(logValues);
   const histogram = makeLogHistogram(deltas);
-  const { quality } = otsuThreshold(histogram);
+  const { tauLog, quality } = otsuThreshold(histogram);
   const shouldUseKnee = bicDifference <= 0 || quality < 0.25;
   assert.ok(shouldUseKnee, 'bimodality test should request knee fallback for unimodal data');
 
-  const expectedKnee = kneedleThreshold(deltas);
+  const sigmaLog = (() => {
+    const mean = logValues.reduce((acc, value) => acc + value, 0) / logValues.length;
+    const variance = logValues.reduce((acc, value) => acc + (value - mean) ** 2, 0) / logValues.length;
+    return Math.sqrt(Math.max(0, variance));
+  })();
+  const expectedKnee = kneeThreshold(deltas, tauLog, sigmaLog);
   const expectedQuantile = percentile(deltas, 0.95);
   const expected = Math.max(expectedKnee, expectedQuantile);
   assert.ok(Math.abs(actual - expected) < 1e-6, `expected ${expected}, received ${actual}`);

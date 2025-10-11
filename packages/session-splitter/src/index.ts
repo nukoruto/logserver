@@ -23,6 +23,13 @@ export interface ThresholdEstimationOptions {
   fallbackPercentile?: number;
 }
 
+export interface KneeDetectionOptions {
+  logStep?: number;
+  kSigma?: number;
+  smoothingWindow?: number;
+  minCandidates?: number;
+}
+
 export interface LogHistogramOptions {
   minBinCount?: number;
   maxBinCount?: number;
@@ -341,10 +348,11 @@ export function estimateThresholdsByUser(
       threshold = percentile(deltas, fallbackPercentile);
     } else {
       const histogram = makeLogHistogram(deltas);
-      const { quality } = otsuThreshold(histogram);
+      const { tauLog, quality } = otsuThreshold(histogram);
       const { bicDifference } = bimodalityTest(deltas.map((value) => Math.log(value)));
       const otsu = otsuThresholdOnSorted(deltas);
-      const kneedle = kneedleThreshold(deltas);
+      const sigmaLog = computeLogStandardDeviation(deltas);
+      const kneedle = kneeThreshold(deltas, tauLog, sigmaLog);
       const quantile = percentile(deltas, fallbackPercentile);
       const shouldUseKnee = bicDifference <= 0 || quality < LOG_OTSU_QUALITY_MIN;
       threshold = shouldUseKnee ? Math.max(kneedle, quantile) : Math.max(otsu, kneedle, quantile);
@@ -565,28 +573,211 @@ function otsuThresholdOnSorted(sortedValues: number[]): number {
   return threshold;
 }
 
-function kneedleThreshold(sortedValues: number[]): number {
+interface NormalizedKneeOptions {
+  logStep: number;
+  kSigma: number;
+  smoothingWindow: number;
+  minCandidates: number;
+}
+
+function normalizeKneeOptions(options: KneeDetectionOptions = {}): NormalizedKneeOptions {
+  const logStepCandidate = typeof options.logStep === "number" ? options.logStep : Number.NaN;
+  const kSigmaCandidate = typeof options.kSigma === "number" ? options.kSigma : Number.NaN;
+  const smoothingCandidate = typeof options.smoothingWindow === "number" ? options.smoothingWindow : Number.NaN;
+  const minCandidatesCandidate = typeof options.minCandidates === "number" ? options.minCandidates : Number.NaN;
+
+  const logStep = Number.isFinite(logStepCandidate) && logStepCandidate > 0 ? logStepCandidate : 0.05;
+  const kSigma = Number.isFinite(kSigmaCandidate) && kSigmaCandidate >= 0 ? kSigmaCandidate : 2;
+
+  let smoothingWindow = Number.isFinite(smoothingCandidate) ? Math.floor(smoothingCandidate) : 3;
+  if (smoothingWindow < 1) {
+    smoothingWindow = 1;
+  }
+  if (smoothingWindow > 5) {
+    smoothingWindow = 5;
+  }
+  if (smoothingWindow % 2 === 0) {
+    smoothingWindow += smoothingWindow === 5 ? -1 : 1;
+  }
+
+  const minCandidates = Number.isFinite(minCandidatesCandidate) && minCandidatesCandidate > 0 ? Math.floor(minCandidatesCandidate) : 16;
+
+  return { logStep, kSigma, smoothingWindow, minCandidates };
+}
+
+function buildCandidateLogThresholds(
+  sortedValues: number[],
+  tauLog: number,
+  sigmaLog: number,
+  options: NormalizedKneeOptions
+): number[] {
   if (sortedValues.length === 0) {
-    return 0;
+    return [];
   }
-  const min = sortedValues[0];
-  const max = sortedValues[sortedValues.length - 1];
-  if (min === max) {
-    return max;
+
+  const logMinData = Math.log(sortedValues[0]);
+  const logMaxData = Math.log(sortedValues[sortedValues.length - 1]);
+
+  const tauCenter = Number.isFinite(tauLog) ? tauLog : (logMinData + logMaxData) / 2;
+  const sigma = Number.isFinite(sigmaLog) && sigmaLog > 0 ? sigmaLog : Math.max(0, logMaxData - logMinData) / 6;
+  const span = options.kSigma * sigma;
+
+  let start = tauCenter - span;
+  let end = tauCenter + span;
+  if (!(end > start)) {
+    start = tauCenter - options.logStep;
+    end = tauCenter + options.logStep;
   }
-  let maxDiff = -Infinity;
-  let selected = max;
-  const denominator = sortedValues.length - 1;
-  for (let i = 0; i < sortedValues.length; i += 1) {
-    const normalizedIndex = denominator === 0 ? 0 : i / denominator;
-    const normalizedValue = (sortedValues[i] - min) / (max - min);
-    const diff = normalizedValue - normalizedIndex;
-    if (diff > maxDiff) {
-      maxDiff = diff;
-      selected = sortedValues[i];
+
+  start = Math.max(logMinData, start);
+  end = Math.min(logMaxData, end);
+
+  if (!(end > start)) {
+    if (logMaxData > logMinData) {
+      start = logMinData;
+      end = logMaxData;
+    } else {
+      return [logMinData];
     }
   }
-  return selected;
+
+  const spanLog = end - start;
+  if (!(spanLog > 0)) {
+    return [start];
+  }
+
+  const desiredCount = Math.max(2, options.minCandidates);
+  let effectiveStep = options.logStep;
+  const impliedCount = Math.floor(spanLog / effectiveStep) + 1;
+  if (impliedCount < desiredCount) {
+    effectiveStep = spanLog / (desiredCount - 1);
+  }
+  if (!(effectiveStep > 0)) {
+    effectiveStep = spanLog / (desiredCount - 1);
+  }
+
+  const candidates: number[] = [];
+  for (let cursor = start; cursor <= end + effectiveStep * 0.5; cursor += effectiveStep) {
+    candidates.push(cursor);
+  }
+  if (candidates.length === 0) {
+    return [start];
+  }
+  const lastIndex = candidates.length - 1;
+  candidates[lastIndex] = end;
+  return candidates;
+}
+
+function upperBound(sorted: number[], value: number): number {
+  let low = 0;
+  let high = sorted.length;
+  while (low < high) {
+    const mid = Math.floor((low + high) / 2);
+    if (sorted[mid] <= value) {
+      low = mid + 1;
+    } else {
+      high = mid;
+    }
+  }
+  return low;
+}
+
+function computeSessionCounts(sortedValues: number[], thresholds: number[]): number[] {
+  const result = new Array<number>(thresholds.length);
+  for (let i = 0; i < thresholds.length; i += 1) {
+    const tau = thresholds[i];
+    const index = upperBound(sortedValues, tau);
+    const count = sortedValues.length - index;
+    result[i] = count + 1;
+  }
+  return result;
+}
+
+function movingAverage(values: number[], window: number): number[] {
+  if (window <= 1 || values.length === 0) {
+    return [...values];
+  }
+  const half = Math.floor(window / 2);
+  const prefix = new Array<number>(values.length + 1);
+  prefix[0] = 0;
+  for (let i = 0; i < values.length; i += 1) {
+    prefix[i + 1] = prefix[i] + values[i];
+  }
+  const smoothed = new Array<number>(values.length);
+  for (let i = 0; i < values.length; i += 1) {
+    const start = Math.max(0, i - half);
+    const end = Math.min(values.length - 1, i + half);
+    const sum = prefix[end + 1] - prefix[start];
+    smoothed[i] = sum / (end - start + 1);
+  }
+  return smoothed;
+}
+
+function computeKneeDistance(logCandidates: number[], counts: number[]): number {
+  if (logCandidates.length === 0) {
+    return 0;
+  }
+  const minLog = logCandidates[0];
+  const maxLog = logCandidates[logCandidates.length - 1];
+  const minCount = Math.min(...counts);
+  const maxCount = Math.max(...counts);
+  const denomX = maxLog - minLog;
+  const denomY = maxCount - minCount;
+  if (!(denomX > 0) || !(denomY > 0)) {
+    return Math.exp(logCandidates[Math.floor(logCandidates.length / 2)]);
+  }
+  let bestIndex = 0;
+  let bestDistance = -Infinity;
+  for (let i = 0; i < logCandidates.length; i += 1) {
+    const xNorm = (logCandidates[i] - minLog) / denomX;
+    const yNorm = (counts[i] - minCount) / denomY;
+    const distance = Math.abs(yNorm + xNorm - 1) / Math.SQRT2;
+    if (distance > bestDistance) {
+      bestDistance = distance;
+      bestIndex = i;
+    }
+  }
+  return Math.exp(logCandidates[bestIndex]);
+}
+
+export function kneeThreshold(
+  userRows: Iterable<number>,
+  tauLog: number,
+  sigmaLog: number,
+  options: KneeDetectionOptions = {}
+): number {
+  const values = collectPositiveFinite(userRows);
+  if (values.length === 0) {
+    return 0;
+  }
+  values.sort((a, b) => a - b);
+  const normalizedOptions = normalizeKneeOptions(options);
+  const logCandidates = buildCandidateLogThresholds(values, tauLog, sigmaLog, normalizedOptions);
+  if (logCandidates.length === 0) {
+    return values[values.length - 1];
+  }
+  const thresholds = logCandidates.map((candidate) => Math.exp(candidate));
+  const counts = computeSessionCounts(values, thresholds);
+  const smoothed = normalizedOptions.smoothingWindow > 1 ? movingAverage(counts, normalizedOptions.smoothingWindow) : counts;
+  return computeKneeDistance(logCandidates, smoothed);
+}
+
+function computeLogStandardDeviation(values: number[]): number {
+  const logs: number[] = [];
+  for (const value of values) {
+    if (typeof value !== "number") {
+      continue;
+    }
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    logs.push(Math.log(value));
+  }
+  if (logs.length === 0) {
+    return 0;
+  }
+  const { variance } = computeMeanAndVariance(logs);
+  return variance > 0 && Number.isFinite(variance) ? Math.sqrt(variance) : 0;
 }
 
 export function bimodalityTest(logValuesInput: Iterable<number>): BimodalityTestResult {
