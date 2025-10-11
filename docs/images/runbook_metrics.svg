@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#1e1b4b"/>
+  <text x="40" y="80" font-family="'Fira Code', monospace" font-size="36" fill="#f472b6">Metrics viewer</text>
+  <text x="40" y="140" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">$ jq '.' runs/latest/history.json</text>
+  <text x="40" y="200" font-family="'Fira Code', monospace" font-size="24" fill="#cbd5f5">{"train_loss": [1.21, 0.74, ...],</text>
+  <text x="40" y="240" font-family="'Fira Code', monospace" font-size="24" fill="#cbd5f5"> "val_loss": [1.28, 0.83, ...]}</text>
+  <text x="40" y="320" font-family="'Fira Code', monospace" font-size="20" fill="#94a3b8">History JSON confirms convergence.</text>
+</svg>

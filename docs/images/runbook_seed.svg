@@ -1,0 +1,8 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#1f2937"/>
+  <text x="40" y="80" font-family="'Fira Code', monospace" font-size="36" fill="#fbbf24">Seed simulator</text>
+  <text x="40" y="140" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">$ npm --prefix collector run seed</text>
+  <text x="40" y="190" font-family="'Fira Code', monospace" font-size="24" fill="#cbd5f5">[seed] Sessions executed: 220</text>
+  <text x="40" y="240" font-family="'Fira Code', monospace" font-size="24" fill="#cbd5f5">[seed] Total events inserted: 1540</text>
+  <text x="40" y="320" font-family="'Fira Code', monospace" font-size="20" fill="#94a3b8">Use fixture key for reproducibility.</text>
+</svg>

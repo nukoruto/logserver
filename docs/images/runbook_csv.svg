@@ -1,0 +1,9 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="960" height="540" viewBox="0 0 960 540">
+  <rect width="960" height="540" fill="#1f2933"/>
+  <text x="40" y="80" font-family="'Fira Code', monospace" font-size="36" fill="#22d3ee">CSV artefacts</text>
+  <text x="40" y="140" font-family="'Fira Code', monospace" font-size="24" fill="#f8fafc">$ tree -L 1 data/processed</text>
+  <text x="40" y="190" font-family="'Fira Code', monospace" font-size="24" fill="#bae6fd">├── events.csv</text>
+  <text x="40" y="230" font-family="'Fira Code', monospace" font-size="24" fill="#bae6fd">├── scores_with_labels.csv</text>
+  <text x="40" y="270" font-family="'Fira Code', monospace" font-size="24" fill="#bae6fd">└── dt_stats.json</text>
+  <text x="40" y="340" font-family="'Fira Code', monospace" font-size="20" fill="#94a3b8">Processed outputs pinned under data/processed.</text>
+</svg>
