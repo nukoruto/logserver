@@ -1,12 +1,26 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
+import path from 'node:path';
+
 import { Command } from 'commander';
+
 import {
   algoVersion,
-  estimateThresholdsByUser,
+  deriveDatasetKey,
+  estimateThresholdsWithMeta,
   splitSessions,
   SessionSplitOptions,
-  AugmentedRow
+  AugmentedRow,
+  writeMeta
 } from '@logserver/session-splitter';
+import type { ThresholdMetaInput } from '@logserver/session-splitter';
+
+const HKDF_INFO_BASE64 = Buffer.from('sid', 'utf8').toString('base64');
+
+function toSortedRecord<T>(entries: Iterable<[string, T]>): Record<string, T> {
+  const sorted = Array.from(entries).sort(([a], [b]) => a.localeCompare(b));
+  return Object.fromEntries(sorted);
+}
 
 interface CliOptions {
   input: string;
@@ -16,6 +30,10 @@ interface CliOptions {
   timestampColumn?: string;
   userIdColumn?: string;
   sessionIdColumn?: string;
+  meta?: string;
+  epsilon?: number;
+  ntpP95Ms?: number;
+  ingressJitterMs?: number;
 }
 
 const program = new Command();
@@ -30,6 +48,10 @@ program
   .option('--user-column <name>', 'User identifier column name override')
   .option('--session-column <name>', 'Raw session identifier column name')
   .option('--thresholds', 'Emit per-user threshold summary as JSON', false)
+  .option('--meta <path>', 'Path to write meta.json (default: ./meta.json)', 'meta.json')
+  .option('--epsilon <seconds>', 'Half of log resolution in seconds', (value) => Number(value))
+  .option('--ntp-p95-ms <ms>', '95th percentile NTP offset in milliseconds', (value) => Number(value))
+  .option('--ingress-jitter-ms <ms>', 'Ingress jitter bound in milliseconds', (value) => Number(value))
   .action(async (cliOptions: CliOptions) => {
     if (!cliOptions.input) {
       console.error('Input path is required. Use --input <path>');
@@ -51,7 +73,9 @@ program
       return;
     }
 
+    const datasetKey = deriveDatasetKey(jwtHmacKey);
     splitOptions.jwtHmacKey = jwtHmacKey;
+    splitOptions.datasetKey = datasetKey;
 
     const rows: AugmentedRow[] = [];
 
@@ -70,10 +94,66 @@ program
       }
 
       if (cliOptions.thresholds) {
-        const thresholds = estimateThresholdsByUser(rows);
+        const result = estimateThresholdsWithMeta(rows);
+        const thresholdsRecord = toSortedRecord(result.thresholds.entries());
         process.stdout.write(
-          `${JSON.stringify({ algo_ver: algoVersion, thresholds: Object.fromEntries(thresholds) })}\n`
+          `${JSON.stringify({ algo_ver: algoVersion, thresholds: thresholdsRecord })}\n`
         );
+
+        const perUserEntries = Array.from(result.perUser.entries());
+        const fdBins = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.fd_bins] as [string, number])
+        );
+        const tauOtsu = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.tau_otsu] as [string, number | null])
+        );
+        const tauKnee = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.tau_knee] as [string, number | null])
+        );
+        const tauFinal = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.tau_final] as [string, number])
+        );
+        const deltaT = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.DeltaT] as [string, number])
+        );
+        const bimodality = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.bimodality_test] as [string, number | null])
+        );
+
+        const epsilon =
+          typeof cliOptions.epsilon === 'number' && Number.isFinite(cliOptions.epsilon)
+            ? cliOptions.epsilon
+            : 0;
+        const ntpP95 =
+          typeof cliOptions.ntpP95Ms === 'number' && Number.isFinite(cliOptions.ntpP95Ms)
+            ? cliOptions.ntpP95Ms
+            : 0;
+        const ingressJitter =
+          typeof cliOptions.ingressJitterMs === 'number' && Number.isFinite(cliOptions.ingressJitterMs)
+            ? cliOptions.ingressJitterMs
+            : 0;
+        const metaTarget = cliOptions.meta ?? path.join(path.dirname(cliOptions.input), 'meta.json');
+
+        const metaPayload: ThresholdMetaInput = {
+          algo_ver: algoVersion,
+          epsilon,
+          ntp_p95_ms: ntpP95,
+          ingress_jitter_ms: ingressJitter,
+          fd_bins: fdBins,
+          tau_otsu: tauOtsu,
+          tau_knee: tauKnee,
+          tau_final: tauFinal,
+          DeltaT: deltaT,
+          bimodality_test: bimodality,
+          k: result.k,
+          scan_step: result.scan_step,
+          hkdf_info: HKDF_INFO_BASE64,
+          kid: createHash('sha256').update(datasetKey).digest('hex').slice(0, 32),
+          datasetPath: cliOptions.input,
+          thresholds_by_uid: thresholdsRecord
+        };
+
+        await writeMeta(metaTarget, metaPayload);
       }
     } catch (error) {
       const message = error instanceof Error ? error.message : String(error);
