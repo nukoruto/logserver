@@ -42,6 +42,7 @@ describe('simulationService.generateScenario', () => {
     expect(result.summary.sessions).toBeGreaterThanOrEqual(1);
     expect(result.summary.anomalies.normal).toBeGreaterThan(0);
     expect(result.params.seed).toBe('jest-service');
+    expect(result.params.seed_source).toBe('provided');
     expect(result.scenarioId).toBeTruthy();
 
     const firstEvent = result.events[0];
@@ -61,7 +62,39 @@ describe('simulationService.generateScenario', () => {
       const manifest = JSON.parse(manifestContent);
       expect(manifest.counts.events).toBe(12);
       expect(manifest.anomaly_summary.normal).toBeGreaterThan(0);
+      expect(manifest.parameters.seed).toBe('jest-service');
+      expect(manifest.parameters.seed_source).toBe('provided');
     }
+  });
+
+  it('produces identical sequences when the same seed is supplied', async () => {
+    const baseOptions = {
+      count: 20,
+      anomalies: ['protocolViolation', 'timeDeviation'],
+      seed: 'repeatable-seed',
+      persist: false,
+      maxSteps: 32,
+      sessionSpacingSeconds: 60,
+      startTime: '2024-03-01T00:00:00.000Z',
+    };
+
+    const first = await generateScenario(baseOptions);
+    const second = await generateScenario(baseOptions);
+
+    expect(second.params.seed).toBe('repeatable-seed');
+    expect(second.events).toStrictEqual(first.events);
+    expect(second.summary).toStrictEqual(first.summary);
+  });
+
+  it('records generated seeds when none are provided', async () => {
+    const result = await generateScenario({
+      count: 8,
+      persist: false,
+    });
+
+    expect(typeof result.params.seed).toBe('string');
+    expect(result.params.seed.length).toBeGreaterThan(0);
+    expect(result.params.seed_source).toBe('generated');
   });
 });
 
