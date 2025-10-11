@@ -4,6 +4,11 @@ const { loadScenario, DEFAULT_SCENARIO_FILE } = require('../scenario');
 
 const DEFAULT_MAX_STEPS = 128;
 const DEFAULT_DELTA_RANGE = { min: 1, max: 3 };
+const DEFAULT_DELTA_SPEC = {
+  distribution: 'uniform',
+  min: DEFAULT_DELTA_RANGE.min,
+  max: DEFAULT_DELTA_RANGE.max,
+};
 
 const isFiniteNumber = (value) => Number.isFinite(value);
 
@@ -59,18 +64,108 @@ const validateScenario = (scenario) => {
   }
 };
 
-const normalizeDeltaRange = (candidate, fallback) => {
+const clampValue = (value, minimum, maximum) => {
+  let result = value;
+  if (Number.isFinite(minimum)) {
+    result = Math.max(minimum, result);
+  }
+  if (Number.isFinite(maximum)) {
+    result = Math.min(maximum, result);
+  }
+  return result;
+};
+
+const normalizeRange = (candidate, fallback) => {
+  const base = fallback || DEFAULT_DELTA_RANGE;
   if (candidate && typeof candidate === 'object') {
-    const min = Number(candidate.min);
-    const max = Number(candidate.max);
-    if (isFiniteNumber(min) && isFiniteNumber(max) && max >= min && min >= 0) {
-      return { min, max };
-    }
+    const minCandidate = Number(candidate.min ?? candidate.lower ?? candidate.start);
+    const maxCandidate = Number(candidate.max ?? candidate.upper ?? candidate.end);
+    const min = isFiniteNumber(minCandidate) && minCandidate >= 0 ? minCandidate : base.min;
+    const maxSource = isFiniteNumber(maxCandidate) && maxCandidate >= min ? maxCandidate : base.max;
+    const max = Number.isFinite(maxSource) && maxSource >= min ? maxSource : min;
+    return { min, max };
   }
   if (isFiniteNumber(candidate) && candidate >= 0) {
     return { min: candidate, max: candidate };
   }
-  return { ...fallback };
+  return { min: base.min, max: base.max };
+};
+
+const cloneDeltaSpec = (spec) => {
+  if (!spec || typeof spec !== 'object') {
+    return { ...DEFAULT_DELTA_SPEC };
+  }
+  if (spec.distribution === 'normal') {
+    return {
+      distribution: 'normal',
+      mean: spec.mean,
+      stdDev: spec.stdDev,
+      min: spec.min,
+      max: spec.max,
+    };
+  }
+  return {
+    distribution: 'uniform',
+    min: spec.min,
+    max: spec.max,
+  };
+};
+
+const normalizeDeltaSpec = (candidate, fallbackSpec = DEFAULT_DELTA_SPEC) => {
+  const fallback = cloneDeltaSpec(fallbackSpec);
+  if (candidate && typeof candidate === 'object' && typeof candidate.distribution === 'string') {
+    const distribution = String(candidate.distribution).toLowerCase();
+    if (distribution === 'normal') {
+      const mean = Number(candidate.mean ?? candidate.mu);
+      const stdDevCandidate = Number(candidate.stdDev ?? candidate.std ?? candidate.sigma);
+      if (isFiniteNumber(mean) && isFiniteNumber(stdDevCandidate) && stdDevCandidate > 0) {
+        const stdDev = stdDevCandidate;
+        const rangeHint = {
+          min: Number(candidate.min),
+          max: Number(candidate.max),
+        };
+        const suggestedRange = normalizeRange(rangeHint, {
+          min: Math.max(0, mean - 3 * stdDev),
+          max: Math.max(Math.max(0, mean + 3 * stdDev), mean),
+        });
+        return {
+          distribution: 'normal',
+          mean,
+          stdDev,
+          min: suggestedRange.min,
+          max: suggestedRange.max,
+        };
+      }
+      return fallback;
+    }
+    if (distribution === 'uniform') {
+      const range = normalizeRange(candidate, fallback.distribution === 'uniform' ? fallback : DEFAULT_DELTA_RANGE);
+      return {
+        distribution: 'uniform',
+        min: range.min,
+        max: range.max,
+      };
+    }
+  }
+
+  if (candidate && typeof candidate === 'object' && (candidate.min !== undefined || candidate.max !== undefined)) {
+    const range = normalizeRange(candidate, fallback.distribution === 'uniform' ? fallback : DEFAULT_DELTA_RANGE);
+    return {
+      distribution: 'uniform',
+      min: range.min,
+      max: range.max,
+    };
+  }
+
+  if (isFiniteNumber(candidate) && candidate >= 0) {
+    return {
+      distribution: 'uniform',
+      min: candidate,
+      max: candidate,
+    };
+  }
+
+  return fallback;
 };
 
 const sampleUniform = (range, randomFn) => {
@@ -81,10 +176,40 @@ const sampleUniform = (range, randomFn) => {
   return value;
 };
 
-const sampleDeltaSeconds = (transition, randomFn, defaultRange) => {
-  const fallback = normalizeDeltaRange(defaultRange, DEFAULT_DELTA_RANGE);
-  const range = normalizeDeltaRange(transition.deltaSeconds, fallback);
-  const sampled = sampleUniform(range, randomFn);
+const sampleStandardNormal = (randomFn) => {
+  let u1 = 0;
+  let u2 = 0;
+  while (u1 <= Number.EPSILON) {
+    u1 = randomFn();
+    u2 = randomFn();
+  }
+  const magnitude = Math.sqrt(-2.0 * Math.log(u1));
+  const z0 = magnitude * Math.cos(2.0 * Math.PI * u2);
+  return z0;
+};
+
+const sampleNormal = (mean, stdDev, randomFn) => {
+  const standard = sampleStandardNormal(randomFn);
+  return mean + stdDev * standard;
+};
+
+const sampleFromSpec = (spec, randomFn) => {
+  if (!spec || typeof spec !== 'object') {
+    return 0;
+  }
+  if (spec.distribution === 'normal') {
+    const sampled = sampleNormal(spec.mean, spec.stdDev, randomFn);
+    const clamped = clampValue(sampled, spec.min, spec.max);
+    return clamped;
+  }
+  const range = { min: spec.min, max: spec.max };
+  return sampleUniform(range, randomFn);
+};
+
+const sampleDeltaSeconds = (transition, randomFn, defaultSpec) => {
+  const fallbackSpec = normalizeDeltaSpec(defaultSpec, DEFAULT_DELTA_SPEC);
+  const spec = normalizeDeltaSpec(transition.deltaSeconds, fallbackSpec);
+  const sampled = sampleFromSpec(spec, randomFn);
   return Math.max(0, Number(sampled));
 };
 
@@ -192,7 +317,7 @@ const generateNormalSequence = (options = {}) => {
   const terminalStates = resolveTerminalStates(scenario, adjacency);
   const initialState = resolveInitialState(scenario);
   const maxSteps = Number.isInteger(options.maxSteps) && options.maxSteps > 0 ? options.maxSteps : DEFAULT_MAX_STEPS;
-  const defaultDelta = normalizeDeltaRange(scenario.defaultDeltaSeconds, DEFAULT_DELTA_RANGE);
+  const defaultDeltaSpec = normalizeDeltaSpec(scenario.defaultDeltaSeconds, DEFAULT_DELTA_SPEC);
 
   const startTime = ensureDate(options.startTime);
   const sequence = [];
@@ -211,7 +336,7 @@ const generateNormalSequence = (options = {}) => {
       break;
     }
 
-    const deltaSeconds = sampleDeltaSeconds(chosen, randomFn, defaultDelta);
+    const deltaSeconds = sampleDeltaSeconds(chosen, randomFn, defaultDeltaSpec);
     currentTime = new Date(currentTime.getTime() + deltaSeconds * 1000);
 
     const eventRecord = {

@@ -44,6 +44,60 @@ describe('generateNormalSequence', () => {
     expect(seqA).toEqual(seqB);
   });
 
+  it('Δtの正規分布指定を尊重して生成する', () => {
+    const gaussianScenario = {
+      id: 'gaussian-flow',
+      states: ['start', 'loop', 'end'],
+      transitions: [
+        {
+          from: 'start',
+          to: 'loop',
+          event: 'login',
+          probability: 1.0,
+          deltaSeconds: { distribution: 'normal', mean: 2.0, stdDev: 0.4, min: 1.0, max: 3.0 },
+        },
+        {
+          from: 'loop',
+          to: 'loop',
+          event: 'browse',
+          probability: 0.6,
+          deltaSeconds: { distribution: 'normal', mean: 2.0, stdDev: 0.4, min: 1.0, max: 3.0 },
+        },
+        {
+          from: 'loop',
+          to: 'end',
+          event: 'logout',
+          probability: 0.4,
+          deltaSeconds: { distribution: 'normal', mean: 2.0, stdDev: 0.4, min: 1.0, max: 3.0 },
+        },
+      ],
+      initialState: 'start',
+      terminalStates: ['end'],
+      defaultDeltaSeconds: { distribution: 'normal', mean: 2.0, stdDev: 0.4, min: 1.0, max: 3.0 },
+    };
+
+    const startTime = '2024-01-01T09:00:00.000Z';
+    const sequence = generateNormalSequence({
+      scenario: gaussianScenario,
+      seed: 'gaussian-seed',
+      startTime,
+      maxSteps: 32,
+    });
+
+    expect(sequence.length).toBeGreaterThan(0);
+    const deltas: number[] = sequence.map((event: any) => Number(event.deltaSeconds));
+    deltas.forEach((delta: number) => {
+      expect(delta).toBeGreaterThanOrEqual(1.0);
+      expect(delta).toBeLessThanOrEqual(3.0);
+    });
+    const uniqueValues = new Set<string>(deltas.map((value: number) => value.toFixed(3)));
+    expect(uniqueValues.size).toBeGreaterThan(1);
+
+    const average = deltas.reduce((sum: number, value: number) => sum + value, 0) / deltas.length;
+    expect(average).toBeGreaterThan(1.4);
+    expect(average).toBeLessThan(2.6);
+  });
+
   it('最大ステップ数でループを安全に終了する', () => {
     const loopScenario = {
       id: 'loop',
