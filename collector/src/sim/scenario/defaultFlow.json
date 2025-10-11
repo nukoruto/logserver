@@ -1,11 +1,80 @@
 {
   "id": "defaultFlow",
-  "description": "Normal session flow placeholder for future simulation refinements.",
-  "states": ["start", "authenticated", "browsing", "editing", "completed"],
+  "description": "Default normal session flow with probabilistic FSM transitions and Δt configuration.",
+  "states": ["start", "authenticated", "browsing", "editing", "saving", "completed"],
+  "initialState": "start",
+  "terminalStates": ["completed"],
+  "defaultDeltaSeconds": { "min": 1.2, "max": 4.0 },
   "transitions": [
-    { "from": "start", "to": "authenticated", "event": "login" },
-    { "from": "authenticated", "to": "browsing", "event": "browse" },
-    { "from": "browsing", "to": "editing", "event": "edit" },
-    { "from": "editing", "to": "completed", "event": "logout" }
+    {
+      "from": "start",
+      "to": "authenticated",
+      "event": "login",
+      "probability": 1.0,
+      "deltaSeconds": { "min": 0.0, "max": 0.5 }
+    },
+    {
+      "from": "authenticated",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.8,
+      "deltaSeconds": { "min": 0.5, "max": 2.0 }
+    },
+    {
+      "from": "authenticated",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.2,
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "browsing",
+      "to": "editing",
+      "event": "edit",
+      "probability": 0.6,
+      "deltaSeconds": { "min": 1.0, "max": 3.5 }
+    },
+    {
+      "from": "browsing",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.25,
+      "deltaSeconds": { "min": 0.8, "max": 2.2 }
+    },
+    {
+      "from": "browsing",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.15,
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "editing",
+      "to": "saving",
+      "event": "save",
+      "probability": 0.7,
+      "deltaSeconds": { "min": 0.6, "max": 2.0 }
+    },
+    {
+      "from": "editing",
+      "to": "browsing",
+      "event": "browse",
+      "probability": 0.2,
+      "deltaSeconds": { "min": 0.8, "max": 2.5 }
+    },
+    {
+      "from": "editing",
+      "to": "completed",
+      "event": "logout",
+      "probability": 0.1,
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    },
+    {
+      "from": "saving",
+      "to": "completed",
+      "event": "logout",
+      "probability": 1.0,
+      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+    }
   ]
 }
