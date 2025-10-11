@@ -1,0 +1,11 @@
+{
+  "id": "defaultFlow",
+  "description": "Normal session flow placeholder for future simulation refinements.",
+  "states": ["start", "authenticated", "browsing", "editing", "completed"],
+  "transitions": [
+    { "from": "start", "to": "authenticated", "event": "login" },
+    { "from": "authenticated", "to": "browsing", "event": "browse" },
+    { "from": "browsing", "to": "editing", "event": "edit" },
+    { "from": "editing", "to": "completed", "event": "logout" }
+  ]
+}
