@@ -1,6 +1,8 @@
+const config = require('../config');
+const { jwtToUid } = require('../security/uid');
 const { ValidationError } = require('./errors');
 
-const REQUIRED_FIELDS = ['session_id', 'user_id', 'event'];
+const REQUIRED_FIELDS = ['session_id', 'event'];
 const ISO_DATE_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/;
 
 const normalizeTimestamp = (value) => {
@@ -42,6 +44,42 @@ const ensureRequired = (payload) => {
   }
 };
 
+const resolveJwt = (payload) => {
+  const jwt = coerceField(payload, 'jwt');
+  if (jwt === undefined || jwt === null) {
+    return null;
+  }
+  const normalized = String(jwt).trim();
+  if (!normalized) {
+    throw new ValidationError('jwt cannot be empty', { field: 'jwt' });
+  }
+  if (!config.security || !config.security.jwtHmacKey) {
+    throw new ValidationError('JWT_HMAC_KEY is not configured', { field: 'jwt' });
+  }
+  try {
+    return jwtToUid(normalized, config.security.jwtHmacKey);
+  } catch (error) {
+    throw new ValidationError('Failed to derive uid from jwt', {
+      field: 'jwt',
+      cause: error instanceof Error ? error.message : error,
+    });
+  }
+};
+
+const resolveUserId = (payload) => {
+  const userId = coerceField(payload, 'user_id');
+  if (userId !== undefined && userId !== null) {
+    return normalizeString(userId, 'user_id');
+  }
+  const derived = resolveJwt(payload);
+  if (derived) {
+    return derived;
+  }
+  throw new ValidationError('Either user_id or jwt must be provided', {
+    fields: ['user_id', 'jwt'],
+  });
+};
+
 const coerceField = (payload, key) => {
   if (payload[key] !== undefined) {
     return payload[key];
@@ -64,7 +102,7 @@ const normalizeEventPayload = (payload) => {
   ensureRequired(payload);
 
   const sessionId = normalizeString(coerceField(payload, 'session_id'), 'session_id');
-  const userId = normalizeString(coerceField(payload, 'user_id'), 'user_id');
+  const userId = resolveUserId(payload);
   const event = normalizeString(coerceField(payload, 'event'), 'event');
   const timestamp = normalizeTimestamp(coerceField(payload, 'timestamp'));
   const method = coerceField(payload, 'method');

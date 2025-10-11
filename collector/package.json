@@ -6,7 +6,8 @@
   "scripts": {
     "start": "node server.js",
     "dev": "nodemon server.js",
-    "lint": "eslint ."
+    "lint": "eslint .",
+    "test": "jest --config jest.config.cjs"
   },
   "keywords": [
     "express",
@@ -19,20 +20,24 @@
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
-    "morgan": "^1.10.0",
-    "winston": "^3.11.0",
+    "axios": "^1.7.4",
     "body-parser": "^1.20.2",
     "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "axios": "^1.7.4",
+    "express": "^4.19.2",
+    "jsonwebtoken": "^9.0.2",
+    "morgan": "^1.10.0",
     "node-fetch": "^3.3.2",
-    "sqlite3": "^5.1.7"
+    "sqlite3": "^5.1.7",
+    "winston": "^3.11.0"
   },
   "devDependencies": {
+    "@types/jest": "^30.0.0",
+    "eslint": "^9.5.0",
+    "jest": "^30.2.0",
     "nodemon": "^3.1.0",
-    "eslint": "^9.5.0"
+    "ts-jest": "^29.4.5",
+    "typescript": "^5.9.3"
   },
   "engines": {
     "node": ">=20.12.2"

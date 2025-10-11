@@ -40,6 +40,9 @@ const config = {
     path.resolve(process.cwd(), 'data', 'db', 'events.sqlite3'),
   csvRoot: process.env.CSV_ROOT || path.resolve(process.cwd(), 'data', 'raw'),
   jwtSecret: process.env.JWT_SECRET || '',
+  security: {
+    jwtHmacKey: process.env.JWT_HMAC_KEY || '',
+  },
   auth: {
     required: parseBool(process.env.REQUIRE_AUTH, false),
     audience: process.env.JWT_AUDIENCE || undefined,
