@@ -82,7 +82,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - ユーザ別ブロック分離（MIMO 類推）と簡易非干渉ゲインで干渉低減の効果確認
 
 ## 9. 非機能要件
-- 再現性: スクリプトで収集→前処理→学習→評価を自動化、乱数種固定  
+- 再現性: スクリプトで収集→前処理→学習→評価を自動化、乱数種固定。シナリオ生成 API (`simulationService.generateScenario`) はシード指定/自動生成値を常にマニフェストとレスポンス `params.seed` / `params.seed_source` に保存し、INFO ログ（`Simulate start` / `Simulate complete`）にシナリオ ID・遷移確率・Δt 閾値計算法・異常戦略を残す。
 - 可搬性: Python 3.12、PyTorch 2.x または TensorFlow 2.12+、MATLAB R2023b+  
 - 透明性: 設定は YAML 外部化、実験ごとにアーティファクト保存（学習曲線、指標 JSON、モデルハッシュ）  
 - 速度目標: 100 万イベント相当の 1 エポックを 30 分未満（A100 40GB 目安）  

@@ -1,6 +1,8 @@
 'use strict';
 
+const crypto = require('node:crypto');
 const config = require('../config');
+const logger = require('../utils/logger');
 const sim = require('../sim');
 const { buildAnomalySummary } = require('../sim/persistence/simWriter');
 
@@ -47,6 +49,36 @@ const normalizeString = (value) => {
     return '';
   }
   return value.trim();
+};
+
+const normalizeSeedInput = (seed) => {
+  if (seed === undefined || seed === null) {
+    return null;
+  }
+  if (typeof seed === 'number' && Number.isFinite(seed)) {
+    return seed.toString(10);
+  }
+  if (typeof seed === 'string') {
+    const trimmed = seed.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  return null;
+};
+
+const generateSeed = () => crypto.randomBytes(12).toString('hex');
+
+const resolveSeed = (seed) => {
+  const normalized = normalizeSeedInput(seed);
+  if (normalized !== null) {
+    return {
+      value: normalized,
+      source: 'provided',
+    };
+  }
+  return {
+    value: generateSeed(),
+    source: 'generated',
+  };
 };
 
 const parsePositiveNumber = (candidate, fallback) => {
@@ -239,12 +271,21 @@ const defaultParameters = (input) => ({
   count: input.count,
   anomalies: Array.from(input.anomalies || []),
   seed: input.seed || null,
+  seed_source: input.seedSource || null,
   scenario_path: input.scenarioPath || null,
   anomaly_rate: input.anomalyRate,
   anomaly_count: input.anomalyCount,
   session_spacing_seconds: input.sessionSpacingSeconds,
   persist: input.persist,
   max_steps: input.maxSteps,
+  time_deviation_detector: {
+    method: input.timeDeviationMethod || 'quantile',
+    quantile: input.timeDeviationQuantile || 0.99,
+    min_samples: input.timeDeviationMinSamples || 5,
+  },
+  protocol_validator: {
+    enabled: true,
+  },
 });
 
 const generateScenario = async (options = {}) => {
@@ -259,21 +300,47 @@ const generateScenario = async (options = {}) => {
 
   const scenarioDefinition = scenario.loadScenario(scenarioPath);
   const scenarioId = normalizeString(scenarioDefinition.id) || 'default-flow';
+  const scenarioVersion = scenarioDefinition.version || null;
 
   const baseStartTime = parseStartTime(options.startTime);
+  const seedResolution = resolveSeed(options.seed);
+  const resolvedSeed = seedResolution.value;
   const parameters = defaultParameters({
     count,
     anomalies,
-    seed: options.seed || null,
+    seed: resolvedSeed,
+    seedSource: seedResolution.source,
     scenarioPath,
     anomalyRate,
     anomalyCount,
     sessionSpacingSeconds,
     persist,
     maxSteps,
+    timeDeviationMethod: 'quantile',
+    timeDeviationQuantile: 0.99,
+    timeDeviationMinSamples: 5,
   });
 
   const selectedStrategies = buildStrategyOverrides(anomalies);
+  const anomalyStrategies = Array.from(anomalies);
+  const startTimeHr = process.hrtime.bigint();
+
+  logger.info('Simulate start', {
+    seed: resolvedSeed,
+    seed_source: seedResolution.source,
+    count,
+    max_steps: maxSteps,
+    anomaly_rate: anomalyRate,
+    anomaly_count: anomalyCount,
+    anomalies: anomalyStrategies,
+    persist,
+    session_spacing_seconds: sessionSpacingSeconds,
+    scenario_id: scenarioId,
+    scenario_version: scenarioVersion,
+    scenario_path: scenarioPath,
+    run_id: options.runId || null,
+    time_deviation_detector: parameters.time_deviation_detector,
+  });
 
   const events = [];
   const sessionIds = new Set();
@@ -281,8 +348,8 @@ const generateScenario = async (options = {}) => {
   let sessionStartTime = new Date(baseStartTime.getTime());
 
   while (events.length < count) {
-    const sessionSeed = options.seed ? `${options.seed}:${sessionIndex}` : `${sessionIndex}`;
-    const sessionIdentifiers = createSessionIdentifiers(options.seed || scenarioId, sessionIndex);
+    const sessionSeed = `${resolvedSeed}:${sessionIndex}`;
+    const sessionIdentifiers = createSessionIdentifiers(resolvedSeed || scenarioId, sessionIndex);
 
     const baseSequence = normalGenerator.generateNormalSequence({
       scenario: scenarioDefinition,
@@ -335,7 +402,7 @@ const generateScenario = async (options = {}) => {
     persistenceResult = await persistSimulationRun({
       events: trimmedEvents,
       scenarioId,
-      seed: options.seed || null,
+      seed: resolvedSeed,
       runId: options.runId,
       outputDir: options.outputDir || config.simLogRoot,
       csvFileName: options.csvFileName,
@@ -369,6 +436,17 @@ const generateScenario = async (options = {}) => {
     };
     response.manifest = persistenceResult.manifest;
   }
+
+  const durationMs = Number(process.hrtime.bigint() - startTimeHr) / 1_000_000;
+  logger.info('Simulate complete', {
+    seed: resolvedSeed,
+    scenario_id: scenarioId,
+    events: summary.events,
+    sessions: summary.sessions,
+    anomalies: summary.anomalies,
+    files: response.files || null,
+    duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+  });
 
   return response;
 };

@@ -186,6 +186,8 @@ cd collector && node scripts/check-ntp.js
 
 - シナリオ定義は `configs/scenario_default.json` に外部化されており、環境変数 `SIM_SCENARIO_FILE` を指定すれば任意ファイルを優先読み込みします。
 - CLI からは `ts-node` 経由で `scripts/simulate.ts` を実行し、件数・異常タイプ・シードなどを指定できます。
+- `--seed` を省略した場合でも疑似乱数生成器を暗号学的シードで初期化し、レスポンスおよびマニフェストの `params.seed` / `params.seed_source` に保存します（`generated` または `provided`）。
+- 実行時には `Simulate start` / `Simulate complete` の INFO ログが出力され、シナリオ ID、遷移数、異常戦略、Δt 閾値計算方式などが記録されます。運用ログを収集することで、同一シードでの再実行や実験差異の追跡が容易になります。
 
 ```bash
 node -r ts-node/register/transpile-only scripts/simulate.ts \
@@ -207,9 +209,20 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
     "count": 50,
     "anomalies": ["timeDeviation", "authenticationBypass"],
     "seed": "42",
+    "seed_source": "provided",
     "scenario_path": "configs/scenario_default.json",
     "anomaly_rate": 0.2,
-    "persist": true
+    "persist": true,
+    "max_steps": 64,
+    "session_spacing_seconds": 180,
+    "time_deviation_detector": {
+      "method": "quantile",
+      "quantile": 0.99,
+      "min_samples": 5
+    },
+    "protocol_validator": {
+      "enabled": true
+    }
   },
   "summary": {
     "events": 50,
