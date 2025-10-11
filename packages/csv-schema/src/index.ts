@@ -291,3 +291,13 @@ export function parseCsv(input: string | Readable, options: ParseCsvOptions = {}
 
 export { forEachUser } from './grouping.js';
 export type { UserGroupedRow, UserCallback } from './grouping.js';
+export {
+  computeDeltas
+} from './delta.js';
+export type {
+  DeltaAnnotatedRow,
+  DeltaComputationOptions,
+  DeltaComputationResult,
+  DeltaComputationStats,
+  DeltaTimeLabel
+} from './delta.js';
