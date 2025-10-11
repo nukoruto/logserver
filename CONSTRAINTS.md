@@ -79,5 +79,27 @@
 - SRS/本ファイルに記述が無い事項は**安全側**に倒す（保守・再現性優先）。
 - 致命的に不明な場合は、必要最小限の質問を 1 回だけ付すか、`TODO:` としてコード内に明示して先に進める。
 
+## 方針
+- リポ構成：logserver をモノレポ（収集＝`collector/`、学習＝`trainer/`）
+- 実行環境：収集＝Windows 11 ネイティブ（Node.js/Express）／学習＝WSL2 上の Docker（GPU）
+- データ契約：`/contract/` に CSV スキーマ、op_category 辞書、セッション分割設定（Otsu/ε/肘法）を明記
+- 出力先：収集は `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
+- セキュリティ／表記：擬似匿名化＝HMAC-SHA256、時刻＝UTC（RFC 3339）
+- GPU 切替：`GPU_MODE=ada6000|4060` で `CUDA_VISIBLE_DEVICES` を切替
+
+## ディレクトリ
+- logserver/
+- collector/
+- trainer/
+- contract/
+- artifacts/ # Git 管理外
+- outputs/ # Git 管理外
+- .gitattributes # * text=auto eol=lf
+
+## 受け渡し契約（要約）
+- 必須列：timestamp_utc, uid(HMAC-SHA256 of JWT), session_id, method, path, referer, user_agent, ip, op_category
+- 形式：UTC/RFC 3339、CSV(RFC 4180)
+- 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
+
 - 参照ファイル: README.md
 - 参照ファイル: dev_prompt.md
