@@ -43,6 +43,11 @@ export interface LogHistogramResult {
   };
 }
 
+export interface LogOtsuThresholdResult {
+  tauLog: number;
+  quality: number;
+}
+
 export interface AugmentedRow {
   algo_ver: typeof algoVersion;
   uid: string;
@@ -324,7 +329,7 @@ export function estimateThresholdsByUser(
     if (deltas.length < minimumSamples) {
       threshold = percentile(deltas, fallbackPercentile);
     } else {
-      const otsu = otsuThreshold(deltas);
+      const otsu = otsuThresholdOnSorted(deltas);
       const kneedle = kneedleThreshold(deltas);
       const quantile = percentile(deltas, fallbackPercentile);
       threshold = Math.max(otsu, kneedle, quantile);
@@ -392,6 +397,90 @@ export function makeLogHistogram(
   };
 }
 
+export function otsuThreshold(logHistogram: LogHistogramResult): LogOtsuThresholdResult {
+  const { binCounts, binCount, logBinWidth, domain } = logHistogram;
+  if (binCount <= 0 || binCounts.length === 0) {
+    return { tauLog: Number.NaN, quality: 0 };
+  }
+  if (!Number.isFinite(domain.logMin) || !Number.isFinite(domain.logMax)) {
+    return { tauLog: Number.NaN, quality: 0 };
+  }
+  if (!(logBinWidth > 0) || !Number.isFinite(logBinWidth)) {
+    const tau = clampFinite(domain.logMin, domain.logMin, domain.logMax);
+    return { tauLog: tau, quality: 0 };
+  }
+
+  let total = 0;
+  for (const count of binCounts) {
+    total += count;
+  }
+  if (!(total > 0)) {
+    const tau = clampFinite(domain.logMin, domain.logMin, domain.logMax);
+    return { tauLog: tau, quality: 0 };
+  }
+
+  const centers = new Array<number>(binCount);
+  let sumAll = 0;
+  let sumSqAll = 0;
+  for (let i = 0; i < binCount; i += 1) {
+    const center = domain.logMin + logBinWidth * (i + 0.5);
+    centers[i] = center;
+    const count = binCounts[i] ?? 0;
+    if (count > 0) {
+      sumAll += count * center;
+      sumSqAll += count * center * center;
+    }
+  }
+
+  const totalMean = sumAll / total;
+  const rawVariance = sumSqAll / total - totalMean * totalMean;
+  const totalVariance = Number.isFinite(rawVariance) && rawVariance > 0 ? rawVariance : 0;
+
+  let cumulativeCount = 0;
+  let cumulativeSum = 0;
+  let bestBetween = -Infinity;
+  let bestTau = clampFinite(domain.logMin, domain.logMin, domain.logMax);
+  let bestQuality = 0;
+
+  for (let i = 0; i < binCount - 1; i += 1) {
+    const count = binCounts[i] ?? 0;
+    cumulativeCount += count;
+    cumulativeSum += count * centers[i];
+    if (!(cumulativeCount > 0)) {
+      continue;
+    }
+    const foreground = total - cumulativeCount;
+    if (!(foreground > 0)) {
+      break;
+    }
+
+    const omegaBackground = cumulativeCount / total;
+    const omegaForeground = foreground / total;
+    const muBackground = cumulativeSum / cumulativeCount;
+    const muForeground = (sumAll - cumulativeSum) / foreground;
+    const betweenVariance = omegaBackground * omegaForeground * (muBackground - muForeground) ** 2;
+
+    if (betweenVariance > bestBetween) {
+      bestBetween = betweenVariance;
+      const candidate = domain.logMin + logBinWidth * (i + 1);
+      bestTau = clampFinite(candidate, domain.logMin, domain.logMax);
+      if (totalVariance > 0) {
+        const ratio = betweenVariance / totalVariance;
+        bestQuality = Number.isFinite(ratio) && ratio >= 0 ? ratio : 0;
+      } else {
+        bestQuality = 0;
+      }
+    }
+  }
+
+  if (!(bestBetween > 0) || !Number.isFinite(bestTau)) {
+    bestTau = clampFinite(domain.logMin, domain.logMin, domain.logMax);
+    bestQuality = 0;
+  }
+
+  return { tauLog: bestTau, quality: bestQuality };
+}
+
 function percentile(values: number[], fraction: number): number {
   if (values.length === 0) {
     return 0;
@@ -407,7 +496,7 @@ function percentile(values: number[], fraction: number): number {
   return values[lowerIndex] * (1 - weight) + values[upperIndex] * weight;
 }
 
-function otsuThreshold(sortedValues: number[]): number {
+function otsuThresholdOnSorted(sortedValues: number[]): number {
   if (sortedValues.length === 0) {
     return 0;
   }
@@ -532,6 +621,20 @@ function clampBinCount(value: number, options: NormalizedLogHistogramOptions): n
   const upper = Math.min(options.maxBinCount, LOG_HISTOGRAM_DEFAULTS.maxBinCount);
   const lower = Math.max(options.minBinCount, LOG_HISTOGRAM_DEFAULTS.minBinCount);
   return Math.min(upper, Math.max(lower, integer));
+}
+
+function clampFinite(value: number, boundaryA: number, boundaryB: number): number {
+  if (!Number.isFinite(boundaryA) || !Number.isFinite(boundaryB)) {
+    return Number.isFinite(value) ? value : 0;
+  }
+  const lower = Math.min(boundaryA, boundaryB);
+  const upper = Math.max(boundaryA, boundaryB);
+  if (lower === upper) {
+    return lower;
+  }
+  const finiteValue = Number.isFinite(value) ? value : lower;
+  const clamped = Math.min(upper, Math.max(lower, finiteValue));
+  return Number.isFinite(clamped) ? clamped : lower;
 }
 
 function quantileFromSorted(sorted: number[], fraction: number): number {
