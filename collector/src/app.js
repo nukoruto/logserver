@@ -8,6 +8,7 @@ const healthRoutes = require('./routes/health');
 const eventRoutes = require('./routes/events');
 const { csvSinkMiddleware } = require('./index');
 const { createSchema } = require('./storage/eventRepository');
+const { ntpMonitor } = require('./services/ntpMonitor');
 
 const app = express();
 
@@ -30,7 +31,7 @@ app.use(express.urlencoded({ extended: false }));
 app.use(requestLogger);
 app.use(csvSinkMiddleware);
 
-app.use('/api/v1/health', healthRoutes);
+app.use(['/api/v1/health', '/healthz'], healthRoutes);
 app.use('/api/v1/events', eventRoutes);
 
 app.use((req, res) => {
@@ -41,6 +42,7 @@ app.use(errorHandler);
 
 const start = async () => {
   await createSchema();
+  ntpMonitor.start();
   return new Promise((resolve) => {
     const server = app.listen(config.port, () => {
       logger.info(`Log server listening on port ${config.port}`);
@@ -53,3 +55,7 @@ module.exports = {
   app,
   start,
 };
+
+process.once('SIGTERM', () => {
+  ntpMonitor.stop();
+});
