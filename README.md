@@ -224,7 +224,19 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
   --pretty
 ```
 
-### 5.7 セッション分割成果の静的監査
+### 5.7 Δt 前処理 CLI (`@logserver/dt-preproc`)
+
+- TypeScript 製の Δt 特徴量生成 CLI を `packages/dt-preproc` に追加。`@logserver/csv-schema` による検証を通過した行のみを採用し、UID 単位で Δt を算出してクリッピング（`--clip-max`）、Δt ロバストスケーリング（median/MAD）、セッション内シーケンス番号・経過秒を付与します。
+- `--ignore-uids` で除外する UID を CSV 形式で指定可能。特徴統計（Δt 中央値、MAD、測定・unknown 比率、クリップ件数など）は `--stats` で JSON 保存できます。
+- CLI 実行前に `pnpm --filter @logserver/dt-preproc build` で `dist/` を生成してください。
+
+```bash
+pnpm --filter @logserver/dt-preproc build
+node packages/dt-preproc/dist/cli.js --input artifacts/logs.csv \
+  --output outputs/logs_with_feats.csv --stats outputs/dt_stats.json --pretty
+```
+
+### 5.8 セッション分割成果の静的監査
 
 `scripts/audit.ts` は、セッション分割後の CSV と `meta.json` を静的に検証し、Δt と ΔT の整合性を確かめます。
 
@@ -248,7 +260,7 @@ pnpm --filter collector run audit -- --dir artifacts/sessions --fail-on-error
 }
 ```
 
-### 5.8 Electron GUI（セッション分割サポート）
+### 5.9 Electron GUI（セッション分割サポート）
 
 Electron ベースの GUI から CSV ログのセッション分割・閾値確認・ΔT 上書きを実施できます。
 
