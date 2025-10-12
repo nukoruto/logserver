@@ -72,3 +72,44 @@ jobs:
 
       - name: Session splitter CLI e2e tests
         run: pnpm --filter @logserver/session-splitter-cli test
+
+  trainer:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        shell: bash
+        working-directory: trainer
+    env:
+      GPU_MODE: ada6000
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: "pip"
+          cache-dependency-path: trainer/requirements_cpu.txt
+
+      - name: Install Python dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install --upgrade setuptools wheel
+          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements_cpu.txt
+
+      - name: CLI smoke checks
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: |
+          python -m trainer.scripts.preprocess --help >/dev/null
+          python -m trainer.scripts.train --help >/dev/null
+          python -m trainer.scripts.score --help >/dev/null
+          python -m trainer.scripts.threshold --help >/dev/null
+          python -m trainer.scripts.explain --help >/dev/null
+          python -m trainer.scripts.export_simulink --help >/dev/null
+
+      - name: Run trainer tests
+        env:
+          PYTHONPATH: ${{ github.workspace }}
+        run: pytest --maxfail=1 --disable-warnings -q
