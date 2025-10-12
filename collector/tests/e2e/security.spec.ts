@@ -1,5 +1,5 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process';
-import { mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
+import { access, mkdtemp, readFile, readdir, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { setTimeout as delay } from 'node:timers/promises';
@@ -86,9 +86,20 @@ const waitForServer = async (url: string, attempts = 40, intervalMs = 250): Prom
   throw new Error(`Server did not become ready at ${url}`);
 };
 
+const fileExists = async (filePath: string): Promise<boolean> => {
+  try {
+    await access(filePath);
+    return true;
+  } catch {
+    return false;
+  }
+};
+
 const startServer = async (): Promise<StartedServer> => {
   const logDir = await mkdtemp(path.join(tmpdir(), 'logserver-security-'));
   const collectorDir = path.resolve(__dirname, '..', '..');
+  const distEntry = path.join(collectorDir, 'dist', 'server.js');
+  const tsEntry = path.join(collectorDir, 'server.ts');
   const env = {
     ...process.env,
     PORT: String(PORT),
@@ -101,7 +112,12 @@ const startServer = async (): Promise<StartedServer> => {
     NTP_MONITOR_DISABLED: '1',
   };
 
-  const child = spawn(process.execPath, ['server.js'], {
+  const useDist = await fileExists(distEntry);
+  const childArgs = useDist
+    ? [distEntry]
+    : ['-r', 'ts-node/register/transpile-only', tsEntry];
+
+  const child = spawn(process.execPath, childArgs, {
     cwd: collectorDir,
     env,
     stdio: 'pipe',

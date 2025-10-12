@@ -2,10 +2,10 @@
   "name": "session-anomaly-detection",
   "version": "1.0.0",
   "description": "Web session operation sequence logging server for anomaly detection research",
-  "main": "server.js",
+  "main": "dist/server.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
+    "start": "node dist/server.js",
+    "dev": "nodemon --watch src --watch server.ts --ext ts --exec \"ts-node --project tsconfig.json server.ts\"",
     "lint": "eslint .",
     "test": "jest --config jest.config.cjs",
     "build": "tsc --project tsconfig.json",
