@@ -241,6 +241,7 @@ const logCapture: Middleware = (req, res, next) => {
         code: 'invalid_value',
         expected: HTTP_METHODS,
         received: rawMethod || req.method,
+        code: 'invalid_value',
       },
     ]);
     next(error);

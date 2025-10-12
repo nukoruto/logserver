@@ -1,7 +1,7 @@
 export class AppError extends Error {
-  constructor(message: string, statusCode?: number, details?: unknown);
   statusCode: number;
   details?: unknown;
+  constructor(message: string, statusCode?: number, details?: unknown);
 }
 
 export class ValidationError extends AppError {
@@ -15,3 +15,13 @@ export class AuthenticationError extends AppError {
 export class NotFoundError extends AppError {
   constructor(message?: string);
 }
+
+declare const errors: {
+  AppError: typeof AppError;
+  ValidationError: typeof ValidationError;
+  AuthenticationError: typeof AuthenticationError;
+  NotFoundError: typeof NotFoundError;
+};
+
+export { errors };
+export default errors;

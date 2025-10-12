@@ -1,27 +1,64 @@
-import { mkdir, open } from 'fs/promises';
-import type { FileHandle } from 'fs/promises';
-import path from 'path';
+import * as fsPromises from 'node:fs/promises';
+import * as path from 'node:path';
 import logger from '../utils/logger';
-import {
-  type LogRecord,
-  LogRecordValidationError,
-  validateLogRecord,
-} from '../schema/logRecord';
+import { LogRecordValidationError, validateLogRecord } from '../schema/logRecord';
 
-type Rotation = 'daily' | 'hourly';
+type FileHandle = fsPromises.FileHandle;
 
-type CsvRecord = LogRecord;
+type PendingEntry = {
+  key: string;
+  timestampUtc: string;
+  serialized: string;
+  attempt: number;
+  nextAttemptAt: number;
+};
 
-type CsvSinkOptions = {
+const RFC4180_NEEDS_QUOTE = /[",\r\n]/;
+
+export type Rotation = 'daily' | 'hourly';
+
+export interface CsvRecord {
+  timestamp_utc: string;
+  uid: string;
+  session_id: string;
+  method: string;
+  path: string;
+  referer: string;
+  user_agent: string;
+  ip: string;
+  op_category: string;
+  status_code?: number;
+  latency_ms?: number;
+}
+
+export interface CsvSinkOptions {
   dir: string;
   rotation: Rotation;
   headers?: readonly string[];
   maxInMemoryQueue?: number;
   retryBaseDelayMs?: number;
   retryMaxDelayMs?: number;
-};
+}
 
-const DEFAULT_HEADERS: readonly (keyof CsvRecord)[] = [
+export interface CsvSinkMetrics {
+  totalWritten: number;
+  queueDepth: number;
+  retryQueueDepth: number;
+  dropTotal: number;
+}
+
+export interface CsvSinkHealthStatus {
+  healthy: boolean;
+  state: 'ok' | 'degraded' | 'shutting_down';
+  shuttingDown: boolean;
+  lastError: string | null;
+  lastSuccessAt: Date | null;
+  pendingWrites: number;
+  totalWritten: number;
+  dropTotal: number;
+}
+
+const DEFAULT_HEADERS: readonly string[] = [
   'timestamp_utc',
   'uid',
   'session_id',
@@ -35,19 +72,9 @@ const DEFAULT_HEADERS: readonly (keyof CsvRecord)[] = [
   'latency_ms',
 ];
 
-const RFC4180_NEEDS_QUOTE = /[",\r\n]/;
-
 const DEFAULT_MAX_IN_MEMORY_QUEUE = 2048;
 const DEFAULT_RETRY_BASE_DELAY_MS = 250;
 const DEFAULT_RETRY_MAX_DELAY_MS = 30_000;
-
-type PendingEntry = {
-  key: string;
-  timestampUtc: string;
-  serialized: string;
-  attempt: number;
-  nextAttemptAt: number;
-};
 
 const toTimestamp = (input: string): Date => {
   const date = new Date(input);
@@ -57,9 +84,7 @@ const toTimestamp = (input: string): Date => {
   return date;
 };
 
-const pad = (value: number): string => {
-  return value.toString().padStart(2, '0');
-};
+const pad = (value: number): string => value.toString().padStart(2, '0');
 
 const buildKey = (timestampUtc: string, rotation: Rotation): { key: string; file: string } => {
   const date = toTimestamp(timestampUtc);
@@ -75,7 +100,7 @@ const buildKey = (timestampUtc: string, rotation: Rotation): { key: string; file
   return { key, file: `${key}.csv` };
 };
 
-class CsvSink {
+export class CsvSink {
   private readonly dir: string;
 
   private readonly rotation: Rotation;
@@ -88,7 +113,7 @@ class CsvSink {
 
   private readonly retryMaxDelayMs: number;
 
-  private readonly retryQueue: PendingEntry[] = [];
+  private retryQueue: PendingEntry[] = [];
 
   private retryTimer: NodeJS.Timeout | null = null;
 
@@ -119,14 +144,14 @@ class CsvSink {
     this.retryMaxDelayMs = options.retryMaxDelayMs ?? DEFAULT_RETRY_MAX_DELAY_MS;
   }
 
-  public write(record: CsvRecord): Promise<void> {
+  write(record: CsvRecord): Promise<void> {
     if (this.shuttingDown) {
       return Promise.reject(new Error('CsvSink is shutting down'));
     }
 
     let entry: CsvRecord;
     try {
-      entry = validateLogRecord(record);
+      entry = validateLogRecord(record) as CsvRecord;
     } catch (error) {
       if (error instanceof LogRecordValidationError) {
         return Promise.reject(error);
@@ -147,7 +172,7 @@ class CsvSink {
     return this.enqueue(pending);
   }
 
-  public async shutdown(): Promise<void> {
+  async shutdown(): Promise<void> {
     if (this.shuttingDown) {
       await this.queue;
       return;
@@ -176,7 +201,7 @@ class CsvSink {
         this.pendingWrites = Math.max(0, this.pendingWrites - 1);
       });
 
-    this.queue = operation.catch(() => undefined);
+    this.queue = operation.then(() => undefined, () => undefined);
 
     return operation;
   }
@@ -196,7 +221,12 @@ class CsvSink {
     }
   }
 
-  private scheduleRetry(entry: PendingEntry): void {
+  private scheduleRetry(entry: PendingEntry | PendingEntry[]): void {
+    if (Array.isArray(entry)) {
+      entry.forEach((item) => this.scheduleRetry(item));
+      return;
+    }
+
     if (this.shuttingDown) {
       this.recordDrop('shutdown', entry);
       return;
@@ -206,8 +236,7 @@ class CsvSink {
       return;
     }
 
-    const baseDelay = this.retryBaseDelayMs;
-    const computedDelay = baseDelay * Math.pow(2, Math.max(0, entry.attempt - 1));
+    const computedDelay = this.retryBaseDelayMs * Math.pow(2, Math.max(0, entry.attempt - 1));
     const delay = Math.min(this.retryMaxDelayMs, computedDelay);
     entry.nextAttemptAt = Date.now() + delay;
 
@@ -254,7 +283,7 @@ class CsvSink {
         .finally(() => {
           this.pendingWrites = Math.max(0, this.pendingWrites - 1);
         });
-      this.queue = operation.catch(() => undefined);
+      this.queue = operation.then(() => undefined, () => undefined);
     }
 
     if (this.retryQueue.length > 0) {
@@ -284,10 +313,10 @@ class CsvSink {
     }
     await this.closeHandle();
 
-    await mkdir(this.dir, { recursive: true });
+    await fsPromises.mkdir(this.dir, { recursive: true });
     const { file } = buildKey(timestampUtc, this.rotation);
     const fullPath = path.resolve(this.dir, file);
-    this.handle = await open(fullPath, 'a');
+    this.handle = await fsPromises.open(fullPath, 'a');
     this.activeKey = key;
 
     const stats = await this.handle.stat();
@@ -315,12 +344,7 @@ class CsvSink {
     this.activeKey = null;
   }
 
-  public getMetrics(): {
-    totalWritten: number;
-    queueDepth: number;
-    dropTotal: number;
-    retryQueueDepth: number;
-  } {
+  getMetrics(): CsvSinkMetrics {
     return {
       totalWritten: this.totalWritten,
       queueDepth: this.pendingWrites + this.retryQueue.length,
@@ -329,23 +353,10 @@ class CsvSink {
     };
   }
 
-  public getHealthStatus(): {
-    healthy: boolean;
-    state: 'ok' | 'degraded' | 'shutting_down';
-    shuttingDown: boolean;
-    lastError: string | null;
-    lastSuccessAt: Date | null;
-    pendingWrites: number;
-    totalWritten: number;
-    dropTotal: number;
-  } {
+  getHealthStatus(): CsvSinkHealthStatus {
     const shuttingDown = this.shuttingDown;
     const hasError = this.lastError !== null;
-    const state: 'ok' | 'degraded' | 'shutting_down' = shuttingDown
-      ? 'shutting_down'
-      : hasError
-        ? 'degraded'
-        : 'ok';
+    const state: CsvSinkHealthStatus['state'] = shuttingDown ? 'shutting_down' : hasError ? 'degraded' : 'ok';
 
     return {
       healthy: !shuttingDown && !hasError,
@@ -361,7 +372,7 @@ class CsvSink {
 
   private serialize(record: CsvRecord): string {
     const values = this.headers.map((key) => {
-      const raw = (record as Record<string, unknown>)[key];
+      const raw = (record as unknown as Record<string, unknown>)[key];
       return this.formatCell(raw);
     });
     return `${values.join(',')}\r\n`;
@@ -380,8 +391,4 @@ class CsvSink {
   }
 }
 
-export type { CsvRecord, CsvSinkOptions, Rotation };
-export type CsvSinkMetrics = ReturnType<CsvSink['getMetrics']>;
-export type CsvSinkHealthStatus = ReturnType<CsvSink['getHealthStatus']>;
-export { CsvSink };
 export default CsvSink;

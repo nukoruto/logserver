@@ -1,8 +1,15 @@
-import { execFile } from 'node:child_process';
+import * as childProcess from 'node:child_process';
 
-const CHRONYC_COMMAND = 'chronyc';
-const CHRONYC_ARGS = ['tracking'];
-const NTPSTAT_COMMAND = 'ntpstat';
+type ExecFileException = childProcess.ExecFileException;
+
+type ExecResult = {
+  stdout: string;
+  stderr: string;
+};
+
+const CHRONYC_COMMAND = 'chronyc' as const;
+const CHRONYC_ARGS: readonly string[] = ['tracking'];
+const NTPSTAT_COMMAND = 'ntpstat' as const;
 
 const CHRONYC_OFFSET_PATTERN = /(last offset|system time)\s*:\s*([-+]?\d+(?:\.\d+)?)\s*seconds/iu;
 const NTPSTAT_OFFSET_PATTERN = /time correct to within\s+([-+]?\d+(?:\.\d+)?)\s*ms/iu;
@@ -21,7 +28,8 @@ const parseChronycTracking = (stdout: string): number | null => {
     }
     const match = line.match(CHRONYC_OFFSET_PATTERN);
     if (match) {
-      const [, label, value] = match;
+      const label = match[1];
+      const value = match[2];
       const parsed = Number.parseFloat(value);
       if (!Number.isFinite(parsed)) {
         continue;
@@ -58,15 +66,15 @@ const parseNtpstat = (stdout: string): number | null => {
   return Math.abs(value);
 };
 
-const execFileAsync = (command: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> =>
+const execFileAsync = (command: string, args: readonly string[]): Promise<ExecResult> =>
   new Promise((resolve, reject) => {
-    execFile(command, args as string[], (error, stdout: string | Buffer, stderr: string | Buffer) => {
+    childProcess.execFile(command, Array.from(args), (error: ExecFileException | null, stdout: string | Buffer, stderr: string | Buffer) => {
       if (error) {
         reject(error);
         return;
       }
-      const stdoutText = Buffer.isBuffer(stdout) ? stdout.toString() : stdout;
-      const stderrText = Buffer.isBuffer(stderr) ? stderr.toString() : stderr;
+      const stdoutText = typeof stdout === 'string' ? stdout : stdout.toString();
+      const stderrText = typeof stderr === 'string' ? stderr : stderr.toString();
       resolve({ stdout: stdoutText, stderr: stderrText });
     });
   });
@@ -76,9 +84,7 @@ const runCommand = async (command: string, args: readonly string[]): Promise<str
   return stdout;
 };
 
-type CheckNtpOffset = () => Promise<number>;
-
-export const checkNtpOffset: CheckNtpOffset = async () => {
+export const checkNtpOffset = async (): Promise<number> => {
   const errors: string[] = [];
 
   try {

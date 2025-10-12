@@ -1,8 +1,54 @@
-﻿const { ensureDatabase, run, all, get } = require('./database');
-const logger = require('../utils/logger');
+import { ensureDatabase, run, all, get } from './database';
+import logger from '../utils/logger';
 
-const ensureColumn = async (column, type) => {
-  const info = await all('PRAGMA table_info(events)');
+export interface EventPayload {
+  timestamp: string;
+  session_id: string;
+  user_id: string;
+  event: string;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  latency_ms: number | null;
+  metadata: Record<string, unknown>;
+}
+
+export interface StoredEvent extends EventPayload {
+  id: number;
+  received_at: string;
+  delta_t: number;
+}
+
+export interface EventFilters {
+  sessionId?: string;
+  userId?: string;
+  event?: string;
+  fromTimestamp?: string;
+  toTimestamp?: string;
+}
+
+export interface Pagination {
+  limit: number;
+  offset: number;
+}
+
+interface EventRow {
+  id: number;
+  timestamp: string;
+  session_id: string;
+  user_id: string;
+  event: string;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  latency_ms: number | null;
+  metadata: string | null;
+  received_at: string;
+  delta_t: number | null;
+}
+
+const ensureColumn = async (column: string, type: string): Promise<void> => {
+  const info = await all<{ name: string }>('PRAGMA table_info(events)');
   const exists = info.some((entry) => entry.name === column);
   if (!exists) {
     await run(`ALTER TABLE events ADD COLUMN ${column} ${type}`);
@@ -10,9 +56,10 @@ const ensureColumn = async (column, type) => {
   }
 };
 
-const createSchema = async () => {
+export const createSchema = async (): Promise<void> => {
   await ensureDatabase();
-  await run(`
+  await run(
+    `
     CREATE TABLE IF NOT EXISTS events (
       id INTEGER PRIMARY KEY AUTOINCREMENT,
       timestamp TEXT NOT NULL,
@@ -27,7 +74,8 @@ const createSchema = async () => {
       received_at TEXT NOT NULL DEFAULT (datetime('now')),
       delta_t REAL
     )
-  `);
+  `
+  );
   await ensureColumn('delta_t', 'REAL');
   await run('CREATE INDEX IF NOT EXISTS idx_events_session ON events(session_id)');
   await run('CREATE INDEX IF NOT EXISTS idx_events_user ON events(user_id)');
@@ -35,18 +83,18 @@ const createSchema = async () => {
   logger.info('Event table ensured');
 };
 
-const serializeMetadata = (metadata) => JSON.stringify(metadata || {});
+const serializeMetadata = (metadata: Record<string, unknown>): string => JSON.stringify(metadata || {});
 
-const deserializeMetadata = (value) => {
+const deserializeMetadata = (value: string | null): Record<string, unknown> => {
   try {
-    return value ? JSON.parse(value) : {};
+    return value ? (JSON.parse(value) as Record<string, unknown>) : {};
   } catch {
     return { raw: value };
   }
 };
 
-const fetchPreviousTimestamp = async (sessionId) => {
-  const row = await get(
+const fetchPreviousTimestamp = async (sessionId: string): Promise<Date | null> => {
+  const row = await get<{ timestamp: string }>(
     `SELECT timestamp FROM events WHERE session_id = ? ORDER BY timestamp DESC LIMIT 1`,
     [sessionId]
   );
@@ -56,7 +104,7 @@ const fetchPreviousTimestamp = async (sessionId) => {
   return new Date(row.timestamp);
 };
 
-const computeDeltaT = async (sessionId, timestamp) => {
+const computeDeltaT = async (sessionId: string, timestamp: string): Promise<number> => {
   const previous = await fetchPreviousTimestamp(sessionId);
   if (!previous) {
     return 0;
@@ -69,7 +117,7 @@ const computeDeltaT = async (sessionId, timestamp) => {
   return deltaSeconds;
 };
 
-const insertEvent = async (event) => {
+export const insertEvent = async (event: EventPayload): Promise<StoredEvent> => {
   const deltaT = await computeDeltaT(event.session_id, event.timestamp);
   const sql = `
     INSERT INTO events (timestamp, session_id, user_id, event, method, path, status, latency_ms, metadata, received_at, delta_t)
@@ -91,16 +139,16 @@ const insertEvent = async (event) => {
   ];
   const result = await run(sql, params);
   return {
-    id: result.lastID,
+    id: result.lastID ?? 0,
     ...event,
     received_at: receivedAt,
     delta_t: deltaT,
   };
 };
 
-const insertEventsBulk = async (events) => {
+export const insertEventsBulk = async (events: readonly EventPayload[]): Promise<StoredEvent[]> => {
   await run('BEGIN TRANSACTION');
-  const inserted = [];
+  const inserted: StoredEvent[] = [];
   try {
     for (const event of events) {
       const created = await insertEvent(event);
@@ -109,14 +157,14 @@ const insertEventsBulk = async (events) => {
     await run('COMMIT');
     return inserted;
   } catch (error) {
-    await run('ROLLBACK');
+    await run('ROLLBACK').catch(() => undefined);
     throw error;
   }
 };
 
-const buildFilters = (filters = {}) => {
-  const conditions = [];
-  const params = [];
+const buildFilters = (filters: EventFilters = {}): { whereClause: string; params: unknown[] } => {
+  const conditions: string[] = [];
+  const params: unknown[] = [];
 
   if (filters.sessionId) {
     conditions.push('session_id = ?');
@@ -143,7 +191,7 @@ const buildFilters = (filters = {}) => {
   return { whereClause, params };
 };
 
-const mapRow = (row) => ({
+const mapRow = (row: EventRow): StoredEvent => ({
   id: row.id,
   timestamp: row.timestamp,
   session_id: row.session_id,
@@ -155,10 +203,10 @@ const mapRow = (row) => ({
   latency_ms: row.latency_ms,
   metadata: deserializeMetadata(row.metadata),
   received_at: row.received_at,
-  delta_t: row.delta_t,
+  delta_t: row.delta_t ?? 0,
 });
 
-const getEvents = async (filters = {}, pagination = {}) => {
+export const getEvents = async (filters: EventFilters = {}, pagination: Partial<Pagination> = {}): Promise<StoredEvent[]> => {
   const { whereClause, params } = buildFilters(filters);
   const limit = pagination.limit ?? 100;
   const offset = pagination.offset ?? 0;
@@ -168,21 +216,23 @@ const getEvents = async (filters = {}, pagination = {}) => {
     ORDER BY timestamp ASC
     LIMIT ? OFFSET ?
   `;
-  const rows = await all(sql, [...params, limit, offset]);
+  const rows = await all<EventRow>(sql, [...params, limit, offset]);
   return rows.map(mapRow);
 };
 
-const countEvents = async (filters = {}) => {
+export const countEvents = async (filters: EventFilters = {}): Promise<number> => {
   const { whereClause, params } = buildFilters(filters);
   const sql = `SELECT COUNT(*) as total FROM events ${whereClause}`;
-  const row = await get(sql, params);
+  const row = await get<{ total: number }>(sql, params);
   return row ? row.total : 0;
 };
 
-module.exports = {
+export const eventRepository = {
   createSchema,
   insertEvent,
   insertEventsBulk,
   getEvents,
   countEvents,
 };
+
+export default eventRepository;

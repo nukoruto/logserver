@@ -1,10 +1,15 @@
-'use strict';
+import * as crypto from 'node:crypto';
+import config from '../config';
+import logger from '../utils/logger';
+import sim from '../sim';
+import { buildAnomalySummary } from '../sim/persistence/simWriter';
+import type { ScenarioDefinition } from '../sim/scenario';
+import type { NormalEvent } from '../sim/generator/normalGenerator';
+import type { PersistSimulationResult } from '../sim/persistence/simWriter';
 
-const crypto = require('node:crypto');
-const config = require('../config');
-const logger = require('../utils/logger');
-const sim = require('../sim');
-const { buildAnomalySummary } = require('../sim/persistence/simWriter');
+type StrategyName = 'protocolViolation' | 'timeDeviation' | 'authenticationBypass';
+
+type StrategyOverrides = Record<StrategyName, { weight: number }>;
 
 const {
   scenario,
@@ -21,7 +26,15 @@ const DEFAULT_SESSION_SPACING_SECONDS = 180;
 const DEFAULT_MAX_STEPS = 64;
 const DEFAULT_ANOMALY_RATE = 0.2;
 
-const EVENT_BLUEPRINTS = {
+interface EventBlueprint {
+  method: string;
+  path: string;
+  opCategory: string;
+  baseLatency: number;
+  successStatus: number;
+}
+
+const EVENT_BLUEPRINTS: Record<string, EventBlueprint> & { __default: EventBlueprint } = {
   login: { method: 'POST', path: '/auth/login', opCategory: 'AUTH', baseLatency: 140, successStatus: 200 },
   browse: { method: 'GET', path: '/workspace/feed', opCategory: 'READ', baseLatency: 95, successStatus: 200 },
   view: { method: 'GET', path: '/workspace/feed', opCategory: 'READ', baseLatency: 90, successStatus: 200 },
@@ -32,26 +45,157 @@ const EVENT_BLUEPRINTS = {
   __default: { method: 'POST', path: '/workspace/unknown', opCategory: 'READ', baseLatency: 120, successStatus: 200 },
 };
 
-const STRATEGY_ALIASES = {
+const STRATEGY_ALIASES: Record<string, StrategyName> = {
   protocol: 'protocolViolation',
-  'protocol_violation': 'protocolViolation',
+  protocol_violation: 'protocolViolation',
   protocolviolation: 'protocolViolation',
   time: 'timeDeviation',
-  'time_deviation': 'timeDeviation',
+  time_deviation: 'timeDeviation',
   timedeviation: 'timeDeviation',
   auth: 'authenticationBypass',
   authentication: 'authenticationBypass',
-  'authentication_bypass': 'authenticationBypass',
+  authentication_bypass: 'authenticationBypass',
 };
 
-const normalizeString = (value) => {
+export interface SimulationEventMetadata extends Record<string, unknown> {
+  scenario?: {
+    id: string;
+    from: string | null;
+    to: string | null;
+    probability: number | null;
+  };
+  sequence_index?: number;
+  op_category?: string;
+  auth?: Record<string, unknown>;
+  anomaly?: string;
+}
+
+export interface SimulationEvent extends Record<string, unknown> {
+  session_id?: string;
+  user_id?: string;
+  uid?: string;
+  event?: string;
+  method?: string;
+  path?: string;
+  status?: number;
+  latency_ms?: number;
+  delta_t?: number;
+  timestamp?: string;
+  timestamp_utc?: string;
+  deltaSeconds?: number | null;
+  anomaly?: boolean;
+  anomaly_type?: string;
+  anomalyLabel?: number;
+  metadata?: SimulationEventMetadata;
+  _anomalyType?: string;
+  _anomalyDetails?: Record<string, unknown>;
+  protocolViolationFlag?: boolean;
+  protocolViolationReasons?: unknown[];
+  timeDeviationFlag?: boolean;
+  timeDeviationObservedDeltaSeconds?: number;
+  timeDeviationThresholdSeconds?: number;
+  timeDeviationScore?: number;
+  [key: string]: unknown;
+}
+
+export interface SimulationSummary {
+  events: number;
+  sessions: number;
+  anomalies: Record<string, number>;
+}
+
+export interface SimulationFiles {
+  csvPath: string;
+  manifestPath: string;
+  hash: string;
+}
+
+export interface GenerateScenarioOptions extends Record<string, unknown> {
+  seed?: string | number | null;
+  count?: number;
+  maxSteps?: number;
+  anomalyRate?: number;
+  anomalyCount?: number | null;
+  anomalies?: Iterable<string> | string | null;
+  persist?: boolean;
+  runId?: string | null;
+  outputDir?: string;
+  csvFileName?: string;
+  manifestFileName?: string;
+  sessionSpacingSeconds?: number;
+  scenarioPath?: string | null;
+  scenarioFile?: string | null;
+  startTime?: Date | string | null;
+}
+
+export interface SimulationParameters extends Record<string, unknown> {
+  count: number;
+  anomalies: string[];
+  seed: string;
+  seed_source: string | null;
+  scenario_path: string | null;
+  anomaly_rate: number;
+  anomaly_count: number | null;
+  session_spacing_seconds: number;
+  persist: boolean;
+  max_steps: number;
+  time_deviation_detector: {
+    method: string;
+    quantile: number;
+    min_samples: number;
+  };
+  protocol_validator: {
+    enabled: boolean;
+  };
+}
+
+export interface SimulationResult {
+  scenarioId: string;
+  generated_at: string;
+  params: SimulationParameters;
+  events: SimulationEvent[];
+  summary: SimulationSummary;
+  files?: SimulationFiles;
+  manifest?: Record<string, unknown>;
+}
+
+export type NormalizedAnomalyList = Set<StrategyName>;
+
+type SeedResolution = {
+  value: string;
+  source: 'provided' | 'generated';
+};
+
+interface SessionIdentifiers {
+  sessionId: string;
+  userId: string;
+  uid: string;
+}
+
+interface DefaultParameterInput {
+  count: number;
+  anomalies: NormalizedAnomalyList;
+  seed: string;
+  seedSource: string | null;
+  scenarioPath: string | null;
+  anomalyRate: number;
+  anomalyCount: number | null;
+  sessionSpacingSeconds: number;
+  persist: boolean;
+  maxSteps: number;
+  timeDeviationMethod: string;
+  timeDeviationQuantile: number;
+  timeDeviationMinSamples: number;
+}
+
+const normalizeString = (value: unknown): string => {
   if (typeof value !== 'string') {
     return '';
   }
   return value.trim();
 };
 
-const normalizeSeedInput = (seed) => {
+const normalizeSeedInput = (seed: unknown): string | null => {
   if (seed === undefined || seed === null) {
     return null;
   }
@@ -65,9 +209,9 @@ const normalizeSeedInput = (seed) => {
   return null;
 };
 
-const generateSeed = () => crypto.randomBytes(12).toString('hex');
+const generateSeed = (): string => crypto.randomBytes(12).toString('hex');
 
-const resolveSeed = (seed) => {
+const resolveSeed = (seed: unknown): SeedResolution => {
   const normalized = normalizeSeedInput(seed);
   if (normalized !== null) {
     return {
@@ -81,7 +225,7 @@ const resolveSeed = (seed) => {
   };
 };
 
-const parsePositiveNumber = (candidate, fallback) => {
+const parsePositiveNumber = (candidate: unknown, fallback: number): number => {
   const value = Number(candidate);
   if (Number.isFinite(value) && value > 0) {
     return value;
@@ -89,7 +233,7 @@ const parsePositiveNumber = (candidate, fallback) => {
   return fallback;
 };
 
-const parseNonNegativeNumber = (candidate, fallback) => {
+const parseNonNegativeNumber = (candidate: unknown, fallback: number | null): number | null => {
   const value = Number(candidate);
   if (Number.isFinite(value) && value >= 0) {
     return value;
@@ -97,7 +241,7 @@ const parseNonNegativeNumber = (candidate, fallback) => {
   return fallback;
 };
 
-const parseBoolean = (candidate, fallback) => {
+const parseBoolean = (candidate: unknown, fallback: boolean): boolean => {
   if (typeof candidate === 'boolean') {
     return candidate;
   }
@@ -113,39 +257,42 @@ const parseBoolean = (candidate, fallback) => {
   return fallback;
 };
 
-const normalizeAnomalyList = (input) => {
+export const normalizeAnomalyList = (input: unknown): NormalizedAnomalyList => {
   if (!input) {
-    return new Set();
+    return new Set<StrategyName>();
   }
   const list = Array.isArray(input) ? input : String(input).split(',');
   const normalized = list
     .map((item) => normalizeString(item).toLowerCase())
     .filter((item) => item.length > 0)
-    .map((item) => STRATEGY_ALIASES[item] || item);
-  return new Set(normalized.filter((item) => ['protocolViolation', 'timeDeviation', 'authenticationBypass'].includes(item)));
+    .map((item) => STRATEGY_ALIASES[item] || (item as StrategyName));
+  const filtered = normalized.filter((item): item is StrategyName =>
+    item === 'protocolViolation' || item === 'timeDeviation' || item === 'authenticationBypass'
+  );
+  return new Set(filtered);
 };
 
-const buildStrategyOverrides = (selectedStrategies) => ({
+const buildStrategyOverrides = (selectedStrategies: NormalizedAnomalyList): StrategyOverrides => ({
   protocolViolation: { weight: selectedStrategies.has('protocolViolation') ? 1 : 0 },
   timeDeviation: { weight: selectedStrategies.has('timeDeviation') ? 1 : 0 },
   authenticationBypass: { weight: selectedStrategies.has('authenticationBypass') ? 1 : 0 },
 });
 
-const parseStartTime = (candidate) => {
+const parseStartTime = (candidate: unknown): Date => {
   if (!candidate) {
     return new Date();
   }
   if (candidate instanceof Date) {
     return new Date(candidate.getTime());
   }
-  const parsed = new Date(candidate);
+  const parsed = new Date(candidate as string);
   if (Number.isNaN(parsed.getTime())) {
     throw new Error(`Invalid startTime provided: ${candidate}`);
   }
   return parsed;
 };
 
-const createSessionIdentifiers = (seed, index) => {
+const createSessionIdentifiers = (seed: string, index: number): SessionIdentifiers => {
   const base = normalizeString(seed) || 'sim';
   const suffix = (index + 1).toString().padStart(3, '0');
   return {
@@ -155,7 +302,7 @@ const createSessionIdentifiers = (seed, index) => {
   };
 };
 
-const resolveBlueprint = (eventName) => {
+const resolveBlueprint = (eventName: unknown): EventBlueprint => {
   const key = normalizeString(eventName).toLowerCase();
   if (key && EVENT_BLUEPRINTS[key]) {
     return EVENT_BLUEPRINTS[key];
@@ -163,11 +310,11 @@ const resolveBlueprint = (eventName) => {
   return EVENT_BLUEPRINTS.__default;
 };
 
-const deriveStatus = (blueprint, anomalyTag) => {
+const deriveStatus = (blueprint: EventBlueprint, anomalyTag: string | null): number => {
   if (!anomalyTag) {
     return blueprint.successStatus || 200;
   }
-  const normalized = String(anomalyTag).toLowerCase();
+  const normalized = anomalyTag.toLowerCase();
   if (normalized.includes('auth')) {
     return 401;
   }
@@ -180,17 +327,17 @@ const deriveStatus = (blueprint, anomalyTag) => {
   return blueprint.successStatus || 200;
 };
 
-const deriveLatency = (blueprint, deltaSeconds, index) => {
+const deriveLatency = (blueprint: EventBlueprint, deltaSeconds: number | undefined, index: number): number => {
   const base = Number.isFinite(blueprint.baseLatency) ? blueprint.baseLatency : 120;
-  const deltaComponent = Number.isFinite(deltaSeconds) ? deltaSeconds * 40 : 0;
+  const deltaComponent = Number.isFinite(deltaSeconds) ? (deltaSeconds as number) * 40 : 0;
   return Math.max(20, Math.round(base + deltaComponent + (index % 17)));
 };
 
-const cloneMetadata = (value) => {
+const cloneMetadata = (value: unknown): SimulationEventMetadata => {
   if (!value || typeof value !== 'object' || Array.isArray(value)) {
     return {};
   }
-  return { ...value };
+  return { ...(value as SimulationEventMetadata) };
 };
 
 const decorateEvent = ({
@@ -198,33 +345,42 @@ const decorateEvent = ({
   scenarioId,
   session,
   index,
-}) => {
+}: {
+  event: SimulationEvent;
+  scenarioId: string;
+  session: SessionIdentifiers;
+  index: number;
+}): SimulationEvent => {
   const blueprint = resolveBlueprint(event.event);
   const metadata = cloneMetadata(event.metadata);
   metadata.scenario = {
     id: scenarioId,
-    from: event.from || null,
-    to: event.to || null,
-    probability: Number.isFinite(event.probability) ? event.probability : null,
+    from: (event as Record<string, unknown>).from ? String((event as Record<string, unknown>).from) : null,
+    to: (event as Record<string, unknown>).to ? String((event as Record<string, unknown>).to) : null,
+    probability: Number.isFinite((event as Record<string, unknown>).probability)
+      ? Number((event as Record<string, unknown>).probability)
+      : null,
   };
   metadata.sequence_index = index;
   if (!metadata.op_category && blueprint.opCategory) {
     metadata.op_category = blueprint.opCategory;
   }
 
-  const anomalyTag = normalizeString(event._anomalyType || event.anomaly_type || event.anomalyType);
+  const anomalyTag = normalizeString((event as SimulationEvent)._anomalyType || event.anomaly_type || event.anomalyType);
   const deltaSeconds = Number(event.deltaSeconds);
 
-  const record = {
-    timestamp: event.timestamp,
+  const record: SimulationEvent = {
+    timestamp: typeof event.timestamp === 'string' ? event.timestamp : (event.timestamp_utc as string | undefined),
     session_id: normalizeString(event.session_id) || session.sessionId,
     user_id: normalizeString(event.user_id) || session.userId,
     uid: normalizeString(event.uid) || session.uid,
     event: event.event,
     method: event.method || blueprint.method,
     path: event.path || blueprint.path,
-    status: Number.isFinite(event.status) ? Math.trunc(event.status) : deriveStatus(blueprint, anomalyTag),
-    latency_ms: Number.isFinite(event.latency_ms) ? Math.round(event.latency_ms) : deriveLatency(blueprint, deltaSeconds, index),
+    status: Number.isFinite(event.status) ? Number(event.status) : deriveStatus(blueprint, anomalyTag || null),
+    latency_ms: Number.isFinite(event.latency_ms)
+      ? Math.round(Number(event.latency_ms))
+      : deriveLatency(blueprint, Number.isFinite(deltaSeconds) ? deltaSeconds : undefined, index),
     deltaSeconds: Number.isFinite(deltaSeconds) ? deltaSeconds : undefined,
     metadata,
   };
@@ -237,9 +393,15 @@ const decorateEvent = ({
   }
   if (event.timeDeviationFlag === true) {
     record.timeDeviationFlag = true;
-    record.timeDeviationObservedDeltaSeconds = event.timeDeviationObservedDeltaSeconds;
-    record.timeDeviationThresholdSeconds = event.timeDeviationThresholdSeconds;
-    record.timeDeviationScore = event.timeDeviationScore;
+    record.timeDeviationObservedDeltaSeconds = Number.isFinite(event.timeDeviationObservedDeltaSeconds)
+      ? Number(event.timeDeviationObservedDeltaSeconds)
+      : undefined;
+    record.timeDeviationThresholdSeconds = Number.isFinite(event.timeDeviationThresholdSeconds)
+      ? Number(event.timeDeviationThresholdSeconds)
+      : undefined;
+    record.timeDeviationScore = Number.isFinite(event.timeDeviationScore)
+      ? Number(event.timeDeviationScore)
+      : undefined;
   }
 
   if (anomalyTag) {
@@ -252,8 +414,8 @@ const decorateEvent = ({
   return record;
 };
 
-const decorateSequence = (events, context) => {
-  const decorated = [];
+const decorateSequence = (events: SimulationEvent[], context: { scenarioId: string; session: SessionIdentifiers }): SimulationEvent[] => {
+  const decorated: SimulationEvent[] = [];
   for (let index = 0; index < events.length; index += 1) {
     decorated.push(
       decorateEvent({
@@ -261,48 +423,51 @@ const decorateSequence = (events, context) => {
         scenarioId: context.scenarioId,
         session: context.session,
         index,
-      }),
+      })
     );
   }
   return decorated;
 };
 
-const defaultParameters = (input) => ({
+const defaultParameters = (input: DefaultParameterInput): SimulationParameters => ({
   count: input.count,
   anomalies: Array.from(input.anomalies || []),
-  seed: input.seed || null,
-  seed_source: input.seedSource || null,
-  scenario_path: input.scenarioPath || null,
+  seed: input.seed,
+  seed_source: input.seedSource,
+  scenario_path: input.scenarioPath,
   anomaly_rate: input.anomalyRate,
   anomaly_count: input.anomalyCount,
   session_spacing_seconds: input.sessionSpacingSeconds,
   persist: input.persist,
   max_steps: input.maxSteps,
   time_deviation_detector: {
-    method: input.timeDeviationMethod || 'quantile',
-    quantile: input.timeDeviationQuantile || 0.99,
-    min_samples: input.timeDeviationMinSamples || 5,
+    method: input.timeDeviationMethod,
+    quantile: input.timeDeviationQuantile,
+    min_samples: input.timeDeviationMinSamples,
   },
   protocol_validator: {
     enabled: true,
   },
 });
 
-const generateScenario = async (options = {}) => {
-  const count = Number.isInteger(options.count) && options.count > 0 ? options.count : DEFAULT_EVENT_COUNT;
-  const maxSteps = Number.isInteger(options.maxSteps) && options.maxSteps > 0 ? options.maxSteps : DEFAULT_MAX_STEPS;
+export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
+  const count = Number.isInteger(options.count) && (options.count as number) > 0 ? (options.count as number) : DEFAULT_EVENT_COUNT;
+  const maxSteps = Number.isInteger(options.maxSteps) && (options.maxSteps as number) > 0 ? (options.maxSteps as number) : DEFAULT_MAX_STEPS;
   const sessionSpacingSeconds = parsePositiveNumber(options.sessionSpacingSeconds, DEFAULT_SESSION_SPACING_SECONDS);
   const persist = parseBoolean(options.persist, true);
-  const scenarioPath = options.scenarioPath || options.scenarioFile || null;
-  const anomalyRate = options.anomalyRate !== undefined ? parseNonNegativeNumber(options.anomalyRate, DEFAULT_ANOMALY_RATE) : DEFAULT_ANOMALY_RATE;
+  const scenarioPath = (options.scenarioPath ?? options.scenarioFile ?? null) as string | null;
+  const anomalyRate = options.anomalyRate !== undefined
+    ? parseNonNegativeNumber(options.anomalyRate, DEFAULT_ANOMALY_RATE) ?? DEFAULT_ANOMALY_RATE
+    : DEFAULT_ANOMALY_RATE;
   const anomalyCount = options.anomalyCount !== undefined ? parseNonNegativeNumber(options.anomalyCount, null) : null;
   const anomalies = normalizeAnomalyList(options.anomalies);
 
-  const scenarioDefinition = scenario.loadScenario(scenarioPath);
-  const scenarioId = normalizeString(scenarioDefinition.id) || 'default-flow';
-  const scenarioVersion = scenarioDefinition.version || null;
+  const scenarioDefinition = scenario.loadScenario(scenarioPath) as ScenarioDefinition;
+  const scenarioId = normalizeString((scenarioDefinition as Record<string, unknown>).id) || 'default-flow';
+  const scenarioVersionRaw = (scenarioDefinition as Record<string, unknown>).version;
+  const scenarioVersion = typeof scenarioVersionRaw === 'string' ? scenarioVersionRaw : null;
 
-  const baseStartTime = parseStartTime(options.startTime);
+  const baseStartTime = parseStartTime(options.startTime ?? null);
   const seedResolution = resolveSeed(options.seed);
   const resolvedSeed = seedResolution.value;
   const parameters = defaultParameters({
@@ -342,8 +507,8 @@ const generateScenario = async (options = {}) => {
     time_deviation_detector: parameters.time_deviation_detector,
   });
 
-  const events = [];
-  const sessionIds = new Set();
+  const events: SimulationEvent[] = [];
+  const sessionIds = new Set<string>();
   let sessionIndex = 0;
   let sessionStartTime = new Date(baseStartTime.getTime());
 
@@ -356,16 +521,16 @@ const generateScenario = async (options = {}) => {
       seed: sessionSeed,
       startTime: sessionStartTime,
       maxSteps,
-    });
+    }) as NormalEvent[];
 
-    let mutatedSequence = baseSequence;
-    if (anomalies.size > 0 && (anomalyRate > 0 || (Number.isFinite(anomalyCount) && anomalyCount > 0))) {
+    let mutatedSequence: SimulationEvent[] = baseSequence as SimulationEvent[];
+    if (anomalies.size > 0 && (anomalyRate > 0 || (Number.isFinite(anomalyCount) && (anomalyCount as number) > 0))) {
       mutatedSequence = anomalyInjector.injectAnomaly(baseSequence, {
         seed: sessionSeed,
         anomalyRate,
-        anomalyCount: Number.isFinite(anomalyCount) ? anomalyCount : null,
+        anomalyCount: Number.isFinite(anomalyCount) ? (anomalyCount as number) : null,
         strategies: selectedStrategies,
-      });
+      }) as SimulationEvent[];
     }
 
     const decorated = decorateSequence(mutatedSequence, {
@@ -379,7 +544,9 @@ const generateScenario = async (options = {}) => {
 
     for (const event of labeled) {
       events.push(event);
-      sessionIds.add(event.session_id);
+      if (event.session_id) {
+        sessionIds.add(String(event.session_id));
+      }
       if (events.length >= count) {
         break;
       }
@@ -397,28 +564,28 @@ const generateScenario = async (options = {}) => {
   const trimmedEvents = events.slice(0, count);
   const generatedAt = new Date().toISOString();
 
-  let persistenceResult = null;
+  let persistenceResult: PersistSimulationResult | null = null;
   if (persist && trimmedEvents.length > 0) {
     persistenceResult = await persistSimulationRun({
       events: trimmedEvents,
       scenarioId,
       seed: resolvedSeed,
-      runId: options.runId,
-      outputDir: options.outputDir || config.simLogRoot,
-      csvFileName: options.csvFileName,
-      manifestFileName: options.manifestFileName,
+      runId: options.runId ?? null,
+      outputDir: (options.outputDir as string | undefined) || config.simLogRoot,
+      csvFileName: options.csvFileName as string | undefined,
+      manifestFileName: options.manifestFileName as string | undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
     });
   }
 
-  const summary = {
+  const summary: SimulationSummary = {
     events: trimmedEvents.length,
     sessions: sessionIds.size,
     anomalies: buildAnomalySummary(trimmedEvents),
   };
 
-  const response = {
+  const response: SimulationResult = {
     scenarioId,
     generated_at: generatedAt,
     params: {
@@ -451,7 +618,10 @@ const generateScenario = async (options = {}) => {
   return response;
 };
 
-module.exports = {
+const simulationService = {
   generateScenario,
   normalizeAnomalyList,
 };
+
+export { simulationService };
+export default simulationService;
