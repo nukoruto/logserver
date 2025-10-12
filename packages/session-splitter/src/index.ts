@@ -112,6 +112,23 @@ export interface ThresholdComputationResult {
   scan_step: number;
 }
 
+export interface KneeCurvePoint {
+  threshold: number;
+  logThreshold: number;
+  count: number;
+  smoothed: number;
+}
+
+export interface KneeCurveSummary {
+  threshold: number;
+  logThreshold: number;
+}
+
+export interface KneeCurve {
+  points: KneeCurvePoint[];
+  knee: KneeCurveSummary;
+}
+
 export interface ThresholdMetaInput {
   algo_ver: typeof algoVersion;
   epsilon: number;
@@ -1512,6 +1529,69 @@ export function kneeThreshold(
   const counts = computeSessionCounts(values, thresholds);
   const smoothed = normalizedOptions.smoothingWindow > 1 ? movingAverage(counts, normalizedOptions.smoothingWindow) : counts;
   return computeKneeDistance(logCandidates, smoothed);
+}
+
+export function computeKneeCurve(
+  userRows: Iterable<number>,
+  tauLog: number,
+  sigmaLog: number,
+  options: KneeDetectionOptions = {}
+): KneeCurve {
+  const values = collectPositiveFinite(userRows);
+  if (values.length === 0) {
+    return {
+      points: [],
+      knee: {
+        threshold: 0,
+        logThreshold: Number.NaN
+      }
+    };
+  }
+
+  values.sort((a, b) => a - b);
+  const normalizedOptions = normalizeKneeOptions(options);
+  const logCandidates = buildCandidateLogThresholds(values, tauLog, sigmaLog, normalizedOptions);
+
+  if (logCandidates.length === 0) {
+    const last = values[values.length - 1];
+    return {
+      points: [
+        {
+          threshold: last,
+          logThreshold: Math.log(last),
+          count: 1,
+          smoothed: 1
+        }
+      ],
+      knee: {
+        threshold: last,
+        logThreshold: Math.log(last)
+      }
+    };
+  }
+
+  const thresholds = logCandidates.map((candidate) => Math.exp(candidate));
+  const counts = computeSessionCounts(values, thresholds);
+  const smoothed =
+    normalizedOptions.smoothingWindow > 1 ? movingAverage(counts, normalizedOptions.smoothingWindow) : counts;
+
+  const points: KneeCurvePoint[] = thresholds.map((threshold, index) => ({
+    threshold,
+    logThreshold: logCandidates[index],
+    count: counts[index],
+    smoothed: smoothed[index]
+  }));
+
+  const kneeThresholdValue = computeKneeDistance(logCandidates, smoothed);
+  const kneeLog = kneeThresholdValue > 0 && Number.isFinite(kneeThresholdValue) ? Math.log(kneeThresholdValue) : Number.NaN;
+
+  return {
+    points,
+    knee: {
+      threshold: kneeThresholdValue,
+      logThreshold: kneeLog
+    }
+  };
 }
 
 function computeLogStandardDeviation(values: number[]): number {
