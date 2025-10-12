@@ -1,0 +1,5 @@
+algo_ver,uid,generated_session_id,session_sequence,session_index,timestamp_utc,delta_seconds,idle_timeout_seconds,split_reason,original_session_id,timestamp_utc,uid,event,status,path
+otsu+kneedle-v1,sparse-1,4f2f9584029e5c34a34564e20f6a0f5a4d543d2524d14090e0a5aa03ba2468ce,0,0,2024-02-01T00:00:00.000Z,,1800,initial,,2024-02-01T00:00:00Z,sparse-1,login,200,/login
+otsu+kneedle-v1,sparse-1,af29c2bd328e7c123397b871801dca4f5d47be4568e1dd97240cbbd89290542a,1,0,2024-02-05T00:00:00.000Z,,1800,idle_timeout,,2024-02-05T00:00:00Z,sparse-1,logout,200,/logout
+otsu+kneedle-v1,sparse-2,6f858dd6e2c1027aab5960768fdbde7907545150977939ccaf116056a83dd823,0,0,2024-02-01T12:00:00.000Z,,1800,initial,,2024-02-01T12:00:00Z,sparse-2,login,200,/login
+otsu+kneedle-v1,sparse-2,6f858dd6e2c1027aab5960768fdbde7907545150977939ccaf116056a83dd823,0,1,2024-02-01T12:05:00.000Z,300,1800,continuous,,2024-02-01T12:05:00Z,sparse-2,logout,200,/logout

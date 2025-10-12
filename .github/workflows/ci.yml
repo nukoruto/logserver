@@ -50,3 +50,25 @@ jobs:
           CSV_LOG_DIR: ${{ runner.temp }}/csv-logs
         run: |
           npm run audit -- --dir "$CSV_LOG_DIR" --fail-on-error
+
+  session_splitter_cli:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20.12.2
+          cache: pnpm
+          cache-dependency-path: pnpm-lock.yaml
+
+      - name: Enable pnpm
+        run: corepack enable
+
+      - name: Install dependencies
+        run: pnpm install --frozen-lockfile
+
+      - name: Session splitter CLI e2e tests
+        run: pnpm --filter @logserver/session-splitter-cli test
