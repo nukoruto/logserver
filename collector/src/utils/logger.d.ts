@@ -4,10 +4,10 @@ export type LoggerStream = {
   write(message: string): void;
 };
 
-export interface LoggerWithStream extends Logger {
+export type LoggerWithStream = Omit<Logger, 'stream'> & {
   http: LeveledLogMethod;
   stream: LoggerStream;
-}
+};
 
 declare const logger: LoggerWithStream;
 

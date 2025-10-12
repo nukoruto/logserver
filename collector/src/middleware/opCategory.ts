@@ -1,8 +1,8 @@
 import type { RequestHandler, Response } from 'express';
-
-const OPERATION_CATEGORIES = ['AUTH', 'READ', 'UPDATE'] as const;
-
-type OperationCategory = (typeof OPERATION_CATEGORIES)[number];
+import {
+  OPERATION_CATEGORIES,
+  type OperationCategory,
+} from '../schema/logRecord';
 
 const OP_CATEGORY_FLAG = '__opCategorySet__' as const;
 

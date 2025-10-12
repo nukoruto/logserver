@@ -72,6 +72,16 @@ const firstHeaderValue = (value: HeaderValue): string => {
   return '';
 };
 
+const getHeaderValue = (headers: HeaderMap, name: string): string => {
+  const normalized = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalized) {
+      return firstHeaderValue(value);
+    }
+  }
+  return '';
+};
+
 const normalise = (value: unknown): string => {
   if (typeof value !== 'string') {
     return '';
@@ -130,7 +140,7 @@ const extractSessionId = (req: LogCaptureRequest, cookieHeader: string): string 
 
   const headerMap = (req.headers ?? {}) as HeaderMap;
   for (const headerName of SESSION_HEADER_CANDIDATES) {
-    const value = normalise(firstHeaderValue(headerMap[headerName]));
+    const value = normalise(getHeaderValue(headerMap, headerName));
     if (value) {
       return value;
     }
@@ -148,7 +158,8 @@ const extractSessionId = (req: LogCaptureRequest, cookieHeader: string): string 
 };
 
 const extractClientIp = (req: LogCaptureRequest): string => {
-  const forwarded = normalise(firstHeaderValue(req.headers?.[HEADER_XFF]));
+  const headerMap = (req.headers ?? {}) as HeaderMap;
+  const forwarded = normalise(getHeaderValue(headerMap, HEADER_XFF));
   if (forwarded) {
     const primary = forwarded.split(',')[0]?.trim();
     if (primary) {
@@ -201,7 +212,7 @@ const extractUid = (authorizationHeader: string): string => {
   if (!token) {
     return '';
   }
-  const hmacKey = config.security?.jwtHmacKey;
+  const hmacKey = config.security?.jwtHmacKey || process.env.JWT_HMAC_KEY || '';
   if (!hmacKey) {
     return '';
   }
@@ -224,9 +235,9 @@ const deleteHeader = (headers: HeaderMap, name: string): void => {
 const ALLOWED_METHODS = new Set<string>(HTTP_METHODS);
 
 const logCapture: Middleware = (req, res, next) => {
-  const headers = (req.headers ?? {}) as HeaderMap;
-  const authorization = firstHeaderValue(headers[HEADER_AUTHORIZATION]);
-  const cookie = firstHeaderValue(headers[HEADER_COOKIE]);
+  const headerMap = (req.headers ?? {}) as HeaderMap;
+  const authorization = getHeaderValue(headerMap, HEADER_AUTHORIZATION);
+  const cookie = getHeaderValue(headerMap, HEADER_COOKIE);
 
   ensureLocals(res);
 
@@ -235,13 +246,11 @@ const logCapture: Middleware = (req, res, next) => {
   if (!ALLOWED_METHODS.has(method)) {
     const error = new LogRecordValidationError('Unsupported HTTP method for log capture', [
       {
-        code: 'invalid_value',
+        code: 'invalid_enum_value',
         path: ['method'],
         message: `method must be one of ${HTTP_METHODS.join(', ')}`,
-        code: 'invalid_value',
         expected: HTTP_METHODS,
         received: rawMethod || req.method,
-        code: 'invalid_value',
       },
     ]);
     next(error);
@@ -253,10 +262,10 @@ const logCapture: Middleware = (req, res, next) => {
     method,
     path: normalise(req.originalUrl || req.url) || '',
     referer:
-      normalise(firstHeaderValue(headers[HEADER_REFERRER])) ||
-      normalise(firstHeaderValue(headers[HEADER_REFERRER_FALLBACK])) ||
+      normalise(getHeaderValue(headerMap, HEADER_REFERRER)) ||
+      normalise(getHeaderValue(headerMap, HEADER_REFERRER_FALLBACK)) ||
       '',
-    user_agent: normalise(firstHeaderValue(headers[HEADER_USER_AGENT])) || '',
+    user_agent: normalise(getHeaderValue(headerMap, HEADER_USER_AGENT)) || '',
     ip: extractClientIp(req),
     session_id: extractSessionId(req, cookie),
     uid: extractUid(authorization),
@@ -265,8 +274,8 @@ const logCapture: Middleware = (req, res, next) => {
 
   res.locals.__logframe = logframe;
 
-  deleteHeader(headers, HEADER_AUTHORIZATION);
-  deleteHeader(headers, HEADER_COOKIE);
+  deleteHeader(headerMap, HEADER_AUTHORIZATION);
+  deleteHeader(headerMap, HEADER_COOKIE);
 
   next();
 };

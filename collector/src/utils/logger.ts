@@ -7,12 +7,14 @@ export type LoggerStream = {
   write: (message: string) => void;
 };
 
-export interface LoggerWithStream extends winston.Logger {
+type LoggerWithoutStream = Omit<winston.Logger, 'stream'>;
+
+export type LoggerWithStream = LoggerWithoutStream & {
   http: winston.LeveledLogMethod;
   stream: LoggerStream;
-}
+};
 
-const logger = winston.createLogger({
+const baseLogger = winston.createLogger({
   level: config.env === 'production' ? 'info' : 'debug',
   levels: {
     error: 0,
@@ -44,7 +46,9 @@ const logger = winston.createLogger({
     }),
   ],
   exitOnError: false,
-}) as LoggerWithStream;
+});
+
+const logger = baseLogger as unknown as LoggerWithStream;
 
 const stream: LoggerStream = {
   write: (message: string): void => {

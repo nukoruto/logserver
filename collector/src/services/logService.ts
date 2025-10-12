@@ -50,7 +50,7 @@ const coerceInteger = (value: unknown): number => {
 };
 
 const resolvePaginationConfig = (): PaginationConfig => {
-  const pagination = (config as Record<string, unknown>).pagination as Partial<PaginationConfig> | undefined;
+  const pagination = config.pagination as Partial<PaginationConfig> | undefined;
   const maxLimit = Number.isFinite(pagination?.maxLimit) ? Number(pagination?.maxLimit) : 100;
   const defaultLimit = Number.isFinite(pagination?.defaultLimit) ? Number(pagination?.defaultLimit) : Math.min(100, maxLimit);
   return { maxLimit, defaultLimit };
@@ -68,7 +68,7 @@ const ensurePagination = (rawLimit: unknown, rawOffset: unknown): Pagination => 
 };
 
 export const ingestEvent = async (payload: unknown): Promise<StoredEvent> => {
-  const event = normalizeEventPayload(payload) as EventPayload;
+  const event = normalizeEventPayload(payload as Record<string, unknown>);
   const stored = await insertEvent(event);
   await appendEvent(stored);
   logger.debug('Event ingested', {
