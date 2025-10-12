@@ -18,7 +18,7 @@ const toRotation = (input: unknown): Rotation => {
 
 const csvSink = new CsvSink({
   dir: config.csvRoot,
-  rotation: toRotation((config as Record<string, unknown>).csvRotation ?? process.env.CSV_ROTATION),
+  rotation: toRotation(config.csvRotation ?? process.env.CSV_ROTATION),
 });
 
 const sigtermHandler = async (): Promise<void> => {

@@ -1,6 +1,5 @@
-import { mkdir, open } from 'fs/promises';
-import type { FileHandle } from 'fs/promises';
-import path from 'path';
+import { mkdir, open, type FileHandle } from 'node:fs/promises';
+import * as path from 'node:path';
 import logger from '../utils/logger';
 import {
   type LogRecord,

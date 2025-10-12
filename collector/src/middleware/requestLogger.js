@@ -1,5 +1,6 @@
 const morgan = require('morgan');
-const logger = require('../utils/logger');
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 
 const requestLogger = morgan(
   ':method :url :status :res[content-length] - :response-time ms',

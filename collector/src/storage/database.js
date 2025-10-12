@@ -1,8 +1,10 @@
 const fs = require('fs/promises');
 const path = require('path');
 const sqlite3 = require('sqlite3').verbose();
-const config = require('../config');
-const logger = require('../utils/logger');
+const configModule = require('../config');
+const config = configModule.default || configModule;
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 
 let db;
 

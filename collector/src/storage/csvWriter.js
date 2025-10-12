@@ -1,6 +1,7 @@
 ﻿const fs = require('fs/promises');
 const path = require('path');
-const config = require('../config');
+const configModule = require('../config');
+const config = configModule.default || configModule;
 
 const headerRow = 'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata';
 const headerCache = new Set();

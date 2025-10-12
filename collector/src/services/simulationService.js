@@ -1,8 +1,10 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const config = require('../config');
-const logger = require('../utils/logger');
+const configModule = require('../config');
+const config = configModule.default || configModule;
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 const sim = require('../sim');
 const { buildAnomalySummary } = require('../sim/persistence/simWriter');
 

@@ -3,7 +3,8 @@
 const fs = require('node:fs/promises');
 const path = require('node:path');
 const crypto = require('node:crypto');
-const config = require('../../config');
+const configModule = require('../../config');
+const config = configModule.default || configModule;
 const { labelSequence } = require('../labeler');
 
 const CSV_HEADER =

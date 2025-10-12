@@ -1,5 +1,6 @@
 const jwt = require('jsonwebtoken');
-const config = require('../config');
+const configModule = require('../config');
+const config = configModule.default || configModule;
 const { AuthenticationError, AppError } = require('../utils/errors');
 
 const authMiddleware = (req, res, next) => {

@@ -1,5 +1,6 @@
 ﻿const { ensureDatabase, run, all, get } = require('./database');
-const logger = require('../utils/logger');
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 
 const ensureColumn = async (column, type) => {
   const info = await all('PRAGMA table_info(events)');

@@ -1,0 +1,14 @@
+{
+  "files": [
+    "collector/src/config/index.ts",
+    "collector/src/index.ts",
+    "collector/src/middleware/logCapture.ts",
+    "collector/src/schema/logRecord.ts",
+    "collector/src/security/uid.ts",
+    "collector/src/sink/csvSink.ts",
+    "collector/src/utils/asyncHandler.ts",
+    "collector/src/utils/errors.ts",
+    "collector/src/utils/logger.ts",
+    "collector/src/utils/validators.ts"
+  ]
+}

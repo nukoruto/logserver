@@ -1,7 +1,8 @@
 const express = require('express');
 const auth = require('../middleware/auth');
 const logCapture = require('../middleware/logCapture');
-const asyncHandler = require('../utils/asyncHandler');
+const asyncHandlerModule = require('../utils/asyncHandler');
+const asyncHandler = asyncHandlerModule.default || asyncHandlerModule;
 const logService = require('../services/logService');
 
 const router = express.Router();

@@ -1,3 +1,4 @@
+import type { NextFunction, Request, Response } from 'express';
 import config from '../config';
 import { jwtToUid } from '../security/uid';
 import {
@@ -10,28 +11,35 @@ type HeaderValue = string | string[] | undefined;
 
 type Headers = Record<string, HeaderValue>;
 
-type RequestLike = {
-  method?: string;
-  originalUrl?: string;
-  url?: string;
-  headers: Headers;
-  ip?: string;
-  ips?: string[];
-  socket?: { remoteAddress?: string | null } | null;
-  connection?: { remoteAddress?: string | null } | null;
-  session?: { id?: string | null } | null;
+type LogCaptureSession = {
+  id?: string | null;
+};
+
+type CapturedLogframe = {
+  timestamp_utc: string;
+  method: string;
+  path: string;
+  referer: string;
+  user_agent: string;
+  ip: string;
+  session_id: string;
+  uid: string;
+  op_category: string;
+};
+
+type LogCaptureLocals = Record<string, unknown> & {
+  __logframe?: CapturedLogframe;
+};
+
+type LogCaptureRequest = Request & {
+  session?: LogCaptureSession | null;
   sessionID?: string | null;
-  get?: (name: string) => string | undefined;
   user?: Record<string, unknown> | null;
 };
 
-type ResponseLike = {
-  locals: Record<string, unknown>;
-};
+type LogCaptureResponse = Response<unknown, LogCaptureLocals>;
 
-type NextLike = (err?: unknown) => void;
-
-type Middleware = (req: RequestLike, res: ResponseLike, next: NextLike) => void;
+type Middleware = (req: LogCaptureRequest, res: LogCaptureResponse, next: NextFunction) => void;
 
 const HEADER_AUTHORIZATION = 'authorization';
 const HEADER_COOKIE = 'cookie';
@@ -46,10 +54,11 @@ const USER_SESSION_KEYS = ['session_id', 'sessionId', 'sid'];
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
-const ensureLocals = (res: ResponseLike): void => {
+const ensureLocals = (res: LogCaptureResponse): LogCaptureLocals => {
   if (!res.locals || typeof res.locals !== 'object') {
-    res.locals = {};
+    res.locals = {} as LogCaptureLocals;
   }
+  return res.locals;
 };
 
 const firstHeaderValue = (value: HeaderValue): string => {
@@ -93,7 +102,7 @@ const parseCookies = (cookieHeader: string): Record<string, string> => {
     }, {});
 };
 
-const extractSessionId = (req: RequestLike, cookieHeader: string): string => {
+const extractSessionId = (req: LogCaptureRequest, cookieHeader: string): string => {
   if (req.session && typeof req.session === 'object' && req.session.id) {
     const value = normalise(req.session.id);
     if (value) {
@@ -136,7 +145,7 @@ const extractSessionId = (req: RequestLike, cookieHeader: string): string => {
   return '';
 };
 
-const extractClientIp = (req: RequestLike): string => {
+const extractClientIp = (req: LogCaptureRequest): string => {
   const forwarded = normalise(firstHeaderValue(req.headers?.[HEADER_XFF]));
   if (forwarded) {
     const primary = forwarded.split(',')[0]?.trim();
@@ -212,12 +221,16 @@ const deleteHeader = (headers: Headers, name: string): void => {
 
 const ALLOWED_METHODS = new Set<string>(HTTP_METHODS);
 
-const logCapture: Middleware = (req, res, next) => {
-  const headers = req.headers || {};
+const logCapture: Middleware = (
+  req: LogCaptureRequest,
+  res: LogCaptureResponse,
+  next: NextFunction
+): void => {
+  const headers: Headers = (req.headers as Headers) || {};
   const authorization = firstHeaderValue(headers[HEADER_AUTHORIZATION]);
   const cookie = firstHeaderValue(headers[HEADER_COOKIE]);
 
-  ensureLocals(res);
+  const locals = ensureLocals(res);
 
   const rawMethod = normalise(req.method) || '';
   const method = rawMethod.toUpperCase();
@@ -225,6 +238,7 @@ const logCapture: Middleware = (req, res, next) => {
     const error = new LogRecordValidationError('Unsupported HTTP method for log capture', [
       {
         path: ['method'],
+        code: 'invalid_value',
         message: `method must be one of ${HTTP_METHODS.join(', ')}`,
         expected: HTTP_METHODS,
         received: rawMethod || req.method,
@@ -234,7 +248,7 @@ const logCapture: Middleware = (req, res, next) => {
     return;
   }
 
-  const logframe = {
+  const logframe: CapturedLogframe = {
     timestamp_utc: new Date().toISOString(),
     method,
     path: normalise(req.originalUrl || req.url) || '',
@@ -249,7 +263,7 @@ const logCapture: Middleware = (req, res, next) => {
     op_category: DEFAULT_OPERATION_CATEGORY,
   };
 
-  res.locals.__logframe = logframe;
+  locals.__logframe = logframe;
 
   deleteHeader(headers, HEADER_AUTHORIZATION);
   deleteHeader(headers, HEADER_COOKIE);

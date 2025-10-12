@@ -3,7 +3,8 @@ const sanitize = require('../middleware/sanitize');
 const logCapture = require('../middleware/logCapture');
 const opCategory = require('../middleware/opCategory');
 const auth = require('../middleware/auth');
-const asyncHandler = require('../utils/asyncHandler');
+const asyncHandlerModule = require('../utils/asyncHandler');
+const asyncHandler = asyncHandlerModule.default || asyncHandlerModule;
 const { generateScenario, normalizeAnomalyList } = require('../services/simulationService');
 
 const router = express.Router();

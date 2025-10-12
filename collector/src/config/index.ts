@@ -1,13 +1,15 @@
-const path = require('path');
-const fs = require('fs');
-const dotenv = require('dotenv');
+import * as path from 'node:path';
+import * as fs from 'node:fs';
+import dotenv from 'dotenv';
+
+type Rotation = 'daily' | 'hourly';
 
 const envPath = process.env.CONFIG_PATH || path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
   dotenv.config({ path: envPath });
 }
 
-const parseBool = (value, fallback = false) => {
+const parseBool = (value: unknown, fallback = false): boolean => {
   if (value === undefined || value === null) {
     return fallback;
   }
@@ -21,17 +23,17 @@ const parseBool = (value, fallback = false) => {
   return fallback;
 };
 
-const parseOrigins = (raw) => {
-  if (!raw) {
+const parseOrigins = (raw: unknown): string[] => {
+  if (typeof raw !== 'string' || !raw.trim()) {
     return [];
   }
   return raw
     .split(',')
-    .map((origin) => origin.trim())
-    .filter(Boolean);
+    .map((origin: string) => origin.trim())
+    .filter((origin: string) => origin.length > 0);
 };
 
-const parseRotation = (value) => {
+const parseRotation = (value: unknown): Rotation => {
   if (!value) {
     return 'daily';
   }
@@ -39,8 +41,8 @@ const parseRotation = (value) => {
   return normalized === 'hourly' ? 'hourly' : 'daily';
 };
 
-const resolvePath = (rawValue, ...fallback) => {
-  if (rawValue && typeof rawValue === 'string') {
+const resolvePath = (rawValue: unknown, ...fallback: string[]): string => {
+  if (typeof rawValue === 'string') {
     const trimmed = rawValue.trim();
     if (trimmed) {
       return path.isAbsolute(trimmed)
@@ -51,9 +53,44 @@ const resolvePath = (rawValue, ...fallback) => {
   return path.resolve(process.cwd(), ...fallback);
 };
 
-const config = {
+interface SecurityConfig {
+  jwtHmacKey: string;
+  kid: string;
+}
+
+interface AuthConfig {
+  required: boolean;
+  audience?: string;
+  issuer?: string;
+}
+
+interface CorsConfig {
+  allowedOrigins: string[];
+}
+
+interface PaginationConfig {
+  defaultLimit: number;
+  maxLimit: number;
+}
+
+export interface AppConfig {
+  env: string;
+  port: number;
+  requestLimit: string;
+  sqlitePath: string;
+  csvRoot: string;
+  simLogRoot: string;
+  csvRotation: Rotation;
+  jwtSecret: string;
+  security: SecurityConfig;
+  auth: AuthConfig;
+  cors: CorsConfig;
+  pagination: PaginationConfig;
+}
+
+const config: AppConfig = {
   env: process.env.NODE_ENV || 'development',
-  port: Number.parseInt(process.env.PORT, 10) || 8000,
+  port: Number.parseInt(process.env.PORT ?? '', 10) || 8000,
   requestLimit: process.env.REQUEST_LIMIT || '2mb',
   sqlitePath: resolvePath(process.env.SQLITE_PATH, 'data', 'db', 'events.sqlite3'),
   csvRoot: resolvePath(
@@ -77,9 +114,9 @@ const config = {
     allowedOrigins: parseOrigins(process.env.CORS_ORIGINS),
   },
   pagination: {
-    defaultLimit: Number.parseInt(process.env.PAGE_LIMIT, 10) || 100,
-    maxLimit: Number.parseInt(process.env.PAGE_MAX_LIMIT, 10) || 500,
+    defaultLimit: Number.parseInt(process.env.PAGE_LIMIT ?? '', 10) || 100,
+    maxLimit: Number.parseInt(process.env.PAGE_MAX_LIMIT ?? '', 10) || 500,
   },
 };
 
-module.exports = config;
+export default config;

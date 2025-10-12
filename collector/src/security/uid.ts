@@ -1,6 +1,6 @@
-import { createHmac, hkdfSync } from 'node:crypto';
+import * as crypto from 'node:crypto';
 
-const HEX_PATTERN = /^[0-9a-fA-F]+$/;
+const HEX_PATTERN = /^[0-9a-fA-F]+$/u;
 
 const HKDF_SALT = Buffer.alloc(0);
 const SID_INFO = Buffer.from('sid', 'utf8');
@@ -28,7 +28,7 @@ const decodeBase64 = (value: string): Buffer => {
   }
 };
 
-export function parseKey(raw: string): Buffer {
+export const parseKey = (raw: unknown): Buffer => {
   if (typeof raw !== 'string') {
     throw new Error('JWT_HMAC_KEY must be provided as a string');
   }
@@ -46,15 +46,15 @@ export function parseKey(raw: string): Buffer {
   }
 
   return decodeBase64(trimmed);
-}
+};
 
-export function deriveDatasetKey(rawKey: string): Buffer {
+export const deriveDatasetKey = (rawKey: unknown): Buffer => {
   const ikm = parseKey(rawKey);
-  const derived = hkdfSync('sha256', ikm, HKDF_SALT, SID_INFO, HKDF_OUTPUT_LENGTH);
+  const derived = crypto.hkdfSync('sha256', ikm, HKDF_SALT, SID_INFO, HKDF_OUTPUT_LENGTH);
   return Buffer.from(derived);
-}
+};
 
-export function jwtToUid(jwt: string, key: string): string {
+export const jwtToUid = (jwt: unknown, key: unknown): string => {
   if (typeof jwt !== 'string') {
     throw new Error('JWT must be provided as a string');
   }
@@ -63,5 +63,5 @@ export function jwtToUid(jwt: string, key: string): string {
     throw new Error('JWT cannot be empty');
   }
   const datasetKey = deriveDatasetKey(key);
-  return createHmac('sha256', datasetKey).update(trimmedJwt, 'utf8').digest('hex');
-}
+  return crypto.createHmac('sha256', datasetKey).update(trimmedJwt, 'utf8').digest('hex');
+};

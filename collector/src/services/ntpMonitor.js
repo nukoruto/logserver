@@ -1,4 +1,5 @@
-const logger = require('../utils/logger');
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 const { checkNtpOffset } = require('../ntp/offset');
 
 const DEFAULT_INTERVAL_MS = 60_000;

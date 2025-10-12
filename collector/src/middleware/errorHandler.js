@@ -1,4 +1,5 @@
-const logger = require('../utils/logger');
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 const { AppError } = require('../utils/errors');
 
 const errorHandler = (err, req, res, next) => {

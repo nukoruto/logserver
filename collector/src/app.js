@@ -1,7 +1,9 @@
 const express = require('express');
 const cors = require('cors');
-const config = require('./config');
-const logger = require('./utils/logger');
+const configModule = require('./config');
+const config = configModule.default || configModule;
+const loggerModule = require('./utils/logger');
+const logger = loggerModule.default || loggerModule;
 const requestLogger = require('./middleware/requestLogger');
 const errorHandler = require('./middleware/errorHandler');
 const healthRoutes = require('./routes/health');

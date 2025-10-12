@@ -1,5 +1,7 @@
-﻿const config = require('../config');
-const logger = require('../utils/logger');
+﻿const configModule = require('../config');
+const config = configModule.default || configModule;
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 const { ValidationError } = require('../utils/errors');
 const { normalizeEventPayload, normalizeBatchPayload } = require('../utils/validators');
 const repository = require('../storage/eventRepository');

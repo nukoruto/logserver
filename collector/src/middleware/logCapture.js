@@ -1,4 +1,5 @@
-const config = require('../config');
+const configModule = require('../config');
+const config = configModule.default || configModule;
 const { jwtToUid } = require('../security/uid');
 const {
   DEFAULT_OPERATION_CATEGORY,

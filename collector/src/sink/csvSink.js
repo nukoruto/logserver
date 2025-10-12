@@ -1,6 +1,7 @@
 const { mkdir, open } = require('fs/promises');
 const path = require('path');
-const logger = require('../utils/logger');
+const loggerModule = require('../utils/logger');
+const logger = loggerModule.default || loggerModule;
 const {
   LogRecordValidationError,
   validateLogRecord,

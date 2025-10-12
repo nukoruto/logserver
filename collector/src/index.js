@@ -1,6 +1,8 @@
 const { CsvSink } = require('./sink/csvSink');
-const config = require('./config');
-const logger = require('./utils/logger');
+const configModule = require('./config');
+const config = configModule.default || configModule;
+const loggerModule = require('./utils/logger');
+const logger = loggerModule.default || loggerModule;
 const {
   LogRecordValidationError,
   validateLogRecord,
