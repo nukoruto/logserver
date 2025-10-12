@@ -40,9 +40,16 @@ type LogRecord = z.infer<typeof logRecordSchema>;
 type ValidationIssue = {
   path: (string | number)[];
   message: string;
-  code?: string;
+  code: z.ZodIssue['code'];
   expected?: unknown;
   received?: unknown;
+  minimum?: number;
+  maximum?: number;
+  inclusive?: boolean;
+  exact?: number;
+  type?: string;
+  options?: readonly unknown[];
+  input?: unknown;
 };
 
 class LogRecordValidationError extends Error {
@@ -60,13 +67,43 @@ class LogRecordValidationError extends Error {
 const validateLogRecord = (input: unknown): LogRecord => {
   const result = logRecordSchema.safeParse(input);
   if (!result.success) {
-    const issues: ValidationIssue[] = result.error.issues.map((issue) => ({
-      path: issue.path.map((segment) => (typeof segment === 'number' ? segment : String(segment))),
-      message: issue.message,
-      code: issue.code,
-      expected: 'expected' in issue ? (issue as { expected?: unknown }).expected : undefined,
-      received: 'received' in issue ? (issue as { received?: unknown }).received : undefined,
-    }));
+    const issues: ValidationIssue[] = result.error.issues.map((issue) => {
+      const base: ValidationIssue = {
+        path: issue.path.map((segment) => (typeof segment === 'number' ? segment : String(segment))),
+        message: issue.message,
+        code: issue.code,
+      };
+
+      if ('expected' in issue) {
+        base.expected = (issue as { expected?: unknown }).expected;
+      }
+      if ('received' in issue) {
+        base.received = (issue as { received?: unknown }).received;
+      }
+      if ('minimum' in issue) {
+        base.minimum = (issue as { minimum?: number }).minimum;
+      }
+      if ('maximum' in issue) {
+        base.maximum = (issue as { maximum?: number }).maximum;
+      }
+      if ('inclusive' in issue) {
+        base.inclusive = (issue as { inclusive?: boolean }).inclusive;
+      }
+      if ('exact' in issue) {
+        base.exact = (issue as { exact?: number }).exact;
+      }
+      if ('type' in issue) {
+        base.type = (issue as { type?: string }).type;
+      }
+      if ('options' in issue) {
+        base.options = (issue as { options?: readonly unknown[] }).options;
+      }
+      if ('input' in issue) {
+        base.input = (issue as { input?: unknown }).input;
+      }
+
+      return base;
+    });
     throw new LogRecordValidationError('Invalid log record', issues);
   }
   return result.data;
