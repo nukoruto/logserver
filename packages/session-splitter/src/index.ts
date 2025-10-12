@@ -23,10 +23,19 @@ export interface SessionSplitOptions {
   datasetKey?: string | Buffer;
 }
 
+export interface ThresholdBackoffOptions {
+  groupKey?: string | ((row: AugmentedRow) => string | null | undefined);
+  defaultGroup?: string;
+  label?: string;
+}
+
 export interface ThresholdEstimationOptions {
   minimumSamples?: number;
   fallbackPercentile?: number;
   knee?: KneeDetectionOptions;
+  min_events?: number;
+  minEvents?: number;
+  backoff?: boolean | ThresholdBackoffOptions;
 }
 
 export interface KneeDetectionOptions {
@@ -88,6 +97,7 @@ export interface ThresholdDetail {
   tau_final: number;
   DeltaT: number;
   bimodality_test: number | null;
+  backoff_level: string;
 }
 
 export interface ThresholdComputationResult {
@@ -108,6 +118,7 @@ export interface ThresholdMetaInput {
   tau_final: Record<string, number>;
   DeltaT: Record<string, number>;
   bimodality_test: Record<string, number | null>;
+  backoff_level: Record<string, string>;
   k: number;
   scan_step: number;
   hkdf_info: string;
@@ -153,6 +164,9 @@ const LOG_HISTOGRAM_DEFAULTS: NormalizedLogHistogramOptions = {
 };
 
 const LOG_OTSU_QUALITY_MIN = 0.25;
+const DEFAULT_MIN_EVENTS = 50;
+const DEFAULT_BACKOFF_COLUMN = "user_agent_type";
+const DEFAULT_BACKOFF_UNKNOWN = "unknown";
 const MIN_BIMODAL_SAMPLES = 6;
 const MIN_COMPONENT_WEIGHT = 0.1;
 const MIN_VARIANCE = 1e-6;
@@ -481,23 +495,216 @@ export async function* splitSessions(
   }
 }
 
+interface UserAggregation {
+  deltas: number[];
+  groupKey: string | null;
+}
+
+interface NormalizedBackoffOptions {
+  enabled: boolean;
+  resolve(row: AugmentedRow): string | null;
+  describe(group: string | null): string;
+}
+
+interface ThresholdDetailBase {
+  fd_bins: number;
+  tau_otsu: number | null;
+  tau_knee: number | null;
+  tau_final: number;
+  DeltaT: number;
+  bimodality_test: number | null;
+}
+
+function normalizeBackoffOptions(backoff?: boolean | ThresholdBackoffOptions): NormalizedBackoffOptions {
+  if (typeof backoff === "undefined") {
+    return {
+      enabled: false,
+      resolve: () => null,
+      describe: () => "group"
+    };
+  }
+
+  if (backoff === false) {
+    return {
+      enabled: false,
+      resolve: () => null,
+      describe: () => "group"
+    };
+  }
+
+  const normalizeGroupValue = (value: unknown, fallback: string): string => {
+    if (typeof value === "string") {
+      const trimmed = value.trim();
+      if (trimmed.length > 0) {
+        return trimmed;
+      }
+    }
+    return fallback;
+  };
+
+  if (backoff === true) {
+    const column = DEFAULT_BACKOFF_COLUMN;
+    const fallback = DEFAULT_BACKOFF_UNKNOWN;
+    return {
+      enabled: true,
+      resolve: (row: AugmentedRow) => normalizeGroupValue(row.original?.[column], fallback),
+      describe: (group: string | null) => `group:${column}=${normalizeGroupValue(group, fallback)}`
+    };
+  }
+
+  const fallback = normalizeGroupValue(backoff.defaultGroup, DEFAULT_BACKOFF_UNKNOWN);
+  const labelCandidate = typeof backoff.label === "string" && backoff.label.trim().length > 0 ? backoff.label.trim() : undefined;
+
+  if (typeof backoff.groupKey === "function") {
+    const fn = backoff.groupKey;
+    const label = labelCandidate ?? "backoff";
+    return {
+      enabled: true,
+      resolve: (row: AugmentedRow) => normalizeGroupValue(fn(row), fallback),
+      describe: (group: string | null) => `group:${label}=${normalizeGroupValue(group, fallback)}`
+    };
+  }
+
+  const column = typeof backoff.groupKey === "string" && backoff.groupKey.trim().length > 0
+    ? backoff.groupKey.trim()
+    : DEFAULT_BACKOFF_COLUMN;
+  const label = labelCandidate ?? column;
+
+  return {
+    enabled: true,
+    resolve: (row: AugmentedRow) => normalizeGroupValue(row.original?.[column], fallback),
+    describe: (group: string | null) => `group:${label}=${normalizeGroupValue(group, fallback)}`
+  };
+}
+
+function computeThresholdFromSorted(
+  sorted: number[],
+  minimumSamples: number,
+  fallbackPercentile: number,
+  kneeOptions: NormalizedKneeOptions
+): { threshold: number; detail: ThresholdDetailBase } {
+  if (sorted.length === 0) {
+    const safeThreshold = Number.MIN_VALUE;
+    return {
+      threshold: safeThreshold,
+      detail: {
+        fd_bins: 0,
+        tau_otsu: null,
+        tau_knee: null,
+        tau_final: Math.log(safeThreshold),
+        DeltaT: safeThreshold,
+        bimodality_test: null
+      }
+    };
+  }
+
+  if (sorted.length < minimumSamples) {
+    const threshold = percentile(sorted, fallbackPercentile);
+    const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
+    return {
+      threshold,
+      detail: {
+        fd_bins: 0,
+        tau_otsu: null,
+        tau_knee: null,
+        tau_final: Math.log(safeThreshold),
+        DeltaT: threshold,
+        bimodality_test: null
+      }
+    };
+  }
+
+  const histogram = makeLogHistogram(sorted);
+  const { tauLog, quality } = otsuThreshold(histogram);
+  const logValues = sorted.map((value) => Math.log(value));
+  const { bicDifference } = bimodalityTest(logValues);
+  const otsu = otsuThresholdOnSorted(sorted);
+  const sigmaLog = computeLogStandardDeviation(sorted);
+  const kneedle = kneeThreshold(sorted, tauLog, sigmaLog, kneeOptions);
+  const quantile = percentile(sorted, fallbackPercentile);
+  const shouldUseKnee = bicDifference <= 0 || quality < LOG_OTSU_QUALITY_MIN;
+  const threshold = shouldUseKnee ? Math.max(kneedle, quantile) : Math.max(otsu, kneedle, quantile);
+  const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
+  const tauOtsu = Number.isFinite(tauLog) ? tauLog : null;
+  const tauKnee = kneedle > 0 && Number.isFinite(kneedle) ? Math.log(kneedle) : null;
+  const tauFinal = Math.log(safeThreshold);
+  const bic = Number.isFinite(bicDifference) ? bicDifference : null;
+
+  return {
+    threshold,
+    detail: {
+      fd_bins: histogram.binCount,
+      tau_otsu: tauOtsu,
+      tau_knee: tauKnee,
+      tau_final: tauFinal,
+      DeltaT: threshold,
+      bimodality_test: bic
+    }
+  };
+}
+
 function estimateThresholdsInternal(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
 ): ThresholdComputationResult {
-  const { minimumSamples = 5, fallbackPercentile = 0.95, knee } = options;
-  const grouped = new Map<string, number[]>();
+  const {
+    minimumSamples = 5,
+    fallbackPercentile = 0.95,
+    knee,
+    min_events: minEventsSnake,
+    minEvents: minEventsCamel,
+    backoff
+  } = options;
+
+  const minEventsCandidate = Number.isFinite(minEventsSnake ?? Number.NaN)
+    ? Number(minEventsSnake)
+    : Number(minEventsCamel ?? Number.NaN);
+  let minEvents = Math.floor(Number.isFinite(minEventsCandidate) ? minEventsCandidate : DEFAULT_MIN_EVENTS);
+  if (!(minEvents > 0)) {
+    minEvents = DEFAULT_MIN_EVENTS;
+  }
+
+  const backoffOptions = normalizeBackoffOptions(backoff);
+
+  const userAggregations = new Map<string, UserAggregation>();
+  const groupAggregations = new Map<string, number[]>();
+  const globalDeltas: number[] = [];
 
   for (const row of rows) {
+    const groupKey = backoffOptions.enabled ? backoffOptions.resolve(row) : null;
+    const aggregation = userAggregations.get(row.uid);
+    if (aggregation) {
+      if (aggregation.groupKey === null && groupKey !== null) {
+        aggregation.groupKey = groupKey;
+      }
+    } else {
+      userAggregations.set(row.uid, { deltas: [], groupKey });
+    }
+
     if (row.deltaSeconds === null || !Number.isFinite(row.deltaSeconds)) {
       continue;
     }
     if (row.deltaSeconds <= 0) {
       continue;
     }
-    const list = grouped.get(row.uid) ?? [];
-    list.push(row.deltaSeconds);
-    grouped.set(row.uid, list);
+    const current = userAggregations.get(row.uid);
+    if (!current) {
+      continue;
+    }
+    current.deltas.push(row.deltaSeconds);
+
+    if (backoffOptions.enabled) {
+      const effectiveGroup = current.groupKey ?? groupKey;
+      if (effectiveGroup !== null) {
+        const list = groupAggregations.get(effectiveGroup);
+        if (list) {
+          list.push(row.deltaSeconds);
+        } else {
+          groupAggregations.set(effectiveGroup, [row.deltaSeconds]);
+        }
+      }
+    }
+    globalDeltas.push(row.deltaSeconds);
   }
 
   const thresholds = new Map<string, number>() as ThresholdMap;
@@ -511,51 +718,70 @@ function estimateThresholdsInternal(
   const details = new Map<string, ThresholdDetail>();
   const kneeOptions = normalizeKneeOptions(knee);
 
-  for (const [uid, deltas] of grouped.entries()) {
-    if (deltas.length === 0) {
-      continue;
+  const cache = new Map<string, { threshold: number; detail: ThresholdDetailBase }>();
+  const computeWithCache = (key: string, source: number[]): { threshold: number; detail: ThresholdDetailBase } => {
+    const existing = cache.get(key);
+    if (existing) {
+      return existing;
     }
-    deltas.sort((a, b) => a - b);
-    let threshold: number;
-    let detail: ThresholdDetail;
-    if (deltas.length < minimumSamples) {
-      threshold = percentile(deltas, fallbackPercentile);
-      const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
-      detail = {
-        fd_bins: 0,
-        tau_otsu: null,
-        tau_knee: null,
-        tau_final: Math.log(safeThreshold),
-        DeltaT: threshold,
-        bimodality_test: null
-      };
-    } else {
-      const histogram = makeLogHistogram(deltas);
-      const { tauLog, quality } = otsuThreshold(histogram);
-      const logValues = deltas.map((value) => Math.log(value));
-      const { bicDifference } = bimodalityTest(logValues);
-      const otsu = otsuThresholdOnSorted(deltas);
-      const sigmaLog = computeLogStandardDeviation(deltas);
-      const kneedle = kneeThreshold(deltas, tauLog, sigmaLog, kneeOptions);
-      const quantile = percentile(deltas, fallbackPercentile);
-      const shouldUseKnee = bicDifference <= 0 || quality < LOG_OTSU_QUALITY_MIN;
-      threshold = shouldUseKnee ? Math.max(kneedle, quantile) : Math.max(otsu, kneedle, quantile);
-      const safeThreshold = Math.max(threshold, Number.MIN_VALUE);
-      const tauOtsu = Number.isFinite(tauLog) ? tauLog : null;
-      const tauKnee = kneedle > 0 && Number.isFinite(kneedle) ? Math.log(kneedle) : null;
-      const tauFinal = Math.log(safeThreshold);
-      const bic = Number.isFinite(bicDifference) ? bicDifference : null;
-      detail = {
-        fd_bins: histogram.binCount,
-        tau_otsu: tauOtsu,
-        tau_knee: tauKnee,
-        tau_final: tauFinal,
-        DeltaT: threshold,
-        bimodality_test: bic
-      };
+    const sorted = source.slice().sort((a, b) => a - b);
+    const result = computeThresholdFromSorted(sorted, minimumSamples, fallbackPercentile, kneeOptions);
+    cache.set(key, result);
+    return result;
+  };
+
+  const globalKey = "__global__";
+
+  for (const [uid, aggregation] of userAggregations.entries()) {
+    const userKey = `user:${uid}`;
+    const userDeltas = aggregation.deltas;
+    let selectedKey = userKey;
+    let selectedSource = userDeltas;
+    let backoffLevel = "user";
+
+    let fallbackGroupSource: number[] | null = null;
+
+    if (backoffOptions.enabled && userDeltas.length < minEvents) {
+      const groupKey = aggregation.groupKey;
+      if (groupKey !== null) {
+        const groupSource = groupAggregations.get(groupKey) ?? [];
+        fallbackGroupSource = groupSource;
+        if (groupSource.length >= minEvents) {
+          selectedKey = `group:${groupKey}`;
+          selectedSource = groupSource;
+          backoffLevel = backoffOptions.describe(groupKey);
+        }
+      }
+
+      if (backoffLevel === "user") {
+        if (globalDeltas.length >= minEvents) {
+          selectedKey = globalKey;
+          selectedSource = globalDeltas;
+          backoffLevel = "global";
+        } else if (fallbackGroupSource && fallbackGroupSource.length > 0) {
+          const key = aggregation.groupKey ?? "__group__";
+          selectedKey = `group:${key}`;
+          selectedSource = fallbackGroupSource;
+          backoffLevel = aggregation.groupKey !== null
+            ? backoffOptions.describe(aggregation.groupKey)
+            : backoffOptions.describe(null);
+        } else if (globalDeltas.length > 0) {
+          selectedKey = globalKey;
+          selectedSource = globalDeltas;
+          backoffLevel = "global";
+        }
+      }
     }
+
+    if (selectedSource.length === 0 && globalDeltas.length > 0) {
+      selectedKey = globalKey;
+      selectedSource = globalDeltas;
+      backoffLevel = "global";
+    }
+
+    const { threshold, detail } = computeWithCache(selectedKey, selectedSource);
     thresholds.set(uid, threshold);
-    details.set(uid, detail);
+    details.set(uid, { ...detail, backoff_level: backoffLevel });
   }
 
   return { thresholds, perUser: details, k: kneeOptions.kSigma, scan_step: kneeOptions.logStep };
@@ -1401,6 +1627,7 @@ export async function writeMeta(metaPath: string | URL, meta: ThresholdMetaInput
     'tau_final',
     'DeltaT',
     'bimodality_test',
+    'backoff_level',
     'k',
     'scan_step',
     'hkdf_info',

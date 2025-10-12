@@ -119,6 +119,9 @@ program
         const bimodality = toSortedRecord(
           perUserEntries.map(([uid, detail]) => [uid, detail.bimodality_test] as [string, number | null])
         );
+        const backoffLevel = toSortedRecord(
+          perUserEntries.map(([uid, detail]) => [uid, detail.backoff_level] as [string, string])
+        );
 
         const epsilon =
           typeof cliOptions.epsilon === 'number' && Number.isFinite(cliOptions.epsilon)
@@ -145,6 +148,7 @@ program
           tau_final: tauFinal,
           DeltaT: deltaT,
           bimodality_test: bimodality,
+          backoff_level: backoffLevel,
           k: result.k,
           scan_step: result.scan_step,
           hkdf_info: HKDF_INFO_BASE64,
