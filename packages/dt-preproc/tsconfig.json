@@ -8,6 +8,7 @@
     "declarationMap": true,
     "composite": false,
     "noEmit": false,
+    "types": ["node"]
     "baseUrl": "./src",
     "paths": {
       "@logserver/csv-schema": ["../../csv-schema/src/index.ts"],
