@@ -1,6 +1,10 @@
 import type { Request, Response, NextFunction } from 'express';
 import CsvSink, { type CsvRecord, type Rotation } from './sink/csvSink';
-import { LogRecordValidationError, validateLogRecord, DEFAULT_OPERATION_CATEGORY } from './schema/logRecord';
+import {
+  LogRecordValidationError,
+  validateLogRecord,
+  DEFAULT_OPERATION_CATEGORY,
+} from './schema/logRecord';
 import config from './config';
 import logger from './utils/logger';
 import { OP_CATEGORY_FLAG } from './middleware/opCategory';
@@ -8,6 +12,11 @@ import { OP_CATEGORY_FLAG } from './middleware/opCategory';
 type LogframeMeta = Record<string, unknown> & {
   [OP_CATEGORY_FLAG]?: boolean;
 };
+
+type RawLogframe = Partial<Record<keyof CsvRecord, unknown>> & LogframeMeta;
+
+const isRawLogframe = (value: unknown): value is RawLogframe =>
+  typeof value === 'object' && value !== null;
 
 const toRotation = (input: unknown): Rotation => {
   if (typeof input === 'string' && input.toLowerCase() === 'hourly') {
@@ -18,7 +27,7 @@ const toRotation = (input: unknown): Rotation => {
 
 const csvSink = new CsvSink({
   dir: config.csvRoot,
-  rotation: toRotation((config as Record<string, unknown>).csvRotation ?? process.env.CSV_ROTATION),
+  rotation: toRotation(config.csvRotation),
 });
 
 const sigtermHandler = async (): Promise<void> => {
@@ -89,7 +98,7 @@ const sanitizeFloat = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const sanitizeLogframe = (input: Record<string, unknown>): CsvRecord => {
+const sanitizeLogframe = (input: RawLogframe): CsvRecord => {
   const sanitized: Partial<CsvRecord> = {
     timestamp_utc: sanitizeTimestamp(input.timestamp_utc),
     method: sanitizeMethod(input.method),
@@ -102,12 +111,12 @@ const sanitizeLogframe = (input: Record<string, unknown>): CsvRecord => {
     op_category: sanitizeCategory(input.op_category),
   };
 
-  const statusCode = sanitizeInteger((input as Record<string, unknown>).status_code);
+  const statusCode = sanitizeInteger(input.status_code);
   if (statusCode !== undefined) {
     sanitized.status_code = statusCode;
   }
 
-  const latency = sanitizeFloat((input as Record<string, unknown>).latency_ms);
+  const latency = sanitizeFloat(input.latency_ms);
   if (latency !== undefined) {
     sanitized.latency_ms = latency;
   }
@@ -147,7 +156,7 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
 
     const locals = res.locals as LocalsWithLogframe;
     const base = locals.__logframe;
-    if (!base || typeof base !== 'object') {
+    if (!isRawLogframe(base)) {
       return;
     }
 
@@ -166,7 +175,7 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
       record.latency_ms = Number(elapsedMs.toFixed(3));
     }
 
-    const categoryApplied = Boolean((base as LogframeMeta)[OP_CATEGORY_FLAG]);
+    const categoryApplied = Boolean(base[OP_CATEGORY_FLAG]);
     warnMissingOperationCategory(record, categoryApplied);
 
     try {
