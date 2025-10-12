@@ -1,4 +1,4 @@
-const { injectAnomaly } = require('../../src/sim/generator/anomalyInjector');
+import { injectAnomaly } from '../../src/sim/generator/anomalyInjector';
 
 const createBaseSequence = () => [
   {

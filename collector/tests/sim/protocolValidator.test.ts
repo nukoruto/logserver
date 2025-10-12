@@ -1,4 +1,4 @@
-const { validateProtocol } = require('../../src/sim/detector/protocolValidator');
+import { validateProtocol } from '../../src/sim/detector/protocolValidator';
 
 const buildEvent = (overrides: Record<string, any> = {}) => {
   const source = overrides;

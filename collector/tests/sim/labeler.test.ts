@@ -1,4 +1,4 @@
-const { labelSequence } = require('../../src/sim/labeler');
+import { labelSequence } from '../../src/sim/labeler';
 
 describe('labelSequence', () => {
   it('正常イベントに normal ラベルを付与し metadata.anomaly を設定する', () => {

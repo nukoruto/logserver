@@ -44,14 +44,14 @@ const listEvents = async (query = {}) => {
   if (query.from) {
     try {
       filters.fromTimestamp = new Date(query.from).toISOString();
-    } catch (error) {
+    } catch {
       throw new ValidationError('Invalid from timestamp');
     }
   }
   if (query.to) {
     try {
       filters.toTimestamp = new Date(query.to).toISOString();
-    } catch (error) {
+    } catch {
       throw new ValidationError('Invalid to timestamp');
     }
   }

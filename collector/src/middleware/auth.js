@@ -28,7 +28,7 @@ const authMiddleware = (req, res, next) => {
     const payload = jwt.verify(token, config.jwtSecret, verifyOptions);
     req.user = payload;
     return next();
-  } catch (error) {
+  } catch {
     return next(new AuthenticationError('Invalid token'));
   }
 };

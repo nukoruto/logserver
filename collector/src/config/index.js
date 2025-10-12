@@ -1,10 +1,10 @@
 const path = require('path');
 const fs = require('fs');
+const dotenv = require('dotenv');
 
 const envPath = process.env.CONFIG_PATH || path.resolve(process.cwd(), '.env');
 if (fs.existsSync(envPath)) {
-  // eslint-disable-next-line global-require
-  require('dotenv').config({ path: envPath });
+  dotenv.config({ path: envPath });
 }
 
 const parseBool = (value, fallback = false) => {

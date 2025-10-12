@@ -14,7 +14,7 @@ const ensureHeader = async (filePath) => {
   let exists = true;
   try {
     await fs.access(filePath);
-  } catch (error) {
+  } catch {
     exists = false;
   }
 

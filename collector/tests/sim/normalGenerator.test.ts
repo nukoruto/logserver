@@ -1,5 +1,5 @@
-const { loadScenario } = require('../../src/sim/scenario');
-const { generateNormalSequence } = require('../../src/sim/generator/normalGenerator');
+import { loadScenario } from '../../src/sim/scenario';
+import { generateNormalSequence } from '../../src/sim/generator/normalGenerator';
 
 describe('generateNormalSequence', () => {
   const scenario = loadScenario();

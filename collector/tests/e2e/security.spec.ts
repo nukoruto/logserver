@@ -77,7 +77,7 @@ const waitForServer = async (url: string, attempts = 40, intervalMs = 250): Prom
       if (response.ok) {
         return;
       }
-    } catch (error) {
+    } catch {
       // ignore and retry
     }
     await delay(intervalMs);
@@ -133,13 +133,13 @@ const stopServer = async (started: StartedServer | null): Promise<void> => {
     setTimeout(() => {
       try {
         child.kill('SIGKILL');
-      } catch (error) {
+      } catch {
         // ignore
       }
     }, 5000);
     try {
       child.kill('SIGTERM');
-    } catch (error) {
+    } catch {
       // ignore
     }
   });

@@ -59,7 +59,7 @@ const parseCookies = (cookieHeader) =>
       }
       try {
         accumulator[key] = decodeURIComponent(rawValue);
-      } catch (error) {
+      } catch {
         accumulator[key] = rawValue;
       }
       return accumulator;
@@ -168,7 +168,7 @@ const extractUid = (authorizationHeader) => {
   }
   try {
     return jwtToUid(token, hmacKey);
-  } catch (error) {
+  } catch {
     return '';
   }
 };

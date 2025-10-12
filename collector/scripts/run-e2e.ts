@@ -121,7 +121,7 @@ const waitForServer = async (url: string, retries = 20): Promise<void> => {
       if (response.ok) {
         return;
       }
-    } catch (error) {
+    } catch {
       // ignore and retry
     }
     await delay(500);
@@ -196,7 +196,7 @@ const sendJson = async (
   }
 };
 
-const runE2E = async (port: number, logDir: string): Promise<void> => {
+const runE2E = async (port: number): Promise<void> => {
   const baseUrl = `http://127.0.0.1:${port}`;
   const requests = [
     {
@@ -314,11 +314,11 @@ const assertSanitization = (content: string): void => {
 const main = async (): Promise<void> => {
   const options = parseArgs(process.argv.slice(2));
   const { dir: logDir, created } = await resolveLogDir(options.logDir);
-  const { child, terminate } = startServer(options.port, logDir);
+  const { terminate } = startServer(options.port, logDir);
 
   try {
     await waitForServer(`http://127.0.0.1:${options.port}/healthz`);
-    await runE2E(options.port, logDir);
+    await runE2E(options.port);
     await delay(1000);
     const { file, rows, header } = await readCsvRecords(logDir);
     if (rows.length < 3) {
