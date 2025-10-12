@@ -66,6 +66,7 @@ const config = {
   jwtSecret: process.env.JWT_SECRET || '',
   security: {
     jwtHmacKey: process.env.JWT_HMAC_KEY || '',
+    kid: process.env.SID_KEY_ID || process.env.JWT_KEY_ID || '',
   },
   auth: {
     required: parseBool(process.env.REQUIRE_AUTH, false),

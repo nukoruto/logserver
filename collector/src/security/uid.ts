@@ -1,6 +1,10 @@
-import { createHmac } from 'node:crypto';
+import { createHmac, hkdfSync } from 'node:crypto';
 
 const HEX_PATTERN = /^[0-9a-fA-F]+$/;
+
+const HKDF_SALT = Buffer.alloc(0);
+const SID_INFO = Buffer.from('sid', 'utf8');
+const HKDF_OUTPUT_LENGTH = 32;
 
 const isProbablyHex = (value: string): boolean => HEX_PATTERN.test(value) && value.length % 2 === 0;
 
@@ -44,6 +48,12 @@ export function parseKey(raw: string): Buffer {
   return decodeBase64(trimmed);
 }
 
+export function deriveDatasetKey(rawKey: string): Buffer {
+  const ikm = parseKey(rawKey);
+  const derived = hkdfSync('sha256', ikm, HKDF_SALT, SID_INFO, HKDF_OUTPUT_LENGTH);
+  return Buffer.from(derived);
+}
+
 export function jwtToUid(jwt: string, key: string): string {
   if (typeof jwt !== 'string') {
     throw new Error('JWT must be provided as a string');
@@ -52,6 +62,6 @@ export function jwtToUid(jwt: string, key: string): string {
   if (!trimmedJwt) {
     throw new Error('JWT cannot be empty');
   }
-  const secret = parseKey(key);
-  return createHmac('sha256', secret).update(trimmedJwt, 'utf8').digest('hex');
+  const datasetKey = deriveDatasetKey(key);
+  return createHmac('sha256', datasetKey).update(trimmedJwt, 'utf8').digest('hex');
 }
