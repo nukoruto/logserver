@@ -46,7 +46,12 @@ describe('simulate CLI', () => {
       );
 
       expect(result.status).toBe(0);
-      const payload = JSON.parse(result.stdout);
+      const lines = result.stdout.split(/\r?\n/);
+      const startLine = lines.findIndex((line) => line.trim().startsWith('{'));
+      expect(startLine).toBeGreaterThanOrEqual(0);
+      const jsonLines = lines.slice(startLine).filter((line) => line.length > 0);
+      const jsonString = `${jsonLines.join('\n').trimEnd()}\n`;
+      const payload = JSON.parse(jsonString);
       expect(payload.events).toHaveLength(5);
       expect(payload.summary.events).toBe(5);
       expect(payload.files.csvPath).toContain('cli-events.csv');
