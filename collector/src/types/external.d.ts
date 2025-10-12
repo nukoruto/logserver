@@ -1,0 +1,16 @@
+declare module 'cors';
+declare module '*.js';
+declare module '../middleware/requestLogger';
+declare module '../middleware/requestLogger.js';
+declare module '../middleware/errorHandler';
+declare module '../middleware/errorHandler.js';
+declare module '../routes/health';
+declare module '../routes/health.js';
+declare module '../routes/metrics';
+declare module '../routes/metrics.js';
+declare module '../routes/events';
+declare module '../routes/events.js';
+declare module '../routes/simulations';
+declare module '../routes/simulations.js';
+declare module '../storage/eventRepository';
+declare module '../storage/eventRepository.js';

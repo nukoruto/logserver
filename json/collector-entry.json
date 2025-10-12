@@ -1,0 +1,8 @@
+{
+  "files": [
+    "collector/scripts/check-ntp.ts",
+    "collector/server.ts",
+    "collector/src/app.ts",
+    "collector/src/index.ts"
+  ]
+}

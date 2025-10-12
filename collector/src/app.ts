@@ -1,22 +1,23 @@
-const express = require('express');
-const cors = require('cors');
-const config = require('./config');
-const logger = require('./utils/logger');
-const requestLogger = require('./middleware/requestLogger');
-const errorHandler = require('./middleware/errorHandler');
-const healthRoutes = require('./routes/health');
-const metricsRoutes = require('./routes/metrics');
-const eventRoutes = require('./routes/events');
-const simulationRoutes = require('./routes/simulations');
-const { csvSinkMiddleware } = require('./index');
-const { createSchema } = require('./storage/eventRepository');
-const { ntpMonitor } = require('./services/ntpMonitor');
+import express, { type Express, type Request, type Response } from 'express';
+import cors from 'cors';
+import type { Server } from 'http';
+import config from './config';
+import logger from './utils/logger';
+import requestLogger from './middleware/requestLogger';
+import errorHandler from './middleware/errorHandler';
+import healthRoutes from './routes/health';
+import metricsRoutes from './routes/metrics';
+import eventRoutes from './routes/events';
+import simulationRoutes from './routes/simulations';
+import { csvSinkMiddleware } from './index';
+import { createSchema } from './storage/eventRepository';
+import { ntpMonitor } from './services/ntpMonitor';
 
-const app = express();
+const app: Express = express();
 
 const corsOrigins = config.cors.allowedOrigins;
 const corsOptions = {
-  origin: (origin, callback) => {
+  origin: (origin: string | undefined, callback: (err: Error | null, allow?: boolean) => void) => {
     if (!origin || corsOrigins.length === 0 || corsOrigins.includes(origin)) {
       callback(null, true);
       return;
@@ -38,16 +39,16 @@ app.use(['/api/v1/metrics', '/metrics'], metricsRoutes);
 app.use('/api/v1/events', eventRoutes);
 app.use('/api/v1/simulations', simulationRoutes);
 
-app.use((req, res) => {
+app.use((_req: Request, res: Response) => {
   res.status(404).json({ error: 'Not Found' });
 });
 
 app.use(errorHandler);
 
-const start = async () => {
+const start = async (): Promise<Server> => {
   await createSchema();
   ntpMonitor.start();
-  return new Promise((resolve) => {
+  return await new Promise((resolve) => {
     const server = app.listen(config.port, () => {
       logger.info(`Log server listening on port ${config.port}`);
       resolve(server);
@@ -55,10 +56,7 @@ const start = async () => {
   });
 };
 
-module.exports = {
-  app,
-  start,
-};
+export { app, start };
 
 process.once('SIGTERM', () => {
   ntpMonitor.stop();
