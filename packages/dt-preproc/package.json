@@ -24,7 +24,7 @@
   "scripts": {
     "build": "pnpm run typecheck && tsup src/index.ts src/cli.ts --format esm --dts --sourcemap --clean --out-dir dist",
     "typecheck": "tsc --noEmit",
-    "test": "tsx --test --tsconfig tsconfig.test.json test/*.test.ts"
+    "test": "pnpm --filter @logserver/csv-schema run build && TS_NODE_PROJECT=tsconfig.test.json node --test --loader ts-node/esm test/robust.test.ts"
   },
   "dependencies": {
     "@logserver/csv-schema": "workspace:*",
@@ -36,6 +36,7 @@
   "devDependencies": {
     "@types/node": "^20.12.7",
     "@types/yargs": "^17.0.32",
+    "ts-node": "^10.9.2",
     "tsup": "^8.0.1",
     "tsx": "^4.7.1",
     "typescript": "^5.4.5"

@@ -10,6 +10,9 @@ import {
 } from '@logserver/csv-schema';
 import { lburst } from './math.js';
 
+const ROBUST_SCALE_FACTOR = 1.4826;
+const ROBUST_Z_FLOOR = 1e-12;
+
 export type LogRow = CsvRow;
 
 export interface LogRowWithFeats extends LogRow {
@@ -28,9 +31,15 @@ export interface FeatureOptions {
   epsilonT: number;
   clipMaxSeconds: number;
   robustScaleEpsilon: number;
+  robustZClip: number;
 }
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
+
+export interface RobustStats {
+  x_med: number;
+  x_smad: number;
+}
 
 export interface FeatureStats {
   total: number;
@@ -62,7 +71,8 @@ const DEFAULT_FEATURE_OPTIONS: FeatureOptions = {
   epsilon: 0.0005,
   epsilonT: 0.05,
   clipMaxSeconds: 300,
-  robustScaleEpsilon: 1e-9
+  robustScaleEpsilon: 1e-9,
+  robustZClip: 5
 };
 
 export const DEFAULT_OPTIONS: FeatureOptions = { ...DEFAULT_FEATURE_OPTIONS };
@@ -85,12 +95,15 @@ function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): Normali
   const clipCandidate = options.clipMaxSeconds ?? DEFAULT_FEATURE_OPTIONS.clipMaxSeconds;
   const clipMaxSeconds = clipCandidate > 0 ? clipCandidate : DEFAULT_FEATURE_OPTIONS.clipMaxSeconds;
   const robustScaleEpsilon = options.robustScaleEpsilon ?? DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon;
+  const clipLimitCandidate = options.robustZClip ?? DEFAULT_FEATURE_OPTIONS.robustZClip;
+  const robustZClip = clipLimitCandidate > 0 ? clipLimitCandidate : DEFAULT_FEATURE_OPTIONS.robustZClip;
 
   return {
     epsilon,
     epsilonT,
     clipMaxSeconds,
-    robustScaleEpsilon: robustScaleEpsilon > 0 ? robustScaleEpsilon : DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon
+    robustScaleEpsilon: robustScaleEpsilon > 0 ? robustScaleEpsilon : DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon,
+    robustZClip
   };
 }
 
@@ -145,6 +158,41 @@ function computeMedian(values: readonly number[]): number {
   return sorted[mid];
 }
 
+interface RobustSummary extends RobustStats {
+  x_mad: number;
+}
+
+function computeRobustSummary(values: readonly number[]): RobustSummary | null {
+  if (values.length === 0) {
+    return null;
+  }
+  const median = computeMedian(values);
+  const deviations = values.map((value) => Math.abs(value - median));
+  const mad = computeMedian(deviations);
+  const smad = ROBUST_SCALE_FACTOR * mad;
+  return {
+    x_med: median,
+    x_mad: mad,
+    x_smad: smad
+  };
+}
+
+export function robustZ(x: number, stats: RobustStats): number {
+  const smad = Math.max(stats.x_smad, ROBUST_Z_FLOOR);
+  return (x - stats.x_med) / smad;
+}
+
+export function clip(value: number, limit = 5): number {
+  const safeLimit = Number.isFinite(limit) && limit > 0 ? limit : 5;
+  if (!Number.isFinite(value)) {
+    return value;
+  }
+  if (!Number.isFinite(safeLimit) || safeLimit === Infinity) {
+    return value;
+  }
+  return Math.max(-safeLimit, Math.min(safeLimit, value));
+}
+
 function computeSessionElapsed(state: SessionState, timestamp: number | null): number | null {
   if (!isFiniteNumber(timestamp)) {
     return null;
@@ -177,6 +225,7 @@ export function computeFeatureRows(
   const normalized = normalizeFeatureOptions(options);
 
   const measuredValues: number[] = [];
+  const measuredValuesByUser = new Map<string, number[]>();
   const featureRows: LogRowWithFeats[] = [];
   const stats: MutableFeatureStats = {
     total: 0,
@@ -216,7 +265,10 @@ export function computeFeatureRows(
       const sequence = state.sequence;
       state.sequence += 1;
 
-      const elapsed = computeSessionElapsed(state, isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null);
+      const elapsed = computeSessionElapsed(
+        state,
+        isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null
+      );
 
       const sanitized = sanitizeDelta(deltaSeconds);
 
@@ -228,6 +280,12 @@ export function computeFeatureRows(
           stats.clipped += 1;
         }
         measuredValues.push(clipped);
+        const perUser = measuredValuesByUser.get(baseRow.uid);
+        if (perUser) {
+          perUser.push(clipped);
+        } else {
+          measuredValuesByUser.set(baseRow.uid, [clipped]);
+        }
       }
 
       if (timeLabel === 'measured') {
@@ -265,21 +323,45 @@ export function computeFeatureRows(
   stats.total = featureRows.length;
 
   if (measuredValues.length > 0) {
-    const median = computeMedian(measuredValues);
-    const deviations = measuredValues.map((value) => Math.abs(value - median));
-    const mad = computeMedian(deviations);
-    const robustScale = mad > normalized.robustScaleEpsilon ? 1.4826 * mad : null;
-
-    stats.deltaMedian = median;
-    stats.deltaMad = mad;
-    stats.deltaRobustScale = robustScale;
-
-    if (robustScale && robustScale > 0) {
-      for (const row of featureRows) {
-        if (row.delta_clipped_seconds !== null) {
-          row.delta_robust_z = (row.delta_clipped_seconds - median) / robustScale;
+    const globalSummary = computeRobustSummary(measuredValues);
+    const fallbackStats: RobustStats | null = globalSummary
+      ? {
+          x_med: globalSummary.x_med,
+          x_smad: Math.max(globalSummary.x_smad, normalized.robustScaleEpsilon)
         }
+      : null;
+
+    if (fallbackStats) {
+      stats.deltaMedian = fallbackStats.x_med;
+      stats.deltaMad = fallbackStats.x_smad / ROBUST_SCALE_FACTOR;
+      stats.deltaRobustScale = fallbackStats.x_smad;
+    }
+
+    const perUserStats = new Map<string, RobustStats>();
+    for (const [uid, values] of measuredValuesByUser.entries()) {
+      const summary = computeRobustSummary(values);
+      if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
+        perUserStats.set(uid, { x_med: summary.x_med, x_smad: summary.x_smad });
+      } else if (fallbackStats) {
+        perUserStats.set(uid, fallbackStats);
+      } else if (summary) {
+        perUserStats.set(uid, {
+          x_med: summary.x_med,
+          x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
+        });
       }
+    }
+
+    for (const row of featureRows) {
+      if (row.delta_clipped_seconds === null) {
+        continue;
+      }
+      const statsForUser = perUserStats.get(row.uid) ?? fallbackStats;
+      if (!statsForUser) {
+        continue;
+      }
+      const z = robustZ(row.delta_clipped_seconds, statsForUser);
+      row.delta_robust_z = clip(z, normalized.robustZClip);
     }
   }
 

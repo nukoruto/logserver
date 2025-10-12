@@ -1,10 +1,7 @@
 {
   "extends": "./tsconfig.json",
   "compilerOptions": {
-    "baseUrl": "./src",
-    "paths": {
-      "@logserver/csv-schema": ["../../csv-schema/src/index.ts"],
-      "@logserver/csv-schema/*": ["../../csv-schema/src/*"]
-    }
-  }
+    "noEmit": true
+  },
+  "include": ["src/**/*", "test/**/*"]
 }

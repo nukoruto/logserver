@@ -20,6 +20,7 @@ const cliSchema = z.object({
   epsilon: z.number().min(0),
   epsilonT: z.number().min(0),
   clipMaxSeconds: z.number().positive(),
+  robustZClip: z.number().positive(),
   validateSchema: z.boolean(),
   stats: z.string().min(1).optional(),
   pretty: z.boolean(),
@@ -111,6 +112,7 @@ async function writeCsv(
         epsilon_t: normalized.epsilonT,
         clip_max_seconds: normalized.clipMaxSeconds,
         robust_scale_epsilon: normalized.robustScaleEpsilon,
+        robust_z_clip: normalized.robustZClip,
         validate_schema: options.validateSchema,
         ignored_uid_count: featureStats.filteredOut,
         ignore_source: options.ignoreUids ?? null
@@ -155,6 +157,11 @@ async function main(): Promise<void> {
       default: DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
       describe: 'Upper bound for Δt clipping (seconds).'
     })
+    .option('robust-z-clip', {
+      type: 'number',
+      default: DEFAULT_FEATURE_OPTIONS.robustZClip,
+      describe: 'Symmetric clipping limit for robust z-scores.'
+    })
     .option('stats', {
       type: 'string',
       describe: 'Optional path to write feature statistics JSON.'
@@ -183,6 +190,7 @@ async function main(): Promise<void> {
     epsilon: toNumber(argv.epsilon),
     epsilonT: toNumber(argv.epsilonT),
     clipMaxSeconds: toNumber(argv.clipMax),
+    robustZClip: toNumber(argv.robustZClip),
     validateSchema: argv.validateSchema,
     stats: argv.stats,
     pretty: argv.pretty,
@@ -199,6 +207,7 @@ async function main(): Promise<void> {
     epsilon: parsed.epsilon,
     epsilonT: parsed.epsilonT,
     clipMaxSeconds: parsed.clipMaxSeconds,
+    robustZClip: parsed.robustZClip,
     validateSchema: parsed.validateSchema,
     filter: buildFilter(ignoreSet)
   });
