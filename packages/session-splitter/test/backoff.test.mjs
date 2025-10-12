@@ -18,7 +18,7 @@ function makeRow(uid, deltaSeconds, userAgentType, index = 0) {
   };
 }
 
-test('hierarchical backoff provides stable thresholds for sparse users', () => {
+test('hierarchical backoff provides stable thresholds for sparse users', async () => {
   const rows = [];
 
   for (let i = 0; i < 100; i += 1) {
@@ -34,7 +34,7 @@ test('hierarchical backoff provides stable thresholds for sparse users', () => {
 
   rows.push(makeRow('only-null', null, 'robot', 0));
 
-  const result = estimateThresholdsWithMeta(rows, {
+  const result = await estimateThresholdsWithMeta(rows, {
     minimumSamples: 1000,
     fallbackPercentile: 0.9,
     min_events: 50,
@@ -56,7 +56,7 @@ test('hierarchical backoff provides stable thresholds for sparse users', () => {
   assert.ok(Math.abs(thresholds.get('solo-mobile') - expected) < 1e-9);
   assert.ok(Number.isFinite(thresholds.get('only-null')));
 
-  const repeat = estimateThresholdsWithMeta(rows, {
+  const repeat = await estimateThresholdsWithMeta(rows, {
     minimumSamples: 1000,
     fallbackPercentile: 0.9,
     min_events: 50,

@@ -14,7 +14,8 @@ import {
   estimateThresholdsWithMeta,
   splitSessions,
   writeMeta,
-  SessionSplitterError
+  SessionSplitterError,
+  ThresholdMetaInput
 } from '@logserver/session-splitter';
 
 const HKDF_INFO_BASE64 = Buffer.from('sid', 'utf8').toString('base64');
@@ -34,6 +35,8 @@ interface BulkCliOptions {
   timestampColumn?: string;
   userColumn?: string;
   sessionColumn?: string;
+  concurrency?: number;
+  shardDir?: string;
 }
 
 interface AugmentedColumnSpec {
@@ -279,11 +282,13 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
 
   const durationSeconds = Number(process.hrtime.bigint() - startTime) / 1_000_000_000;
 
-  const thresholdsResult = estimateThresholdsWithMeta(
+  const thresholdsResult = await estimateThresholdsWithMeta(
     createThresholdIterable(deltaMap, idleTimeoutSeconds),
     {
       minimumSamples: Math.floor(minEvents),
-      knee: { kSigma: kneeSigma, logStep: scanStep }
+      knee: { kSigma: kneeSigma, logStep: scanStep },
+      concurrency: cliOptions.concurrency,
+      shard_dir: cliOptions.shardDir
     }
   );
 
@@ -301,10 +306,13 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
   const bimodality = toSortedRecord(
     perUserEntries.map(([uid, detail]) => [uid, detail.bimodality_test] as [string, number | null])
   );
+  const backoffLevel = toSortedRecord(
+    perUserEntries.map(([uid, detail]) => [uid, detail.backoff_level] as [string, string])
+  );
 
   await fsPromises.mkdir(path.dirname(cliOptions.meta), { recursive: true });
   const kid = cliOptions.kid ?? createHash('sha256').update(splitOptions.datasetKey!).digest('hex').slice(0, 32);
-  const metaPayload = {
+  const metaPayload: ThresholdMetaInput = {
     algo_ver: algoVersion,
     epsilon: epsilon!,
     ntp_p95_ms: 0,
@@ -315,6 +323,7 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
     tau_final: tauFinal,
     DeltaT: deltaT,
     bimodality_test: bimodality,
+    backoff_level: backoffLevel,
     k: thresholdsResult.k,
     scan_step: thresholdsResult.scan_step,
     hkdf_info: HKDF_INFO_BASE64,
@@ -352,6 +361,8 @@ program
   .option('--timestamp-column <name>', 'Timestamp column override')
   .option('--user-column <name>', 'User identifier column override')
   .option('--session-column <name>', 'Original session identifier column override')
+  .option('--concurrency <count>', 'Worker threads for threshold estimation', (value) => Number(value))
+  .option('--shard-dir <path>', 'Directory for temporary threshold shards')
   .action(async (cliOptions: BulkCliOptions) => {
     try {
       await run(cliOptions);

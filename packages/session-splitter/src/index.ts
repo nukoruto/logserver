@@ -3,6 +3,9 @@ import { createHash, createHmac, hkdfSync } from 'node:crypto';
 import { Readable } from 'node:stream';
 import { fileURLToPath } from 'node:url';
 import path from 'node:path';
+import os from 'node:os';
+import { Worker, isMainThread, parentPort, workerData } from 'node:worker_threads';
+import { createInterface } from 'node:readline';
 import { parse } from 'csv-parse';
 
 export const algoVersion = "otsu+kneedle-v1" as const;
@@ -36,6 +39,8 @@ export interface ThresholdEstimationOptions {
   min_events?: number;
   minEvents?: number;
   backoff?: boolean | ThresholdBackoffOptions;
+  concurrency?: number;
+  shard_dir?: string;
 }
 
 export interface KneeDetectionOptions {
@@ -495,15 +500,309 @@ export async function* splitSessions(
   }
 }
 
-interface UserAggregation {
-  deltas: number[];
-  groupKey: string | null;
-}
-
 interface NormalizedBackoffOptions {
   enabled: boolean;
   resolve(row: AugmentedRow): string | null;
   describe(group: string | null): string;
+}
+
+interface ShardFileInfo {
+  id: number;
+  path: string;
+  count: number;
+}
+
+interface ShardedAggregationResult {
+  shards: ShardFileInfo[];
+  userMeta: Map<string, string | null>;
+  groupDeltas: Map<string, number[]>;
+  globalDeltas: number[];
+  userCounts: Map<string, number>;
+}
+
+interface WorkerUserSummary {
+  threshold: number;
+  detail: ThresholdDetailBase;
+  count: number;
+}
+
+class UserShardAggregator {
+  private static readonly BUFFER_SIZE = 2048;
+
+  private readonly concurrency: number;
+
+  private readonly shardCount: number;
+
+  private readonly baseDir: string;
+
+  private readonly cleanupRoot: string;
+
+  private readonly buffers = new Map<number, string[]>();
+
+  private readonly shardMap = new Map<number, ShardFileInfo>();
+
+  private readonly pendingWrites: Promise<void>[] = [];
+
+  private readonly userMeta = new Map<string, string | null>();
+
+  private readonly groupDeltas = new Map<string, number[]>();
+
+  private readonly globalDeltas: number[] = [];
+
+  private readonly userCounts = new Map<string, number>();
+
+  private closed = false;
+
+  private constructor(baseDir: string, cleanupRoot: string, concurrency: number) {
+    this.baseDir = baseDir;
+    this.cleanupRoot = cleanupRoot;
+    this.concurrency = Math.max(1, concurrency);
+    this.shardCount = Math.max(1, this.concurrency * 2);
+  }
+
+  static async create(concurrency: number, shardDir?: string): Promise<UserShardAggregator> {
+    const normalizedConcurrency = Math.max(1, Math.floor(concurrency));
+    if (shardDir && shardDir.trim().length > 0) {
+      const resolved = path.resolve(shardDir);
+      await fsPromises.mkdir(resolved, { recursive: true });
+      const unique = `session-shards-${process.pid}-${Date.now()}`;
+      const baseDir = path.join(resolved, unique);
+      await fsPromises.mkdir(baseDir, { recursive: true });
+      return new UserShardAggregator(baseDir, baseDir, normalizedConcurrency);
+    }
+    const tempRoot = await fsPromises.mkdtemp(path.join(os.tmpdir(), `${process.pid}-session-shards-`));
+    return new UserShardAggregator(tempRoot, tempRoot, normalizedConcurrency);
+  }
+
+  registerUser(uid: string, groupKey: string | null): void {
+    const existing = this.userMeta.get(uid);
+    if (existing === undefined) {
+      this.userMeta.set(uid, groupKey);
+      return;
+    }
+    if (existing === null && groupKey !== null) {
+      this.userMeta.set(uid, groupKey);
+    }
+  }
+
+  addDelta(uid: string, delta: number, groupKey: string | null): void {
+    if (this.closed) {
+      throw new SessionSplitterError('Aggregator already closed');
+    }
+    this.registerUser(uid, groupKey);
+    if (!Number.isFinite(delta) || delta <= 0) {
+      return;
+    }
+    this.globalDeltas.push(delta);
+    this.userCounts.set(uid, (this.userCounts.get(uid) ?? 0) + 1);
+    if (groupKey !== null) {
+      const groupList = this.groupDeltas.get(groupKey);
+      if (groupList) {
+        groupList.push(delta);
+      } else {
+        this.groupDeltas.set(groupKey, [delta]);
+      }
+    }
+    const shardIndex = this.computeShardIndex(uid);
+    const buffer = this.ensureBuffer(shardIndex);
+    buffer.push(`${uid}\t${delta.toString()}\n`);
+    if (buffer.length >= UserShardAggregator.BUFFER_SIZE) {
+      this.flushBuffer(shardIndex, buffer);
+    }
+  }
+
+  finalize(): ShardedAggregationResult {
+    if (this.closed) {
+      throw new SessionSplitterError('Aggregator already finalized');
+    }
+    for (const [index, buffer] of this.buffers.entries()) {
+      if (buffer.length > 0) {
+        this.flushBuffer(index, buffer);
+      }
+    }
+    this.closed = true;
+    return {
+      shards: Array.from(this.shardMap.values()),
+      userMeta: new Map(this.userMeta),
+      groupDeltas: new Map(this.groupDeltas),
+      globalDeltas: [...this.globalDeltas],
+      userCounts: new Map(this.userCounts)
+    };
+  }
+
+  async waitForFlush(): Promise<void> {
+    await Promise.all(this.pendingWrites);
+  }
+
+  async cleanup(): Promise<void> {
+    await this.waitForFlush();
+    await fsPromises.rm(this.cleanupRoot, { recursive: true, force: true });
+  }
+
+  private ensureBuffer(index: number): string[] {
+    const existing = this.buffers.get(index);
+    if (existing) {
+      return existing;
+    }
+    const buffer: string[] = [];
+    this.buffers.set(index, buffer);
+    return buffer;
+  }
+
+  private ensureShard(index: number): ShardFileInfo {
+    const existing = this.shardMap.get(index);
+    if (existing) {
+      return existing;
+    }
+    const filePath = path.join(this.baseDir, `shard-${index}.txt`);
+    const shard: ShardFileInfo = { id: index, path: filePath, count: 0 };
+    this.shardMap.set(index, shard);
+    return shard;
+  }
+
+  private flushBuffer(index: number, buffer: string[]): void {
+    if (buffer.length === 0) {
+      return;
+    }
+    const shard = this.ensureShard(index);
+    const chunk = buffer.join('');
+    const appended = buffer.length;
+    buffer.length = 0;
+    const writePromise = fsPromises
+      .appendFile(shard.path, chunk, { encoding: 'utf8' })
+      .then(() => {
+        shard.count += appended;
+      });
+    this.pendingWrites.push(writePromise);
+  }
+
+  private computeShardIndex(uid: string): number {
+    let hash = 0;
+    for (let i = 0; i < uid.length; i += 1) {
+      hash = (hash * 31 + uid.charCodeAt(i)) >>> 0;
+    }
+    return hash % this.shardCount;
+  }
+}
+
+function resolveModuleFilename(): string {
+  if (typeof __filename === 'string' && __filename.length > 0) {
+    return __filename;
+  }
+  if (typeof import.meta !== 'undefined' && typeof import.meta.url === 'string') {
+    return fileURLToPath(import.meta.url);
+  }
+  throw new SessionSplitterError('Failed to resolve module filename for worker execution');
+}
+
+interface ThresholdWorkerData {
+  kind: 'threshold-shard';
+  shardPath: string;
+  minimumSamples: number;
+  fallbackPercentile: number;
+  kneeOptions: NormalizedKneeOptions;
+}
+
+interface ThresholdWorkerResultMessage {
+  kind: 'threshold-shard-result';
+  payload: Record<string, WorkerUserSummary>;
+}
+
+interface ThresholdWorkerErrorMessage {
+  kind: 'threshold-shard-error';
+  message: string;
+  stack?: string;
+}
+
+async function processShardsWithWorkers(
+  shards: ShardFileInfo[],
+  options: {
+    concurrency: number;
+    minimumSamples: number;
+    fallbackPercentile: number;
+    kneeOptions: NormalizedKneeOptions;
+  }
+): Promise<Map<string, WorkerUserSummary>> {
+  const results = new Map<string, WorkerUserSummary>();
+  if (shards.length === 0) {
+    return results;
+  }
+
+  const workerScript = resolveModuleFilename();
+
+  const queue = shards.slice();
+  const active = new Set<Promise<void>>();
+  const maxWorkers = Math.max(1, Math.min(options.concurrency, shards.length));
+
+  const spawn = (): void => {
+    if (queue.length === 0) {
+      return;
+    }
+    const shard = queue.shift();
+    if (!shard) {
+      return;
+    }
+    const promise = runShardWorker(workerScript, {
+      kind: 'threshold-shard',
+      shardPath: shard.path,
+      minimumSamples: options.minimumSamples,
+      fallbackPercentile: options.fallbackPercentile,
+      kneeOptions: options.kneeOptions
+    }).then((map) => {
+      for (const [uid, summary] of map.entries()) {
+        results.set(uid, summary);
+      }
+    }).finally(() => {
+      active.delete(promise);
+      spawn();
+    });
+    active.add(promise);
+  };
+
+  for (let i = 0; i < maxWorkers; i += 1) {
+    spawn();
+  }
+
+  while (active.size > 0) {
+    await Promise.race(active);
+  }
+
+  return results;
+}
+
+function runShardWorker(workerScript: string, data: ThresholdWorkerData): Promise<Map<string, WorkerUserSummary>> {
+  return new Promise((resolve, reject) => {
+    const worker = new Worker(workerScript, { workerData: data });
+
+    const handleMessage = (message: unknown): void => {
+      const payload = message as ThresholdWorkerResultMessage | ThresholdWorkerErrorMessage | undefined;
+      if (!payload) {
+        return;
+      }
+      if (payload.kind === 'threshold-shard-result') {
+        const entries = Object.entries(payload.payload ?? {});
+        resolve(new Map(entries));
+        worker.removeListener('message', handleMessage);
+        return;
+      }
+      if (payload.kind === 'threshold-shard-error') {
+        const error = new SessionSplitterError(payload.message);
+        if (payload.stack) {
+          error.stack = payload.stack;
+        }
+        worker.removeListener('message', handleMessage);
+        reject(error);
+      }
+    };
+
+    worker.on('message', handleMessage);
+    worker.once('error', reject);
+    worker.once('exit', (code) => {
+      if (code !== 0) {
+        reject(new SessionSplitterError(`Worker exited with code ${code}`));
+      }
+    });
+  });
 }
 
 interface ThresholdDetailBase {
@@ -643,17 +942,19 @@ function computeThresholdFromSorted(
   };
 }
 
-function estimateThresholdsInternal(
+async function estimateThresholdsInternal(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
-): ThresholdComputationResult {
+): Promise<ThresholdComputationResult> {
   const {
     minimumSamples = 5,
     fallbackPercentile = 0.95,
     knee,
     min_events: minEventsSnake,
     minEvents: minEventsCamel,
-    backoff
+    backoff,
+    concurrency,
+    shard_dir: shardDir
   } = options;
 
   const minEventsCandidate = Number.isFinite(minEventsSnake ?? Number.NaN)
@@ -664,141 +965,154 @@ function estimateThresholdsInternal(
     minEvents = DEFAULT_MIN_EVENTS;
   }
 
+  const cpuCount = Array.isArray(os.cpus()) && os.cpus().length > 0 ? os.cpus().length : 1;
+  const requestedConcurrency = Math.floor(Number.isFinite(concurrency ?? Number.NaN) ? Number(concurrency) : NaN);
+  const normalizedConcurrency = requestedConcurrency > 0 ? Math.min(requestedConcurrency, cpuCount) : cpuCount;
+
+  const aggregator = await UserShardAggregator.create(normalizedConcurrency, shardDir);
   const backoffOptions = normalizeBackoffOptions(backoff);
 
-  const userAggregations = new Map<string, UserAggregation>();
-  const groupAggregations = new Map<string, number[]>();
-  const globalDeltas: number[] = [];
-
-  for (const row of rows) {
-    const groupKey = backoffOptions.enabled ? backoffOptions.resolve(row) : null;
-    const aggregation = userAggregations.get(row.uid);
-    if (aggregation) {
-      if (aggregation.groupKey === null && groupKey !== null) {
-        aggregation.groupKey = groupKey;
+  try {
+    for (const row of rows) {
+      const groupKey = backoffOptions.enabled ? backoffOptions.resolve(row) : null;
+      aggregator.registerUser(row.uid, groupKey);
+      if (row.deltaSeconds === null || !Number.isFinite(row.deltaSeconds)) {
+        continue;
       }
-    } else {
-      userAggregations.set(row.uid, { deltas: [], groupKey });
-    }
-
-    if (row.deltaSeconds === null || !Number.isFinite(row.deltaSeconds)) {
-      continue;
-    }
-    if (row.deltaSeconds <= 0) {
-      continue;
-    }
-    const current = userAggregations.get(row.uid);
-    if (!current) {
-      continue;
-    }
-    current.deltas.push(row.deltaSeconds);
-
-    if (backoffOptions.enabled) {
-      const effectiveGroup = current.groupKey ?? groupKey;
-      if (effectiveGroup !== null) {
-        const list = groupAggregations.get(effectiveGroup);
-        if (list) {
-          list.push(row.deltaSeconds);
-        } else {
-          groupAggregations.set(effectiveGroup, [row.deltaSeconds]);
-        }
+      if (row.deltaSeconds <= 0) {
+        continue;
       }
+      aggregator.addDelta(row.uid, row.deltaSeconds, groupKey);
     }
-    globalDeltas.push(row.deltaSeconds);
-  }
 
-  const thresholds = new Map<string, number>() as ThresholdMap;
-  Object.defineProperty(thresholds, "algo_ver", {
-    value: algoVersion,
-    enumerable: true,
-    configurable: false,
-    writable: false
-  });
+    const aggregationResult = aggregator.finalize();
+    await aggregator.waitForFlush();
 
-  const details = new Map<string, ThresholdDetail>();
-  const kneeOptions = normalizeKneeOptions(knee);
+    const kneeOptions = normalizeKneeOptions(knee);
+    const shardsForWorkers = aggregationResult.shards.filter((info) => info.count > 0);
+    const userSummaries = await processShardsWithWorkers(shardsForWorkers, {
+      concurrency: normalizedConcurrency,
+      minimumSamples,
+      fallbackPercentile,
+      kneeOptions
+    });
 
-  const cache = new Map<string, { threshold: number; detail: ThresholdDetailBase }>();
-  const computeWithCache = (key: string, source: number[]): { threshold: number; detail: ThresholdDetailBase } => {
-    const existing = cache.get(key);
-    if (existing) {
-      return existing;
-    }
-    const sorted = source.slice().sort((a, b) => a - b);
-    const result = computeThresholdFromSorted(sorted, minimumSamples, fallbackPercentile, kneeOptions);
-    cache.set(key, result);
-    return result;
-  };
+    const thresholds = new Map<string, number>() as ThresholdMap;
+    Object.defineProperty(thresholds, "algo_ver", {
+      value: algoVersion,
+      enumerable: true,
+      configurable: false,
+      writable: false
+    });
 
-  const globalKey = "__global__";
+    const details = new Map<string, ThresholdDetail>();
+    const cache = new Map<string, { threshold: number; detail: ThresholdDetailBase }>();
+    const sortedCache = new Map<string, number[]>();
 
-  for (const [uid, aggregation] of userAggregations.entries()) {
-    const userKey = `user:${uid}`;
-    const userDeltas = aggregation.deltas;
-    let selectedKey = userKey;
-    let selectedSource = userDeltas;
-    let backoffLevel = "user";
+    const computeWithCache = (key: string, source: number[]): { threshold: number; detail: ThresholdDetailBase } => {
+      const existing = cache.get(key);
+      if (existing) {
+        return existing;
+      }
+      let sorted = sortedCache.get(key);
+      if (!sorted) {
+        sorted = source.slice().sort((a, b) => a - b);
+        sortedCache.set(key, sorted);
+      }
+      const result = computeThresholdFromSorted(sorted, minimumSamples, fallbackPercentile, kneeOptions);
+      cache.set(key, result);
+      return result;
+    };
 
-    let fallbackGroupSource: number[] | null = null;
+    const globalKey = "__global__";
+    const globalSource = aggregationResult.globalDeltas;
 
-    if (backoffOptions.enabled && userDeltas.length < minEvents) {
-      const groupKey = aggregation.groupKey;
-      if (groupKey !== null) {
-        const groupSource = groupAggregations.get(groupKey) ?? [];
-        fallbackGroupSource = groupSource;
-        if (groupSource.length >= minEvents) {
-          selectedKey = `group:${groupKey}`;
-          selectedSource = groupSource;
-          backoffLevel = backoffOptions.describe(groupKey);
-        }
+    for (const [uid, groupKey] of aggregationResult.userMeta.entries()) {
+      const userSummary = userSummaries.get(uid);
+      const userCount = aggregationResult.userCounts.get(uid) ?? 0;
+      const userKey = `user:${uid}`;
+
+      if (userSummary && userCount >= minEvents) {
+        thresholds.set(uid, userSummary.threshold);
+        details.set(uid, { ...userSummary.detail, backoff_level: "user" });
+        continue;
       }
 
-      if (backoffLevel === "user") {
-        if (globalDeltas.length >= minEvents) {
-          selectedKey = globalKey;
-          selectedSource = globalDeltas;
+      let selectedThreshold: number;
+      let selectedDetail: ThresholdDetailBase;
+      if (userSummary) {
+        selectedThreshold = userSummary.threshold;
+        selectedDetail = userSummary.detail;
+      } else {
+        const computed = computeWithCache(userKey, []);
+        selectedThreshold = computed.threshold;
+        selectedDetail = computed.detail;
+      }
+
+      let backoffLevel = "user";
+
+      if (userCount < minEvents) {
+        if (backoffOptions.enabled) {
+          if (groupKey !== null) {
+            const groupSource = aggregationResult.groupDeltas.get(groupKey) ?? [];
+            if (groupSource.length >= minEvents) {
+              const groupResult = computeWithCache(`group:${groupKey}`, groupSource);
+              selectedThreshold = groupResult.threshold;
+              selectedDetail = groupResult.detail;
+              backoffLevel = backoffOptions.describe(groupKey);
+            } else if (globalSource.length >= minEvents) {
+              const globalResult = computeWithCache(globalKey, globalSource);
+              selectedThreshold = globalResult.threshold;
+              selectedDetail = globalResult.detail;
+              backoffLevel = "global";
+            } else if (groupSource.length > 0) {
+              const groupResult = computeWithCache(`group:${groupKey}`, groupSource);
+              selectedThreshold = groupResult.threshold;
+              selectedDetail = groupResult.detail;
+              backoffLevel = backoffOptions.describe(groupKey);
+            } else if (globalSource.length > 0) {
+              const globalResult = computeWithCache(globalKey, globalSource);
+              selectedThreshold = globalResult.threshold;
+              selectedDetail = globalResult.detail;
+              backoffLevel = "global";
+            }
+          } else if (globalSource.length > 0) {
+            const globalResult = computeWithCache(globalKey, globalSource);
+            selectedThreshold = globalResult.threshold;
+            selectedDetail = globalResult.detail;
+            backoffLevel = "global";
+          }
+        } else if (globalSource.length > 0) {
+          const globalResult = computeWithCache(globalKey, globalSource);
+          selectedThreshold = globalResult.threshold;
+          selectedDetail = globalResult.detail;
           backoffLevel = "global";
-        } else if (fallbackGroupSource && fallbackGroupSource.length > 0) {
-          const key = aggregation.groupKey ?? "__group__";
-          selectedKey = `group:${key}`;
-          selectedSource = fallbackGroupSource;
-          backoffLevel = aggregation.groupKey !== null
-            ? backoffOptions.describe(aggregation.groupKey)
-            : backoffOptions.describe(null);
-        } else if (globalDeltas.length > 0) {
-          selectedKey = globalKey;
-          selectedSource = globalDeltas;
-          backoffLevel = "global";
         }
       }
+
+      thresholds.set(uid, selectedThreshold);
+      details.set(uid, { ...selectedDetail, backoff_level: backoffLevel });
     }
 
-    if (selectedSource.length === 0 && globalDeltas.length > 0) {
-      selectedKey = globalKey;
-      selectedSource = globalDeltas;
-      backoffLevel = "global";
-    }
-
-    const { threshold, detail } = computeWithCache(selectedKey, selectedSource);
-    thresholds.set(uid, threshold);
-    details.set(uid, { ...detail, backoff_level: backoffLevel });
+    return { thresholds, perUser: details, k: kneeOptions.kSigma, scan_step: kneeOptions.logStep };
+  } finally {
+    await aggregator.cleanup();
   }
-
-  return { thresholds, perUser: details, k: kneeOptions.kSigma, scan_step: kneeOptions.logStep };
 }
 
-export function estimateThresholdsWithMeta(
+export async function estimateThresholdsWithMeta(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
-): ThresholdComputationResult {
+): Promise<ThresholdComputationResult> {
   return estimateThresholdsInternal(rows, options);
 }
 
-export function estimateThresholdsByUser(
+export async function estimateThresholdsByUser(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
-): ThresholdMap {
-  return estimateThresholdsInternal(rows, options).thresholds;
+): Promise<ThresholdMap> {
+  const result = await estimateThresholdsInternal(rows, options);
+  return result.thresholds;
 }
 
 export function makeLogHistogram(
@@ -1543,10 +1857,23 @@ function computeHistogramCounts(sortedValues: number[], edges: number[]): number
   if (edges.length <= 1) {
     return sortedValues.length > 0 ? [sortedValues.length] : [];
   }
-  const counts = new Array<number>(edges.length - 1).fill(0);
+  const binLength = edges.length - 1;
+  const useTypedArray = sortedValues.length > 65_536;
+  if (useTypedArray) {
+    const counts = new Uint32Array(binLength);
+    let index = 0;
+    for (const value of sortedValues) {
+      while (index < binLength - 1 && value >= edges[index + 1]) {
+        index += 1;
+      }
+      counts[index] += 1;
+    }
+    return Array.from(counts);
+  }
+  const counts = new Array<number>(binLength).fill(0);
   let index = 0;
   for (const value of sortedValues) {
-    while (index < counts.length - 1 && value >= edges[index + 1]) {
+    while (index < binLength - 1 && value >= edges[index + 1]) {
       index += 1;
     }
     counts[index] += 1;
@@ -1649,4 +1976,61 @@ export async function writeMeta(metaPath: string | URL, meta: ThresholdMetaInput
   await fsPromises.mkdir(directory, { recursive: true });
   await fsPromises.writeFile(outputPath, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8' });
   return payload;
+}
+
+function serializeWorkerError(error: unknown): { message: string; stack?: string } {
+  if (error instanceof Error) {
+    return { message: error.message, stack: error.stack };
+  }
+  if (typeof error === 'string') {
+    return { message: error };
+  }
+  try {
+    return { message: JSON.stringify(error) };
+  } catch {
+    return { message: 'Unknown worker error' };
+  }
+}
+
+async function runThresholdShard(data: ThresholdWorkerData): Promise<void> {
+  const perUser = new Map<string, number[]>();
+  const stream = createReadStream(data.shardPath, { encoding: 'utf8' });
+  const reader = createInterface({ input: stream, crlfDelay: Infinity });
+
+  for await (const line of reader) {
+    if (typeof line !== 'string' || line.length === 0) {
+      continue;
+    }
+    const [uid, deltaRaw] = line.split('\t');
+    if (!uid || !deltaRaw) {
+      continue;
+    }
+    const delta = Number.parseFloat(deltaRaw);
+    if (!Number.isFinite(delta) || delta <= 0) {
+      continue;
+    }
+    const list = perUser.get(uid);
+    if (list) {
+      list.push(delta);
+    } else {
+      perUser.set(uid, [delta]);
+    }
+  }
+
+  const results: Record<string, WorkerUserSummary> = {};
+  for (const [uid, values] of perUser.entries()) {
+    values.sort((a, b) => a - b);
+    const { threshold, detail } = computeThresholdFromSorted(values, data.minimumSamples, data.fallbackPercentile, data.kneeOptions);
+    results[uid] = { threshold, detail, count: values.length };
+  }
+
+  parentPort?.postMessage({ kind: 'threshold-shard-result', payload: results });
+}
+
+if (!isMainThread && workerData && (workerData as { kind?: string }).kind === 'threshold-shard') {
+  const data = workerData as ThresholdWorkerData;
+  runThresholdShard(data).catch((error: unknown) => {
+    const serialized = serializeWorkerError(error);
+    parentPort?.postMessage({ kind: 'threshold-shard-error', message: serialized.message, stack: serialized.stack });
+  });
 }

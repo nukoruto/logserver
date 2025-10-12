@@ -289,7 +289,8 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 - **分位点法**：`τ = Quantile_q(S_normal)`。未知ドメインでも堅牢。
 - **EVT-POT**：高分位のテールに一般化パレート分布（GPD）を当てはめ、確率保証のある `τ` を算出。
 - **粒度**：イベント単位 / セッション単位（集約関数：max, mean, topk-mean など）。
-- **低サンプル時のバックオフ**：`estimateThresholdsByUser(..., { min_events, backoff })` で min_events (<50 など) 未満の UID を `user_agent_type` 単位→全体分布へ階層的にフォールバックし、`backoff_level` をメタに記録。
+- **低サンプル時のバックオフ**：`await estimateThresholdsByUser(..., { min_events, backoff, concurrency, shard_dir })` で min_events (<50 など) 未満の UID を `user_agent_type` 単位→全体分布へ階層的にフォールバックし、`backoff_level` をメタに記録。
+- **スケールアウト**：`concurrency` は WorkerThreads 数（CPU コア数と同値が既定）、`shard_dir` はストリーミング集計用の一時ディレクトリを明示指定（未指定時は `os.tmpdir()` に自動作成・自動削除）。
 
 ---
 
