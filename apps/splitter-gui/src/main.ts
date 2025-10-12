@@ -160,7 +160,7 @@ async function ensureDatasetLoaded(request: PreviewRequest): Promise<LoadedDatas
   for await (const row of splitSessions(request.filePath, options)) {
     rows.push(row);
   }
-  const thresholds = estimateThresholdsWithMeta(rows);
+  const thresholds = await estimateThresholdsWithMeta(rows);
   const deltasByUser = new Map<string, number[]>();
   for (const row of rows) {
     const delta = row.deltaSeconds;

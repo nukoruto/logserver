@@ -34,6 +34,8 @@ interface CliOptions {
   epsilon?: number;
   ntpP95Ms?: number;
   ingressJitterMs?: number;
+  concurrency?: number;
+  shardDir?: string;
 }
 
 const program = new Command();
@@ -52,6 +54,8 @@ program
   .option('--epsilon <seconds>', 'Half of log resolution in seconds', (value) => Number(value))
   .option('--ntp-p95-ms <ms>', '95th percentile NTP offset in milliseconds', (value) => Number(value))
   .option('--ingress-jitter-ms <ms>', 'Ingress jitter bound in milliseconds', (value) => Number(value))
+  .option('--concurrency <count>', 'Worker threads for threshold estimation', (value) => Number(value))
+  .option('--shard-dir <path>', 'Directory for temporary threshold shards')
   .action(async (cliOptions: CliOptions) => {
     if (!cliOptions.input) {
       console.error('Input path is required. Use --input <path>');
@@ -94,7 +98,10 @@ program
       }
 
       if (cliOptions.thresholds) {
-        const result = estimateThresholdsWithMeta(rows);
+        const result = await estimateThresholdsWithMeta(rows, {
+          concurrency: cliOptions.concurrency,
+          shard_dir: cliOptions.shardDir
+        });
         const thresholdsRecord = toSortedRecord(result.thresholds.entries());
         process.stdout.write(
           `${JSON.stringify({ algo_ver: algoVersion, thresholds: thresholdsRecord })}\n`

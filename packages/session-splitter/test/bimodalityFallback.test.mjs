@@ -32,7 +32,7 @@ function percentile(sortedValues, fraction) {
   return sortedValues[lowerIndex] * (1 - weight) + sortedValues[upperIndex] * weight;
 }
 
-test('unimodal distributions fall back to knee threshold', () => {
+test('unimodal distributions fall back to knee threshold', async () => {
   const deltas = buildUnimodalDeltas(240);
   const datasetKey = deriveDatasetKey('c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=');
   const sessionStartEpoch = Math.trunc(Date.parse('2024-01-01T00:00:00.000Z') / 1000);
@@ -50,7 +50,7 @@ test('unimodal distributions fall back to knee threshold', () => {
     original: {}
   }));
 
-  const thresholds = estimateThresholdsByUser(rows, { minimumSamples: 5, fallbackPercentile: 0.95 });
+  const thresholds = await estimateThresholdsByUser(rows, { minimumSamples: 5, fallbackPercentile: 0.95 });
   assert.equal(thresholds.algo_ver, algoVersion);
   const actual = thresholds.get('user-1');
   assert.ok(Number.isFinite(actual));
