@@ -60,13 +60,13 @@ const parseNtpstat = (stdout: string): number | null => {
 
 const execFileAsync = (command: string, args: readonly string[]): Promise<{ stdout: string; stderr: string }> =>
   new Promise((resolve, reject) => {
-    execFile(command, args as string[], (error, stdout, stderr) => {
+    execFile(command, args as string[], (error, stdout: string | Buffer, stderr: string | Buffer) => {
       if (error) {
         reject(error);
         return;
       }
-      const stdoutText = typeof stdout === 'string' ? stdout : stdout.toString();
-      const stderrText = typeof stderr === 'string' ? stderr : stderr.toString();
+      const stdoutText = Buffer.isBuffer(stdout) ? stdout.toString() : stdout;
+      const stderrText = Buffer.isBuffer(stderr) ? stderr.toString() : stderr;
       resolve({ stdout: stdoutText, stderr: stderrText });
     });
   });

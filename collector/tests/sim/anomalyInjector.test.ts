@@ -76,11 +76,13 @@ describe('injectAnomaly', () => {
     expect(firstEvent.event).toBe('edit');
     expect(firstEvent.anomaly).toBe(true);
     expect(firstEvent._anomalyType).toBe('protocolViolation');
-    expect(firstEvent._anomalyDetails.reason).toBe('preLoginOperation');
+    expect(firstEvent._anomalyDetails?.reason).toBe('preLoginOperation');
 
     const loginEvents = mutated.filter((event: any) => event.event === 'login');
     expect(loginEvents.length).toBe(1);
-    expect(new Date(firstEvent.timestamp).getTime()).toBeLessThan(new Date(loginEvents[0].timestamp).getTime());
+    expect(new Date(firstEvent.timestamp ?? '').getTime()).toBeLessThan(
+      new Date(loginEvents[0].timestamp ?? '').getTime()
+    );
   });
 
   it('時間逸脱を注入しΔtが大きく変化する', () => {
@@ -102,8 +104,8 @@ describe('injectAnomaly', () => {
     expect(index).toBeGreaterThan(0);
 
     const previous = mutated[index - 1];
-    const deltaMillis = new Date(target.timestamp).getTime() - new Date(previous.timestamp).getTime();
-    expect(Math.round(target.deltaSeconds)).toBe(480);
+    const deltaMillis = new Date(target.timestamp ?? '').getTime() - new Date(previous.timestamp ?? '').getTime();
+    expect(Math.round(target.deltaSeconds ?? 0)).toBe(480);
     expect(Math.round(deltaMillis / 1000)).toBe(480);
     expect(target.deltaOffsetSeconds).toBeGreaterThanOrEqual(470);
   });
@@ -127,7 +129,7 @@ describe('injectAnomaly', () => {
     expect(target.session_id).toMatch(/^invalid-session-/);
     expect(target.user_id).toMatch(/^spoofed-user-/);
     expect(target.authenticated).toBe(false);
-    expect(target.metadata.auth.status).toBe('invalid');
-    expect(target.metadata.auth.reason).toBe('unauthorizedOperation');
+    expect(target.metadata?.auth?.status).toBe('invalid');
+    expect(target.metadata?.auth?.reason).toBe('unauthorizedOperation');
   });
 });

@@ -1,8 +1,8 @@
+import type { RequestHandler, Response } from 'express';
+
 const OPERATION_CATEGORIES = ['AUTH', 'READ', 'UPDATE'] as const;
 
 type OperationCategory = (typeof OPERATION_CATEGORIES)[number];
-
-type RequestLike = Record<string, unknown>;
 
 const OP_CATEGORY_FLAG = '__opCategorySet__' as const;
 
@@ -15,19 +15,12 @@ type Locals = Record<string, unknown> & {
   __logframe?: Logframe;
 };
 
-type ResponseLike = {
-  locals?: Locals;
-};
-
-type NextLike = (err?: unknown) => void;
-
-type Middleware = (req: RequestLike, res: ResponseLike, next: NextLike) => void;
-
-const ensureLocals = (res: ResponseLike): Locals => {
-  if (!res.locals || typeof res.locals !== 'object') {
-    res.locals = {};
+const ensureLocals = (res: Response): Locals => {
+  const locals = (res.locals ??= {} as Response['locals']);
+  if (typeof locals !== 'object' || locals === null) {
+    res.locals = {} as Response['locals'];
   }
-  return res.locals;
+  return res.locals as Locals;
 };
 
 const ensureLogframe = (locals: Locals): Logframe => {
@@ -41,7 +34,7 @@ const isValidCategory = (category: string): category is OperationCategory => {
   return (OPERATION_CATEGORIES as readonly string[]).includes(category);
 };
 
-const opCategory = (category: OperationCategory): Middleware => {
+const opCategory = (category: OperationCategory): RequestHandler => {
   if (!isValidCategory(category)) {
     throw new Error(`Invalid operation category: ${category}`);
   }
