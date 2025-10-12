@@ -272,7 +272,6 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
 
   private async *iterate(): AsyncGenerator<CsvRow> {
     let rawRowIndex = 0;
-    let emittedIndex = 0;
     try {
       for await (const record of this.pipeline as AsyncIterable<Record<string, string>>) {
         const result = this.processRecord(record);
@@ -280,9 +279,8 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
         if (result.ok) {
           const row: CsvRow = {
             ...result.value,
-            row_index: emittedIndex
+            row_index: rawRowIndex
           };
-          emittedIndex += 1;
           this.stats.validRows += 1;
           yield row;
         } else {

@@ -92,7 +92,7 @@ export function computeDeltas<T extends UserGroupedRow>(
     }
 
     if (delta <= epsilon) {
-      delta = 0;
+      delta = epsilon;
     }
 
     const timeLabel: DeltaTimeLabel = delta <= epsilonT ? 'unknown' : 'measured';
