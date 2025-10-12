@@ -5,6 +5,7 @@ const {
   persistSimulationRun,
   summarizeDeltas,
   augmentRows,
+  formatCsvAugmented,
 } = require('../../src/sim/persistence/simWriter');
 
 describe('simWriter.persistSimulationRun', () => {
@@ -48,6 +49,7 @@ describe('simWriter.persistSimulationRun', () => {
       {
         timestamp: '2024-05-01T00:00:09.000Z',
         session_id: 'sess-099',
+        sid_final: 'explicit-sid-099',
         user_id: 'user-314',
         event: 'browse',
         method: 'GET' as const,
@@ -78,7 +80,7 @@ describe('simWriter.persistSimulationRun', () => {
     const csvContent = await fs.readFile(result.csvPath, 'utf8');
     const rows = csvContent.trim().split('\n');
     expect(rows[0]).toBe(
-      'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label'
+      'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label,sid_final'
     );
     expect(rows).toHaveLength(events.length + 1);
 
@@ -134,6 +136,9 @@ describe('simWriter.persistSimulationRun', () => {
 
     const labelValues = parsedRows.map((columns: string[]) => columns[14]);
     expect(labelValues).toEqual(['ok', 'ok', 'ok']);
+
+    const sidFinalValues = parsedRows.map((columns: string[]) => columns[15]);
+    expect(sidFinalValues).toEqual(['sess-001', 'sess-001', 'explicit-sid-099']);
 
     const manifestRaw = await fs.readFile(result.manifestPath, 'utf8');
     const manifest = JSON.parse(manifestRaw);
@@ -208,5 +213,31 @@ describe('simWriter.persistSimulationRun', () => {
     expect(overridden[0].dt_sec).toBe(5);
     expect(overridden[1].time_label).toBe('ok');
     expect(overridden[2].z_clipped).toBe(42);
+  });
+
+  it('formatCsvAugmented で sid_final を session_id で補完し、CSV エスケープを保持する', () => {
+    const row = {
+      timestamp: '2024-07-01T00:00:00.000Z',
+      session_id: 'sess,comma',
+      user_id: 'user"quote',
+      event: 'login',
+      method: 'POST',
+      path: '/auth/login',
+      status: 200,
+      latency_ms: 100,
+      delta_t: 1.23,
+      metadata: { message: 'line1\nline2' },
+      dt_sec: 1.23,
+      log_dt: Math.log(1.23),
+      z: 0,
+      z_clipped: 0,
+      time_label: 'ok',
+    };
+
+    const csvLine = formatCsvAugmented(row);
+    const occurrences = csvLine.match(/"sess,comma"/g) || [];
+    expect(occurrences).toHaveLength(2);
+    expect(csvLine).toContain('"user""quote"');
+    expect(csvLine.endsWith('"sess,comma"')).toBe(true);
   });
 });

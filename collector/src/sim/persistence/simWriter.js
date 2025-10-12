@@ -7,9 +7,11 @@ const config = require('../../config');
 const { labelSequence } = require('../labeler');
 
 const CSV_HEADER =
-  'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label';
+  'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label,sid_final';
 
 const EXTRA_COLUMN_NAMES = ['dt_sec', 'log_dt', 'z', 'z_clipped', 'time_label'];
+
+const hasOwn = Object.prototype.hasOwnProperty;
 
 const clamp = (value, min, max) => {
   if (!Number.isFinite(value)) {
@@ -262,29 +264,53 @@ const serializeMetadata = (metadata) => {
   return metadata;
 };
 
+const resolveSidFinal = (event) => {
+  if (!event || typeof event !== 'object') {
+    return null;
+  }
+  if (hasOwn.call(event, 'sid_final')) {
+    const explicit = event.sid_final;
+    if (explicit !== undefined && explicit !== null && explicit !== '') {
+      return explicit;
+    }
+  }
+  const candidate = event.session_id;
+  if (candidate === undefined || candidate === null || candidate === '') {
+    return candidate ?? null;
+  }
+  return candidate;
+};
+
+const formatCsvAugmented = (event) => {
+  const safeEvent = event && typeof event === 'object' ? event : {};
+  const metadata = serializeMetadata(safeEvent.metadata);
+  const sidFinal = resolveSidFinal(safeEvent);
+  const row = [
+    safeEvent.timestamp,
+    safeEvent.session_id,
+    safeEvent.user_id,
+    safeEvent.event,
+    safeEvent.method,
+    safeEvent.path,
+    safeEvent.status,
+    safeEvent.latency_ms,
+    extractDeltaSeconds(safeEvent),
+    metadata,
+    safeEvent.dt_sec,
+    safeEvent.log_dt,
+    safeEvent.z,
+    safeEvent.z_clipped,
+    safeEvent.time_label,
+    sidFinal,
+  ].map(toCsvField);
+  return row.join(',');
+};
+
 const formatCsvRows = (events, extras) => {
   const augmented = augmentRows(events, extras);
   const rows = [CSV_HEADER];
   for (const event of augmented) {
-    const metadata = serializeMetadata(event.metadata);
-    const row = [
-      event.timestamp,
-      event.session_id,
-      event.user_id,
-      event.event,
-      event.method,
-      event.path,
-      event.status,
-      event.latency_ms,
-      extractDeltaSeconds(event),
-      metadata,
-      event.dt_sec,
-      event.log_dt,
-      event.z,
-      event.z_clipped,
-      event.time_label,
-    ].map(toCsvField);
-    rows.push(row.join(','));
+    rows.push(formatCsvAugmented(event));
   }
   return rows.join('\n').concat('\n');
 };
@@ -395,4 +421,5 @@ module.exports = {
   summarizeDeltas,
   buildAnomalySummary,
   augmentRows,
+  formatCsvAugmented,
 };
