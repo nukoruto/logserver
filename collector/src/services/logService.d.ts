@@ -1,4 +1,4 @@
-export interface StoredEvent extends Record<string, unknown> {}
+export type StoredEvent = Record<string, unknown>;
 
 export interface ListEventsQuery extends Record<string, unknown> {
   limit?: number | string;

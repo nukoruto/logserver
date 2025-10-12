@@ -1,6 +1,6 @@
 import type { SimulationEvent } from '../../services/simulationService';
 
-export interface ScenarioDefinition extends Record<string, unknown> {}
+export type ScenarioDefinition = Record<string, unknown>;
 
 export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   scenario?: ScenarioDefinition | string;

@@ -1,6 +1,6 @@
 import type { SimulationEvent } from '../../services/simulationService';
 
-export interface StrategyConfig extends Record<string, unknown> {}
+export type StrategyConfig = Record<string, unknown>;
 
 export interface AnomalyInjectionOptions extends Record<string, unknown> {
   anomalyRate?: number;

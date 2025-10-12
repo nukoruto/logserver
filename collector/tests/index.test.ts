@@ -1,4 +1,3 @@
-type TestRequest = Record<string, unknown>;
 type TestResponse = {
   locals: Record<string, unknown>;
   statusCode: number;
