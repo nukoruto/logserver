@@ -18,7 +18,7 @@
   | 列名 | 型 | 説明 |
   | ---- | --- | ---- |
   | `timestamp_utc` | string | RFC 3339, UTC (Chrony 安定化後取得)
-  | `uid` | string | `base64url(HMAC_SHA256(JWT_HMAC_KEY, raw_jwt))`
+  | `uid` | string | `base64url(HMAC_SHA256(K_ds, raw_jwt))`
   | `session_id` | string | セッション化後の一意キー (`user`+`timestamp`)
   | `method` | string | HTTP 動詞 (`GET/POST/PUT/DELETE`)
   | `path` | string | リクエストパス
@@ -44,7 +44,7 @@
   - PyTorch 2.x (CUDA モードは `.env` の `GPU_MODE` で切替)
 
 ## 5. データ収集と前処理
-- **擬似匿名化**: `uid = base64url(HMAC_SHA256(key=JWT_HMAC_KEY, message=raw_jwt))`。`JWT_HMAC_KEY` は 256bit を推奨。
+- **擬似匿名化**: `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")`、`uid = base64url(HMAC_SHA256(key=K_ds, message=raw_jwt))`。`JWT_HMAC_KEY` は 256bit を推奨し、`kid=sid-fixture-202406` を `metadata.json` に記録。
 - **時刻同期 (NTP 基準)**: `chronyc tracking` で `Last offset` と `RMS offset` が ±0.050s 以内。証跡は `logs/ntp-*.txt` に保存。
 - **セッション化**: `python -m trainer.scripts.preprocess --config trainer/configs/default.yaml` が `delta_t` を算出。
 - **乱数種**:

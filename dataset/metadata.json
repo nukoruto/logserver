@@ -3,7 +3,7 @@
   "version": "2024-06-01",
   "schema": {
     "timestamp_utc": "string (RFC 3339, UTC)",
-    "uid": "string (HMAC-SHA256(jwt) base64url)",
+    "uid": "string (HMAC-SHA256(K_ds, jwt) base64url)",
     "session_id": "string",
     "method": "string (HTTP verb)",
     "path": "string",
@@ -20,9 +20,11 @@
   },
   "collection_purpose": "Reproduce Δt-aware LSTM anomaly detection experiments for session operations, aligning with SRS.md section 1.",
   "pseudonymization": {
-    "method": "HMAC-SHA256",
-    "key_derivation": "JWT_HMAC_KEY environment variable (Base64) decoded to bytes",
-    "formula": "uid = base64url( HMAC_SHA256(key=JWT_HMAC_KEY, message=raw_jwt) )",
+    "method": "HKDF-SHA256 + HMAC-SHA256",
+    "key_derivation": "K_ds = HKDF(digest=SHA256, ikm=JWT_HMAC_KEY, salt=\"\", info=\"sid\", length=32)",
+    "hkdf_info": "sid",
+    "kid": "sid-fixture-202406",
+    "formula": "uid = base64url( HMAC_SHA256(key=K_ds, message=raw_jwt) )",
     "deterministic": true
   },
   "ntp_reference": {

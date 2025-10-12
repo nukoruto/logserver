@@ -4,13 +4,13 @@ describe('jwtToUid', () => {
   it('computes deterministic uid for hex key', () => {
     const key = 'deadbeefdeadbeefdeadbeefdeadbeef';
     const uid = jwtToUid('abc', key);
-    expect(uid).toBe('81d319de67b6af314dfdbeb1cbbff6208e0e49ae1f95b96218f35fa9677d028b');
+    expect(uid).toBe('0388da064eb11c9f38117ebf3e3f3200e66532be8f1d987d5c21af66aeae5788');
   });
 
   it('computes deterministic uid for base64 key', () => {
     const key = '3q2+7wAAAAAAAAAAAAAAAAAAAA==';
     const uid = jwtToUid('token-123', key);
-    expect(uid).toBe('849390323a6dc84ff29a6d416d90aa305368789be234466cecd177d94e64a88b');
+    expect(uid).toBe('7b971b22a84bbf381ea9b488ddb5c1ce3580d8bf9daebb09d6f894f1dcec5074');
   });
 
   it('rejects empty jwt', () => {

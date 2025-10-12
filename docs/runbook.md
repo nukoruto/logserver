@@ -18,9 +18,11 @@
 2. ルート `.env` に以下を追記・確認する。
    ```ini
    JWT_HMAC_KEY=c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=
+   SID_KEY_ID=sid-fixture-202406
    GPU_MODE=ada6000  # RTX6000 Ada。4060 を使う場合は 4060 に変更。
    SEED_SESSION_COUNT=220
    ```
+   - `SID_KEY_ID` は `JWT_HMAC_KEY` から派生する `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")` に対応する鍵識別子。CSV/メタ書き出し時に参照される。
 3. Windows の場合は LF 改行を維持 (`git config core.autocrlf false`)。
 
 ![.env 作成画面](images/runbook_env.svg)
@@ -168,7 +170,7 @@ tree -L 1 data/processed
 ---
 
 ## 9. 完了条件チェックリスト
-- [ ] `.env` に JWT_HMAC_KEY / GPU_MODE / SEED_* を設定
+- [ ] `.env` に JWT_HMAC_KEY / SID_KEY_ID / GPU_MODE / SEED_* を設定
 - [ ] `docker compose ps` で collector が `Up` かつ 8000 LISTEN
 - [ ] `chronyc tracking` で ±50ms 内に収束
 - [ ] `npm --prefix collector run seed` が成功し 1,540 件以上のイベントが生成
