@@ -1,6 +1,55 @@
-'use strict';
+import type { SimulationEvent } from '../../services/simulationService';
 
-const DEFAULT_OPTIONS = {
+export interface ProtocolValidatorOptions extends Record<string, unknown> {
+  loginEvents?: readonly unknown[];
+  logoutEvents?: readonly unknown[];
+  authCategories?: readonly unknown[];
+  requireAuthCategories?: readonly unknown[];
+  eventCategoryMap?: Record<string, unknown>;
+  sessionIdField?: string;
+  userIdField?: string;
+  tokenField?: string;
+  sessionIdPattern?: RegExp;
+  allowedTransitions?: readonly UnknownTransition[];
+}
+
+export interface ProtocolAnnotatedEvent extends SimulationEvent {
+  protocolViolationFlag?: boolean;
+  protocolViolationReasons?: string[];
+  protocolViolationState?: Record<string, unknown>;
+}
+
+interface UnknownTransition {
+  from?: unknown;
+  to?: unknown;
+}
+
+interface SessionContext {
+  sessionId: string | null;
+  authenticated: boolean;
+  terminated: boolean;
+  seenAuth: boolean;
+  lastEventName: string | null;
+  userId: string | null;
+  tokenId: string | null;
+  processedCount: number;
+}
+
+interface NormalizedOptions extends ProtocolValidatorOptions {
+  loginEvents: readonly unknown[];
+  logoutEvents: readonly unknown[];
+  authCategories: readonly unknown[];
+  requireAuthCategories: readonly unknown[];
+  eventCategoryMap: Record<string, unknown>;
+  sessionIdField: string;
+  userIdField: string;
+  tokenField: string;
+  sessionIdPattern: RegExp;
+  allowedTransitions: readonly UnknownTransition[];
+  requireAuthCategorySet: Set<string>;
+}
+
+const DEFAULT_OPTIONS: NormalizedOptions = {
   loginEvents: ['login'],
   logoutEvents: ['logout'],
   authCategories: ['AUTH'],
@@ -31,11 +80,12 @@ const DEFAULT_OPTIONS = {
     { from: 'edit', to: 'logout' },
     { from: 'save', to: 'logout' },
   ],
+  requireAuthCategorySet: new Set<string>(),
 };
 
-const NORMALIZED_TRANSITION_CACHE = new WeakMap();
+const NORMALIZED_TRANSITION_CACHE = new WeakMap<object, Set<string>>();
 
-const normalizeString = (value) => {
+const normalizeString = (value: unknown): string | null => {
   if (typeof value === 'string') {
     const trimmed = value.trim();
     return trimmed.length > 0 ? trimmed : null;
@@ -43,11 +93,11 @@ const normalizeString = (value) => {
   return null;
 };
 
-const normalizeEventName = (event) => {
+const normalizeEventName = (event: SimulationEvent | null | undefined): string | null => {
   if (!event || typeof event !== 'object') {
     return null;
   }
-  const candidates = [event.event, event.action, event.operation, event.type];
+  const candidates = [event.event, (event as Record<string, unknown>).action, (event as Record<string, unknown>).operation, (event as Record<string, unknown>).type];
   for (const candidate of candidates) {
     const normalized = normalizeString(candidate);
     if (normalized) {
@@ -57,11 +107,15 @@ const normalizeEventName = (event) => {
   return null;
 };
 
-const normalizeCategory = (event, options) => {
+const normalizeCategory = (
+  event: SimulationEvent | null | undefined,
+  options: NormalizedOptions,
+): string | null => {
   if (!event || typeof event !== 'object') {
     return null;
   }
-  const candidates = [event.op_category, event.category, event.category_code];
+  const baseEvent = event as Record<string, unknown>;
+  const candidates = [baseEvent.op_category, baseEvent.category, baseEvent.category_code];
   for (const candidate of candidates) {
     const normalized = normalizeString(candidate);
     if (normalized) {
@@ -73,20 +127,24 @@ const normalizeCategory = (event, options) => {
     return null;
   }
   const mapped = options.eventCategoryMap[eventName];
-  return mapped ? mapped.toUpperCase() : null;
+  return typeof mapped === 'string' ? mapped.toUpperCase() : null;
 };
 
-const resolveField = (event, primary, fallbacks = []) => {
+const resolveField = (
+  event: SimulationEvent | null | undefined,
+  primary: unknown,
+  fallbacks: readonly string[] = [],
+): string | null => {
   if (!event || typeof event !== 'object') {
     return null;
   }
   const lookupOrder = [primary, ...fallbacks];
   for (const key of lookupOrder) {
-    if (!key) {
+    if (typeof key !== 'string' || key.length === 0) {
       continue;
     }
     if (Object.prototype.hasOwnProperty.call(event, key)) {
-      const normalized = normalizeString(event[key]);
+      const normalized = normalizeString((event as Record<string, unknown>)[key]);
       if (normalized) {
         return normalized;
       }
@@ -95,25 +153,25 @@ const resolveField = (event, primary, fallbacks = []) => {
   return null;
 };
 
-const normalizeTransitionSet = (options) => {
+const normalizeTransitionSet = (options: NormalizedOptions): Set<string> => {
   if (!options) {
     return new Set();
   }
   if (NORMALIZED_TRANSITION_CACHE.has(options)) {
-    return NORMALIZED_TRANSITION_CACHE.get(options);
+    return NORMALIZED_TRANSITION_CACHE.get(options) as Set<string>;
   }
   const transitions = Array.isArray(options.allowedTransitions)
     ? options.allowedTransitions
     : Array.isArray(DEFAULT_OPTIONS.allowedTransitions)
       ? DEFAULT_OPTIONS.allowedTransitions
       : [];
-  const set = new Set();
+  const set = new Set<string>();
   transitions.forEach((item) => {
     if (!item || typeof item !== 'object') {
       return;
     }
-    const fromName = normalizeString(item.from);
-    const toName = normalizeString(item.to);
+    const fromName = normalizeString((item as UnknownTransition).from);
+    const toName = normalizeString((item as UnknownTransition).to);
     if (!fromName || !toName) {
       return;
     }
@@ -123,7 +181,7 @@ const normalizeTransitionSet = (options) => {
   return set;
 };
 
-const createSessionContext = (sessionId) => ({
+const createSessionContext = (sessionId: string | null): SessionContext => ({
   sessionId,
   authenticated: false,
   terminated: false,
@@ -134,11 +192,12 @@ const createSessionContext = (sessionId) => ({
   processedCount: 0,
 });
 
-const resolveSessionKey = (sessionId) => sessionId || '__MISSING_SESSION__';
+const resolveSessionKey = (sessionId: string | null): string => sessionId ?? '__MISSING_SESSION__';
 
-const collectReasons = (reasons) => Array.from(new Set(reasons.filter(Boolean)));
+const collectReasons = (reasons: readonly (string | null | undefined)[]): string[] =>
+  Array.from(new Set(reasons.filter((reason): reason is string => Boolean(reason))));
 
-const shouldRequireAuth = (category, options) => {
+const shouldRequireAuth = (category: string | null, options: NormalizedOptions): boolean => {
   if (!category) {
     return false;
   }
@@ -146,52 +205,68 @@ const shouldRequireAuth = (category, options) => {
   return options.requireAuthCategorySet.has(target);
 };
 
-const validateProtocol = (sequence, userOptions = {}) => {
+export const validateProtocol = (
+  sequence: readonly SimulationEvent[],
+  userOptions: ProtocolValidatorOptions = {},
+): ProtocolAnnotatedEvent[] => {
   if (!Array.isArray(sequence)) {
     return [];
   }
 
-  const mergedOptions = {
+  const mergedOptions: NormalizedOptions = {
     ...DEFAULT_OPTIONS,
     ...userOptions,
+    requireAuthCategorySet: new Set<string>(),
   };
 
   const loginEventSet = new Set(
     Array.isArray(mergedOptions.loginEvents)
       ? mergedOptions.loginEvents
           .map((item) => normalizeString(item))
-          .filter(Boolean)
+          .filter((value): value is string => Boolean(value))
           .map((name) => name.toLowerCase())
-      : DEFAULT_OPTIONS.loginEvents.map((name) => name.toLowerCase())
+      : DEFAULT_OPTIONS.loginEvents.map((name) =>
+          typeof name === 'string' ? name.toLowerCase() : String(name).toLowerCase(),
+        ),
   );
   const logoutEventSet = new Set(
     Array.isArray(mergedOptions.logoutEvents)
       ? mergedOptions.logoutEvents
           .map((item) => normalizeString(item))
-          .filter(Boolean)
+          .filter((value): value is string => Boolean(value))
           .map((name) => name.toLowerCase())
-      : DEFAULT_OPTIONS.logoutEvents.map((name) => name.toLowerCase())
+      : DEFAULT_OPTIONS.logoutEvents.map((name) =>
+          typeof name === 'string' ? name.toLowerCase() : String(name).toLowerCase(),
+        ),
   );
   const authCategorySet = new Set(
     Array.isArray(mergedOptions.authCategories)
-      ? mergedOptions.authCategories.map((item) => normalizeString(item)).filter(Boolean).map((item) => item.toUpperCase())
-      : DEFAULT_OPTIONS.authCategories.map((item) => item.toUpperCase())
+      ? mergedOptions.authCategories
+          .map((item) => normalizeString(item))
+          .filter((value): value is string => Boolean(value))
+          .map((item) => item.toUpperCase())
+      : DEFAULT_OPTIONS.authCategories.map((item) =>
+          typeof item === 'string' ? item.toUpperCase() : String(item).toUpperCase(),
+        ),
   );
   const requireAuthCategorySet = new Set(
     Array.isArray(mergedOptions.requireAuthCategories)
       ? mergedOptions.requireAuthCategories
           .map((item) => normalizeString(item))
-          .filter(Boolean)
+          .filter((value): value is string => Boolean(value))
           .map((item) => item.toUpperCase())
-      : DEFAULT_OPTIONS.requireAuthCategories.map((item) => item.toUpperCase())
+      : DEFAULT_OPTIONS.requireAuthCategories.map((item) =>
+          typeof item === 'string' ? item.toUpperCase() : String(item).toUpperCase(),
+        ),
   );
 
   mergedOptions.requireAuthCategorySet = requireAuthCategorySet;
 
   const transitionSet = normalizeTransitionSet(mergedOptions);
-  const contexts = new Map();
+  const contexts = new Map<string, SessionContext>();
 
-  return sequence.map((event) => {
+  return sequence.map((rawEvent) => {
+    const event = (rawEvent ?? {}) as SimulationEvent;
     const eventName = normalizeEventName(event);
     const category = normalizeCategory(event, mergedOptions);
     const sessionId = resolveField(event, mergedOptions.sessionIdField, ['sessionId', 'session']);
@@ -199,14 +274,17 @@ const validateProtocol = (sequence, userOptions = {}) => {
     const tokenId = resolveField(event, mergedOptions.tokenField, ['token', 'token_id', 'auth_token']);
 
     const contextKey = resolveSessionKey(sessionId);
-    const context = contexts.get(contextKey) || createSessionContext(sessionId);
+    const context = contexts.get(contextKey) ?? createSessionContext(sessionId);
     contexts.set(contextKey, context);
 
-    const reasons = [];
+    const reasons: Array<string | null> = [];
 
     if (!sessionId) {
       reasons.push('missingSessionId');
-    } else if (mergedOptions.sessionIdPattern instanceof RegExp && !mergedOptions.sessionIdPattern.test(sessionId)) {
+    } else if (
+      mergedOptions.sessionIdPattern instanceof RegExp &&
+      !mergedOptions.sessionIdPattern.test(sessionId)
+    ) {
       reasons.push('invalidSessionIdFormat');
     }
 
@@ -274,13 +352,13 @@ const validateProtocol = (sequence, userOptions = {}) => {
       }
     }
 
-    context.lastEventName = eventName || context.lastEventName;
+    context.lastEventName = eventName ?? context.lastEventName;
     context.processedCount += 1;
 
     const deduplicatedReasons = collectReasons(reasons);
 
     return {
-      ...event,
+      ...(event as Record<string, unknown>),
       protocolViolationFlag: deduplicatedReasons.length > 0,
       protocolViolationReasons: deduplicatedReasons,
       protocolViolationState: {
@@ -293,6 +371,8 @@ const validateProtocol = (sequence, userOptions = {}) => {
   });
 };
 
-module.exports = {
+const protocolValidator = {
   validateProtocol,
 };
+
+export default protocolValidator;
