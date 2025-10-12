@@ -95,19 +95,36 @@
 ## 4. セットアップ
 
 ### 4.1 依存関係
-- Python 3.10+（PyTorch or TensorFlow いずれか、デフォルトは PyTorch）
-- NumPy / Pandas / Scikit-learn / PyYAML / SciPy / Matplotlib
-- （任意）`scikit-extremes` など EVT-POT 実装（同等関数を自前実装可）
-- （Simulink連携）MATLAB R2023b+ と Deep Learning Toolbox, Simulink
+本リポジトリは Node.js（収集・Web UI）と Python（学習・解析）が同居する **pnpm モノレポ** です。Node.js 側のパッケージは `pnpm` で統一管理し、Python 側は従来どおり `pip` または `conda` を利用します。セットアップ時は以下の順に依存関係を整えてください。
 
-```
-# pip
-pip install -r requirements.txt
+1. Corepack で `pnpm@9.0.0` を有効化し、モノレポ全体の Node.js 依存を解決します。
 
-# conda（例）
-conda env create -f environment.yml
-conda activate sessad
-```
+   ```bash
+   corepack enable
+   corepack prepare pnpm@9.0.0 --activate
+   ```
+
+   有効化後にリポジトリルートで以下を実行すると、`collector/` や `apps/` など Node.js サブパッケージの依存がまとめて導入されます。
+
+   ```bash
+   pnpm install
+   ```
+
+2. Python 依存は用途に応じて `pip` または `conda` の手順を選択し、学習・解析環境を構築します。
+
+   - Python 3.10+（PyTorch or TensorFlow いずれか、デフォルトは PyTorch）
+   - NumPy / Pandas / Scikit-learn / PyYAML / SciPy / Matplotlib
+   - （任意）`scikit-extremes` など EVT-POT 実装（同等関数を自前実装可）
+   - （Simulink連携）MATLAB R2023b+ と Deep Learning Toolbox, Simulink
+
+   ```
+   # pip
+   pip install -r requirements.txt
+
+   # conda（例）
+   conda env create -f environment.yml
+   conda activate sessad
+   ```
 
 ### 4.2 データ配置
 - `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。
