@@ -57,7 +57,8 @@ test('computeDeltas labels unknown region using epsilon thresholds', () => {
   assert.deepEqual(annotatedIds, ['initial', 'epsilon-noise', 'fifty-ms', 'long-gap']);
 
   assert.equal(result.rows[0].timeLabel, 'initial');
-  assert.equal(result.rows[1].deltaSeconds, 0);
+  assert.ok(result.rows[1].deltaSeconds !== null);
+  assert.ok(Math.abs(result.rows[1].deltaSeconds! - 0.0005) < 1e-9);
   assert.equal(result.rows[1].timeLabel, 'unknown');
   assert.equal(result.rows[2].timeLabel, 'measured');
   assert.ok(result.rows[2].deltaSeconds && result.rows[2].deltaSeconds > 0.001);
@@ -83,4 +84,33 @@ test('unknown share increases when epsilon_t grows with large NTP offset', () =>
   assert.equal(lowUncertainty.stats.total, SAMPLE_ROWS.length);
   assert.equal(highUncertainty.stats.total, SAMPLE_ROWS.length);
   assert.ok(highUncertainty.stats.unknown > lowUncertainty.stats.unknown);
+});
+
+test('computeDeltas promotes zero Δt to epsilon resolution', () => {
+  const rows: TestRow[] = [
+    {
+      uid: 'user-b',
+      timestamp_epoch_seconds: baseSeconds,
+      timestamp_utc: isoFromSeconds(baseSeconds),
+      id: 'start'
+    },
+    {
+      uid: 'user-b',
+      timestamp_epoch_seconds: baseSeconds,
+      timestamp_utc: isoFromSeconds(baseSeconds),
+      id: 'same-moment'
+    }
+  ];
+
+  const epsilon = 0.0025;
+  const result = computeDeltas(rows, { epsilon, epsilon_t: 0.01 });
+
+  assert.equal(result.rows.length, 2);
+  assert.equal(result.rows[0].timeLabel, 'initial');
+  assert.ok(result.rows[1].deltaSeconds !== null);
+  assert.ok(Math.abs(result.rows[1].deltaSeconds! - epsilon) < 1e-12);
+  assert.equal(result.rows[1].timeLabel, 'unknown');
+  assert.equal(result.stats.initial, 1);
+  assert.equal(result.stats.unknown, 1);
+  assert.equal(result.stats.measured, 0);
 });
