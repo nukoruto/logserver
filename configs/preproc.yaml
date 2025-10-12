@@ -1,0 +1,33 @@
+algo_ver: dtproc_v1
+grouping: user
+epsilon:
+  mode: auto
+  min: 1e-6
+  max: 1e-2
+clip:
+  z: 5
+  burst: 5
+window:
+  W_event: 10
+  W_time_minutes: 10
+quantile: HF-R7
+n_min: 8
+backoff:
+  - user+session
+  - user
+  - global
+update:
+  enabled: false
+  alpha: 0.05
+  trim:
+    low: 0.05
+    high: 0.05
+  max_drift: 0.1
+features:
+  z_global: true
+  z_deseas: true
+  lburst: true
+  m_quantiles:
+    - 0.25
+    - 0.5
+    - 0.75
