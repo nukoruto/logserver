@@ -33,6 +33,26 @@ const normalizePersistFlag = (value: unknown): boolean | undefined => {
   return undefined;
 };
 
+const normalizeStartTime = (value: unknown): Date | string | null | undefined => {
+  if (value === undefined) {
+    return undefined;
+  }
+  if (value === null) {
+    return null;
+  }
+  if (value instanceof Date) {
+    return value;
+  }
+  if (typeof value === 'number') {
+    const date = new Date(value);
+    return Number.isNaN(date.getTime()) ? undefined : date;
+  }
+  if (typeof value === 'string') {
+    return value;
+  }
+  return undefined;
+};
+
 router.post(
   '/',
   asyncHandler(async (req: Request, res: Response): Promise<void> => {
@@ -58,7 +78,7 @@ router.post(
       manifestFileName: (body.manifestFileName ?? body.manifestFile) as string | undefined,
       runId: body.runId as string | null | undefined,
       persist: persistOverride !== undefined ? persistOverride : undefined,
-      startTime: body.startTime as string | number | Date | undefined,
+      startTime: normalizeStartTime(body.startTime),
       sessionSpacingSeconds: (body.sessionSpacingSeconds ?? body.sessionSpacing) as number | undefined,
       maxSteps: body.maxSteps as number | undefined,
     });

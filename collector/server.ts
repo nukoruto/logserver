@@ -1,5 +1,3 @@
-import 'ts-node/register/transpile-only';
-
 import { start } from './src/app';
 import logger from './src/utils/logger';
 
