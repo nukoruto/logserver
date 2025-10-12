@@ -76,7 +76,9 @@ const runCommand = async (command: string, args: readonly string[]): Promise<str
   return stdout;
 };
 
-export async function checkNtpOffset(): Promise<number> {
+type CheckNtpOffset = () => Promise<number>;
+
+export const checkNtpOffset: CheckNtpOffset = async () => {
   const errors: string[] = [];
 
   try {
@@ -104,6 +106,6 @@ export async function checkNtpOffset(): Promise<number> {
   }
 
   throw new Error(`Unable to determine NTP offset (${errors.join('; ')})`);
-}
+};
 
 export default checkNtpOffset;

@@ -56,13 +56,43 @@ class LogRecordValidationError extends Error {
 const validateLogRecord = (input) => {
   const result = logRecordSchema.safeParse(input);
   if (!result.success) {
-    const issues = result.error.issues.map((issue) => ({
-      path: issue.path,
-      message: issue.message,
-      code: issue.code,
-      expected: issue.expected,
-      received: issue.received,
-    }));
+    const issues = result.error.issues.map((issue) => {
+      const base = {
+        path: issue.path,
+        message: issue.message,
+        code: issue.code,
+      };
+
+      if ('expected' in issue) {
+        base.expected = issue.expected;
+      }
+      if ('received' in issue) {
+        base.received = issue.received;
+      }
+      if ('minimum' in issue) {
+        base.minimum = issue.minimum;
+      }
+      if ('maximum' in issue) {
+        base.maximum = issue.maximum;
+      }
+      if ('inclusive' in issue) {
+        base.inclusive = issue.inclusive;
+      }
+      if ('exact' in issue) {
+        base.exact = issue.exact;
+      }
+      if ('type' in issue) {
+        base.type = issue.type;
+      }
+      if ('options' in issue) {
+        base.options = issue.options;
+      }
+      if ('input' in issue) {
+        base.input = issue.input;
+      }
+
+      return base;
+    });
     throw new LogRecordValidationError('Invalid log record', issues);
   }
   return result.data;
