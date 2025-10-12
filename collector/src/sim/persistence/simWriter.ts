@@ -1,20 +1,68 @@
-'use strict';
+import * as fs from 'node:fs/promises';
+import * as path from 'node:path';
+import * as crypto from 'node:crypto';
+import config from '../../config';
+import { labelSequence } from '../labeler';
+import type { SimulationEvent } from '../../services/simulationService';
 
-const fs = require('node:fs/promises');
-const path = require('node:path');
-const crypto = require('node:crypto');
-const config = require('../../config');
-const { labelSequence } = require('../labeler');
+export type FeatureResolver = (
+  event: SimulationEvent,
+  index: number,
+  events: SimulationEvent[],
+  fallback: number | string | null,
+) => number | string | null;
+
+export interface FeatureOverrides {
+  dt_sec?: FeatureResolver;
+  log_dt?: FeatureResolver;
+  z?: FeatureResolver;
+  z_clipped?: FeatureResolver;
+  time_label?: FeatureResolver;
+  [key: string]: FeatureResolver | undefined;
+}
+
+export interface PersistSimulationInput extends Record<string, unknown> {
+  events: readonly SimulationEvent[];
+  scenarioId?: string;
+  seed?: string | null;
+  runId?: string | null;
+  outputDir?: string;
+  csvFileName?: string;
+  manifestFileName?: string;
+  parameters?: Record<string, unknown>;
+  sessionIds?: readonly string[];
+  featureOverrides?: FeatureOverrides;
+  manifest?: Record<string, unknown>;
+  transitionTableVersion?: string | null;
+  extraMetadata?: Record<string, unknown>;
+}
+
+export interface PersistSimulationResult {
+  csvPath: string;
+  manifestPath: string;
+  runId: string;
+  events: SimulationEvent[];
+  manifest: Record<string, unknown>;
+  hash: string;
+}
+
+export type AugmentedSimulationEvent = SimulationEvent & {
+  dt_sec: number | null;
+  log_dt: number | null;
+  z: number | null;
+  z_clipped: number | null;
+  time_label: string | null;
+};
 
 const CSV_HEADER =
   'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label,sid_final';
 
-const EXTRA_COLUMN_NAMES = ['dt_sec', 'log_dt', 'z', 'z_clipped', 'time_label'];
+const EXTRA_COLUMN_NAMES = ['dt_sec', 'log_dt', 'z', 'z_clipped', 'time_label'] as const;
 
 const hasOwn = Object.prototype.hasOwnProperty;
 
-const clamp = (value, min, max) => {
-  if (!Number.isFinite(value)) {
+const clamp = (value: unknown, min: number, max: number): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
     return Number.NaN;
   }
   if (value < min) {
@@ -26,7 +74,7 @@ const clamp = (value, min, max) => {
   return value;
 };
 
-const sanitizeNumeric = (value) => {
+const sanitizeNumeric = (value: unknown): number | null => {
   if (typeof value !== 'number') {
     return null;
   }
@@ -36,20 +84,19 @@ const sanitizeNumeric = (value) => {
   return value;
 };
 
-const computeMeanAndStd = (values) => {
+const computeMeanAndStd = (values: readonly number[]): { mean: number; std: number } => {
   if (!Array.isArray(values) || values.length === 0) {
     return { mean: 0, std: 0 };
   }
   const count = values.length;
   const sum = values.reduce((acc, value) => acc + value, 0);
   const mean = sum / count;
-  const variance =
-    values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / count;
+  const variance = values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / count;
   const std = Number.isFinite(variance) && variance > 0 ? Math.sqrt(variance) : 0;
   return { mean, std };
 };
 
-const normalizeLabel = (value) => {
+const normalizeLabel = (value: unknown): string => {
   if (typeof value !== 'string') {
     return 'unknown';
   }
@@ -57,7 +104,7 @@ const normalizeLabel = (value) => {
   return trimmed === 'ok' ? 'ok' : 'unknown';
 };
 
-const extrasResolvers = {
+const extrasResolvers: Record<(typeof EXTRA_COLUMN_NAMES)[number], FeatureResolver | null> = {
   dt_sec: null,
   log_dt: null,
   z: null,
@@ -65,12 +112,15 @@ const extrasResolvers = {
   time_label: null,
 };
 
-const augmentRows = (rows, extras = {}) => {
+export const augmentRows = <T extends SimulationEvent>(
+  rows: readonly T[],
+  extras: FeatureOverrides = {},
+): Array<T & AugmentedSimulationEvent> => {
   if (!Array.isArray(rows)) {
     throw new TypeError('rows must be an array');
   }
 
-  const resolvers = { ...extrasResolvers };
+  const resolvers: Record<string, FeatureResolver | null> = { ...extrasResolvers };
   for (const column of EXTRA_COLUMN_NAMES) {
     const resolver = extras[column];
     if (resolver !== undefined && typeof resolver !== 'function') {
@@ -80,33 +130,36 @@ const augmentRows = (rows, extras = {}) => {
   }
 
   const sanitizedRows = rows.map((event) =>
-    event && typeof event === 'object' ? { ...event } : {}
+    event && typeof event === 'object' ? ({ ...event } as SimulationEvent) : ({}) as SimulationEvent,
   );
 
   const dtValues = sanitizedRows.map((event, index) => {
     const fallback = sanitizeNumeric(extractDeltaSeconds(event));
-    const resolved = resolvers.dt_sec
-      ? sanitizeNumeric(resolvers.dt_sec(event, index, sanitizedRows, fallback))
+    const resolver = resolvers.dt_sec;
+    const resolved = resolver
+      ? sanitizeNumeric(resolver(event, index, sanitizedRows, fallback))
       : fallback;
     return resolved !== null && resolved > 0 ? resolved : null;
   });
 
-  const positiveDtValues = dtValues.filter((value) => value !== null);
+  const positiveDtValues = dtValues.filter((value): value is number => value !== null);
   const { mean, std } = computeMeanAndStd(positiveDtValues);
 
   return sanitizedRows.map((event, index) => {
     const dtSec = dtValues[index];
     const logFallback = dtSec !== null && dtSec > 0 ? Math.log(dtSec) : null;
-    const logDt = resolvers.log_dt
-      ? sanitizeNumeric(resolvers.log_dt(event, index, sanitizedRows, logFallback)) ?? logFallback
+    const logResolver = resolvers.log_dt;
+    const logDt = logResolver
+      ? sanitizeNumeric(logResolver(event, index, sanitizedRows, logFallback)) ?? logFallback
       : logFallback;
 
-    let zScore = null;
+    let zScore: number | null = null;
     if (dtSec !== null) {
       zScore = std > 0 ? (dtSec - mean) / std : 0;
     }
-    if (resolvers.z) {
-      const override = resolvers.z(event, index, sanitizedRows, zScore);
+    const zResolver = resolvers.z;
+    if (zResolver) {
+      const override = zResolver(event, index, sanitizedRows, zScore);
       const numeric = sanitizeNumeric(override);
       if (numeric !== null) {
         zScore = numeric;
@@ -114,32 +167,30 @@ const augmentRows = (rows, extras = {}) => {
     }
 
     const clippedFallback = zScore === null ? null : clamp(zScore, -5, 5);
-    const zClipped = resolvers.z_clipped
-      ? sanitizeNumeric(
-          resolvers.z_clipped(event, index, sanitizedRows, clippedFallback)
-        ) ?? clippedFallback
+    const zClippedResolver = resolvers.z_clipped;
+    const zClipped = zClippedResolver
+      ? sanitizeNumeric(zClippedResolver(event, index, sanitizedRows, clippedFallback)) ?? clippedFallback
       : clippedFallback;
 
     const labelFallback = dtSec === null ? 'unknown' : 'ok';
-    const labelOverride = resolvers.time_label
-      ? resolvers.time_label(event, index, sanitizedRows, labelFallback)
+    const labelResolver = resolvers.time_label;
+    const labelOverride = labelResolver
+      ? labelResolver(event, index, sanitizedRows, labelFallback)
       : null;
-    const timeLabel = labelOverride
-      ? normalizeLabel(labelOverride)
-      : normalizeLabel(labelFallback);
+    const timeLabel = labelOverride ? normalizeLabel(labelOverride) : normalizeLabel(labelFallback);
 
     return {
-      ...event,
+      ...(event as Record<string, unknown>),
       dt_sec: dtSec,
       log_dt: logDt,
       z: zScore,
       z_clipped: zClipped,
       time_label: timeLabel,
-    };
+    } as T & AugmentedSimulationEvent;
   });
 };
 
-const toCsvField = (value) => {
+const toCsvField = (value: unknown): string => {
   if (value === undefined || value === null) {
     return '""';
   }
@@ -155,7 +206,7 @@ const toCsvField = (value) => {
   return `"${escaped}"`;
 };
 
-const sanitizeRunId = (runId) => {
+const sanitizeRunId = (runId: unknown): string | null => {
   if (typeof runId !== 'string' || runId.trim().length === 0) {
     return null;
   }
@@ -163,22 +214,22 @@ const sanitizeRunId = (runId) => {
   return trimmed.replace(/[^a-zA-Z0-9_-]+/g, '-');
 };
 
-const generateRunId = () => {
+const generateRunId = (): string => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `sim-${timestamp}`;
 };
 
-const ensureDirectory = async (dirPath) => {
+const ensureDirectory = async (dirPath: string): Promise<void> => {
   await fs.mkdir(dirPath, { recursive: true });
 };
 
-const extractDeltaSeconds = (event) => {
+const extractDeltaSeconds = (event: SimulationEvent): number | null => {
   const candidates = [
     event.deltaSeconds,
-    event.delta_seconds,
-    event.delta_t,
-    event.deltaT,
-    event.delta,
+    (event as Record<string, unknown>).delta_seconds,
+    (event as Record<string, unknown>).delta_t,
+    (event as Record<string, unknown>).deltaT,
+    (event as Record<string, unknown>).delta,
   ];
   for (const value of candidates) {
     const numeric = Number(value);
@@ -189,10 +240,10 @@ const extractDeltaSeconds = (event) => {
   return null;
 };
 
-const summarizeDeltas = (events) => {
+export const summarizeDeltas = (events: readonly SimulationEvent[]): Record<string, unknown> => {
   const deltas = events
     .map((event) => extractDeltaSeconds(event))
-    .filter((value) => value !== null)
+    .filter((value): value is number => value !== null)
     .sort((a, b) => a - b);
 
   if (deltas.length === 0) {
@@ -208,14 +259,12 @@ const summarizeDeltas = (events) => {
 
   const sum = deltas.reduce((acc, value) => acc + value, 0);
   const mean = sum / deltas.length;
-  const variance =
-    deltas.reduce((acc, value) => acc + (value - mean) ** 2, 0) / deltas.length;
+  const variance = deltas.reduce((acc, value) => acc + (value - mean) ** 2, 0) / deltas.length;
   const stddev = Math.sqrt(variance);
   const middle = Math.floor(deltas.length / 2);
-  const median =
-    deltas.length % 2 === 0
-      ? (deltas[middle - 1] + deltas[middle]) / 2
-      : deltas[middle];
+  const median = deltas.length % 2 === 0
+    ? (deltas[middle - 1] + deltas[middle]) / 2
+    : deltas[middle];
 
   return {
     count: deltas.length,
@@ -227,8 +276,8 @@ const summarizeDeltas = (events) => {
   };
 };
 
-const buildAnomalySummary = (events) => {
-  const summary = {};
+export const buildAnomalySummary = (events: readonly SimulationEvent[]): Record<string, number> => {
+  const summary: Record<string, number> = {};
   for (const event of events) {
     const label = typeof event.anomaly_type === 'string' ? event.anomaly_type : 'unknown';
     summary[label] = (summary[label] || 0) + 1;
@@ -236,8 +285,8 @@ const buildAnomalySummary = (events) => {
   return summary;
 };
 
-const computeSessionStats = (events) => {
-  const sessionCounts = new Map();
+const computeSessionStats = (events: readonly SimulationEvent[]): { totalSessions: number; perSession: Record<string, number> } => {
+  const sessionCounts = new Map<string, number>();
   for (const event of events) {
     if (!event || typeof event !== 'object') {
       continue;
@@ -254,22 +303,22 @@ const computeSessionStats = (events) => {
   };
 };
 
-const serializeMetadata = (metadata) => {
+const serializeMetadata = (metadata: unknown): Record<string, unknown> => {
   if (!metadata || typeof metadata !== 'object') {
     return {};
   }
   if (Array.isArray(metadata)) {
     return { value: metadata };
   }
-  return metadata;
+  return metadata as Record<string, unknown>;
 };
 
-const resolveSidFinal = (event) => {
+const resolveSidFinal = (event: SimulationEvent): unknown => {
   if (!event || typeof event !== 'object') {
     return null;
   }
   if (hasOwn.call(event, 'sid_final')) {
-    const explicit = event.sid_final;
+    const explicit = (event as Record<string, unknown>).sid_final;
     if (explicit !== undefined && explicit !== null && explicit !== '') {
       return explicit;
     }
@@ -281,8 +330,8 @@ const resolveSidFinal = (event) => {
   return candidate;
 };
 
-const formatCsvAugmented = (event) => {
-  const safeEvent = event && typeof event === 'object' ? event : {};
+export const formatCsvAugmented = (event: AugmentedSimulationEvent): string => {
+  const safeEvent = event && typeof event === 'object' ? event : ({} as AugmentedSimulationEvent);
   const metadata = serializeMetadata(safeEvent.metadata);
   const sidFinal = resolveSidFinal(safeEvent);
   const row = [
@@ -306,8 +355,8 @@ const formatCsvAugmented = (event) => {
   return row.join(',');
 };
 
-const formatCsvRows = (events, extras) => {
-  const augmented = augmentRows(events, extras);
+const formatCsvRows = (events: readonly SimulationEvent[], extras?: FeatureOverrides): string => {
+  const augmented = augmentRows(events, extras ?? {});
   const rows = [CSV_HEADER];
   for (const event of augmented) {
     rows.push(formatCsvAugmented(event));
@@ -315,7 +364,7 @@ const formatCsvRows = (events, extras) => {
   return rows.join('\n').concat('\n');
 };
 
-const defaultManifest = (overrides = {}) => ({
+const defaultManifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
   scenario_id: overrides.scenario_id ?? null,
   generated_at: overrides.generated_at ?? new Date().toISOString(),
   seed: overrides.seed ?? null,
@@ -326,8 +375,10 @@ const defaultManifest = (overrides = {}) => ({
   notes: overrides.notes ?? null,
 });
 
-const persistSimulationRun = async (input) => {
-  const events = Array.isArray(input?.events) ? input.events : [];
+export const persistSimulationRun = async (
+  input: PersistSimulationInput,
+): Promise<PersistSimulationResult> => {
+  const events = Array.isArray(input?.events) ? (input.events as SimulationEvent[]) : [];
   if (events.length === 0) {
     throw new Error('persistSimulationRun requires a non-empty events array');
   }
@@ -383,7 +434,7 @@ const persistSimulationRun = async (input) => {
     source: {
       sim_log_dir: outputDir,
     },
-  };
+  } as Record<string, unknown>;
 
   if (Array.isArray(input?.sessionIds) && input.sessionIds.length > 0) {
     manifest.session_ids = Array.from(new Set(input.sessionIds));
@@ -416,10 +467,12 @@ const persistSimulationRun = async (input) => {
   };
 };
 
-module.exports = {
+const simWriter = {
   persistSimulationRun,
   summarizeDeltas,
   buildAnomalySummary,
   augmentRows,
   formatCsvAugmented,
 };
+
+export default simWriter;

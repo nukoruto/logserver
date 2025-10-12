@@ -1,6 +1,43 @@
-'use strict';
+import type { SimulationEvent } from '../../services/simulationService';
 
-const DEFAULT_OPTIONS = {
+export type StrategyConfig = Record<string, unknown>;
+
+export interface AnomalyInjectionOptions extends Record<string, unknown> {
+  anomalyRate?: number;
+  anomalyCount?: number | null;
+  interval?: number | null;
+  minAnomalies?: number;
+  maxAnomalies?: number | null;
+  seed?: number | string | null;
+  markField?: string | null;
+  strategies?: Record<string, StrategyConfig> | Iterable<string> | null;
+}
+
+interface StrategyEntry {
+  key: string;
+  weight: number;
+}
+
+interface MutationContext {
+  events: SimulationEvent[];
+  options: NormalizedOptions;
+  randomFn: () => number;
+  markField: string | null;
+  deltaMap: WeakMap<SimulationEvent, number>;
+}
+
+interface NormalizedOptions extends AnomalyInjectionOptions {
+  anomalyRate: number;
+  anomalyCount: number | null;
+  interval: number | null;
+  minAnomalies: number;
+  maxAnomalies: number | null;
+  seed: number | string | null;
+  markField: string | null;
+  strategies: Record<string, StrategyConfig>;
+}
+
+const DEFAULT_OPTIONS: NormalizedOptions = {
   anomalyRate: 0.1,
   anomalyCount: null,
   interval: null,
@@ -41,27 +78,29 @@ const DEFAULT_OPTIONS = {
   },
 };
 
-const STRATEGY_HANDLERS = {
+type StrategyHandler = (context: MutationContext) => boolean;
+
+const STRATEGY_HANDLERS: Record<string, StrategyHandler> = {
   protocolViolation: (context) => applyProtocolViolation(context),
   timeDeviation: (context) => applyTimeDeviation(context),
   authenticationBypass: (context) => applyAuthenticationBypass(context),
 };
 
-const deepClone = (value) => {
+const deepClone = <T>(value: T): T => {
   if (typeof value !== 'object' || value === null) {
     return value;
   }
   if (typeof globalThis.structuredClone === 'function') {
     return globalThis.structuredClone(value);
   }
-  return JSON.parse(JSON.stringify(value));
+  return JSON.parse(JSON.stringify(value)) as T;
 };
 
-const deepMerge = (base, overrides) => {
+const deepMerge = <T extends Record<string, unknown>>(base: T, overrides: Record<string, unknown> | undefined): T => {
   if (!overrides || typeof overrides !== 'object') {
-    return Array.isArray(base) ? [...base] : { ...base };
+    return { ...base } as T;
   }
-  const result = Array.isArray(base) ? [...base] : { ...base };
+  const result: Record<string, unknown> = { ...base };
   Object.keys(overrides).forEach((key) => {
     const overrideValue = overrides[key];
     if (overrideValue === undefined) {
@@ -76,17 +115,17 @@ const deepMerge = (base, overrides) => {
       typeof baseValue === 'object' &&
       !Array.isArray(baseValue)
     ) {
-      result[key] = deepMerge(baseValue, overrideValue);
+      result[key] = deepMerge(baseValue as Record<string, unknown>, overrideValue as Record<string, unknown>);
     } else if (Array.isArray(overrideValue)) {
       result[key] = [...overrideValue];
     } else {
       result[key] = overrideValue;
     }
   });
-  return result;
+  return result as T;
 };
 
-const normalizeSeed = (seed) => {
+const normalizeSeed = (seed: unknown): number | null => {
   if (seed === undefined || seed === null) {
     return null;
   }
@@ -104,7 +143,7 @@ const normalizeSeed = (seed) => {
   return null;
 };
 
-const createPrng = (seed) => {
+const createPrng = (seed: unknown): (() => number) => {
   const normalizedSeed = normalizeSeed(seed);
   if (normalizedSeed === null) {
     return Math.random;
@@ -116,42 +155,54 @@ const createPrng = (seed) => {
   };
 };
 
-const parseTimestamp = (value) => {
+const parseTimestamp = (value: unknown): Date | null => {
   if (!value) {
     return null;
   }
-  const date = value instanceof Date ? value : new Date(value);
+  const date = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(date.getTime())) {
     return null;
   }
   return date;
 };
 
-const formatTimestamp = (date) => {
-  if (!(date instanceof Date)) {
+const formatTimestamp = (date: Date | null): string | null => {
+  if (!date) {
     return null;
   }
   return date.toISOString();
 };
 
-const markAnomaly = (event, type, details, markField) => {
+const markAnomaly = (
+  event: SimulationEvent,
+  type: string,
+  details: Record<string, unknown> | null,
+  markField: string | null,
+): void => {
   event.anomaly = true;
   if (markField) {
     event[markField] = type;
   }
   if (details && typeof details === 'object') {
-    const current = event._anomalyDetails && typeof event._anomalyDetails === 'object' ? event._anomalyDetails : {};
+    const current =
+      event._anomalyDetails && typeof event._anomalyDetails === 'object'
+        ? (event._anomalyDetails as Record<string, unknown>)
+        : {};
     event._anomalyDetails = { ...current, ...details };
   }
 };
 
-const shiftTimestamps = (events, startIndex, offsetMilliseconds) => {
+const shiftTimestamps = (
+  events: SimulationEvent[],
+  startIndex: number,
+  offsetMilliseconds: number,
+): void => {
   if (!Number.isFinite(offsetMilliseconds) || offsetMilliseconds === 0) {
     return;
   }
   for (let index = startIndex; index < events.length; index += 1) {
     const candidate = events[index];
-    const parsed = parseTimestamp(candidate.timestamp);
+    const parsed = parseTimestamp(candidate?.timestamp);
     if (!parsed) {
       continue;
     }
@@ -163,31 +214,34 @@ const shiftTimestamps = (events, startIndex, offsetMilliseconds) => {
   }
 };
 
-const cloneSequence = (sequence, deltaMap) =>
+const cloneSequence = (
+  sequence: readonly SimulationEvent[],
+  deltaMap: WeakMap<SimulationEvent, number>,
+): SimulationEvent[] =>
   sequence.map((event) => {
     const cloned = deepClone(event);
     if (!cloned || typeof cloned !== 'object') {
-      return { anomaly: false };
+      return { anomaly: false } as SimulationEvent;
     }
     if (cloned.anomaly !== true) {
       cloned.anomaly = false;
     }
-    const delta = Number(cloned.deltaSeconds);
+    const delta = Number((cloned as Record<string, unknown>).deltaSeconds);
     if (Number.isFinite(delta)) {
       deltaMap.set(cloned, delta);
     }
     return cloned;
   });
 
-const computeDesiredCount = (length, options) => {
+const computeDesiredCount = (length: number, options: NormalizedOptions): number => {
   if (!Number.isInteger(length) || length <= 0) {
     return 0;
   }
-  if (Number.isInteger(options.anomalyCount) && options.anomalyCount >= 0) {
-    return options.anomalyCount;
+  if (Number.isInteger(options.anomalyCount) && (options.anomalyCount as number) >= 0) {
+    return options.anomalyCount as number;
   }
-  if (Number.isInteger(options.interval) && options.interval > 0) {
-    const fromInterval = Math.floor(length / options.interval);
+  if (Number.isInteger(options.interval) && (options.interval as number) > 0) {
+    const fromInterval = Math.floor(length / (options.interval as number));
     if (fromInterval > 0) {
       return applyMinMax(fromInterval, options);
     }
@@ -200,23 +254,24 @@ const computeDesiredCount = (length, options) => {
   return applyMinMax(raw, options);
 };
 
-const applyMinMax = (value, options) => {
+const applyMinMax = (value: number, options: NormalizedOptions): number => {
   let adjusted = value;
-  if (Number.isInteger(options.minAnomalies) && options.minAnomalies > 0) {
-    adjusted = Math.max(adjusted, options.minAnomalies);
+  if (Number.isInteger(options.minAnomalies) && (options.minAnomalies as number) > 0) {
+    adjusted = Math.max(adjusted, options.minAnomalies as number);
   }
-  if (Number.isInteger(options.maxAnomalies) && options.maxAnomalies >= 0) {
-    adjusted = Math.min(adjusted, options.maxAnomalies);
+  if (Number.isInteger(options.maxAnomalies) && (options.maxAnomalies as number) >= 0) {
+    adjusted = Math.min(adjusted, options.maxAnomalies as number);
   }
   return Math.max(0, adjusted);
 };
 
-const buildStrategyEntries = (options) => {
-  const entries = [];
+const buildStrategyEntries = (options: NormalizedOptions): StrategyEntry[] => {
+  const entries: StrategyEntry[] = [];
   Object.keys(STRATEGY_HANDLERS).forEach((key) => {
-    const defaultConfig = DEFAULT_OPTIONS.strategies[key] || {};
-    const config = options.strategies[key] || {};
-    const weight = Number.isFinite(config.weight) ? config.weight : defaultConfig.weight || 0;
+    const defaultConfig = DEFAULT_OPTIONS.strategies[key];
+    const config = (options.strategies && options.strategies[key]) || defaultConfig || {};
+    const weightCandidate = (config?.weight ?? defaultConfig?.weight ?? 0) as number;
+    const weight = Number.isFinite(weightCandidate) ? weightCandidate : 0;
     if (weight > 0) {
       entries.push({ key, weight });
     }
@@ -224,7 +279,7 @@ const buildStrategyEntries = (options) => {
   return entries;
 };
 
-const selectStrategyKey = (entries, randomFn) => {
+const selectStrategyKey = (entries: readonly StrategyEntry[], randomFn: () => number): string | null => {
   if (!Array.isArray(entries) || entries.length === 0) {
     return null;
   }
@@ -243,8 +298,11 @@ const selectStrategyKey = (entries, randomFn) => {
   return entries[entries.length - 1].key;
 };
 
-const synchronizeDeltas = (events, deltaMap) => {
-  let previousTimestamp = null;
+const synchronizeDeltas = (
+  events: SimulationEvent[],
+  deltaMap: WeakMap<SimulationEvent, number>,
+): void => {
+  let previousTimestamp: Date | null = null;
   for (const event of events) {
     const currentTimestamp = parseTimestamp(event.timestamp);
     if (previousTimestamp && currentTimestamp) {
@@ -252,7 +310,7 @@ const synchronizeDeltas = (events, deltaMap) => {
       event.deltaSeconds = computedDelta;
       const originalDelta = deltaMap.has(event) ? deltaMap.get(event) : null;
       if (Number.isFinite(originalDelta)) {
-        const offset = computedDelta - originalDelta;
+        const offset = computedDelta - (originalDelta as number);
         const currentOffset = Number(event.deltaOffsetSeconds);
         event.deltaOffsetSeconds = Number.isFinite(currentOffset) ? currentOffset + offset : offset;
       } else if (event.deltaOffsetSeconds === undefined) {
@@ -264,11 +322,11 @@ const synchronizeDeltas = (events, deltaMap) => {
       }
       const originalDelta = deltaMap.has(event) ? deltaMap.get(event) : null;
       if (Number.isFinite(originalDelta)) {
-        const offset = event.deltaSeconds - originalDelta;
+        const offset = (event.deltaSeconds as number) - (originalDelta as number);
         const currentOffset = Number(event.deltaOffsetSeconds);
         event.deltaOffsetSeconds = Number.isFinite(currentOffset) ? currentOffset + offset : offset;
       } else if (event.deltaOffsetSeconds === undefined) {
-        event.deltaOffsetSeconds = event.deltaSeconds;
+        event.deltaOffsetSeconds = event.deltaSeconds as number;
       }
     } else if (!currentTimestamp) {
       if (!Number.isFinite(Number(event.deltaSeconds))) {
@@ -287,18 +345,22 @@ const synchronizeDeltas = (events, deltaMap) => {
   }
 };
 
-const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap }) => {
+const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length === 0) {
     return false;
   }
-  const config = options.strategies.protocolViolation;
+  const config = (options.strategies.protocolViolation || {}) as Record<string, unknown>;
   const loginEvents = new Set(
-    Array.isArray(config.loginEvents) && config.loginEvents.length > 0 ? config.loginEvents : ['login']
+    Array.isArray(config.loginEvents) && config.loginEvents.length > 0
+      ? (config.loginEvents as unknown[]).map((item) => String(item))
+      : ['login'],
   );
   const logoutEvents = new Set(
-    Array.isArray(config.logoutEvents) && config.logoutEvents.length > 0 ? config.logoutEvents : ['logout']
+    Array.isArray(config.logoutEvents) && config.logoutEvents.length > 0
+      ? (config.logoutEvents as unknown[]).map((item) => String(item))
+      : ['logout'],
   );
-  const loginIndex = events.findIndex((event) => loginEvents.has(event.event));
+  const loginIndex = events.findIndex((event) => event.event && loginEvents.has(String(event.event)));
   if (loginIndex === -1) {
     return false;
   }
@@ -314,18 +376,18 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
 
     const logoutEvent = deepClone(baseEvent);
     logoutEvent.event = Array.from(logoutEvents)[0] || 'logout';
-    logoutEvent.from = config.logoutFrom || 'authenticated';
-    logoutEvent.to = config.logoutTo || 'anonymous';
-    logoutEvent.timestamp = formatTimestamp(new Date(baseTimestamp.getTime() + deltaSeconds * 1000));
+    logoutEvent.from = String(config.logoutFrom || 'authenticated');
+    logoutEvent.to = String(config.logoutTo || 'anonymous');
+    logoutEvent.timestamp = formatTimestamp(new Date(baseTimestamp.getTime() + deltaSeconds * 1000)) || baseEvent.timestamp;
     logoutEvent.deltaSeconds = deltaSeconds;
     logoutEvent.probability = 0;
     markAnomaly(logoutEvent, 'protocolViolation', { reason: 'logoutLoginLoop' }, markField);
 
     const repeatLogin = deepClone(baseEvent);
     repeatLogin.event = Array.from(loginEvents)[0] || 'login';
-    repeatLogin.from = config.repeatLoginFrom || 'anonymous';
+    repeatLogin.from = String(config.repeatLoginFrom || 'anonymous');
     repeatLogin.to = baseEvent.to || 'authenticated';
-    repeatLogin.timestamp = formatTimestamp(new Date(baseTimestamp.getTime() + deltaSeconds * 2000));
+    repeatLogin.timestamp = formatTimestamp(new Date(baseTimestamp.getTime() + deltaSeconds * 2000)) || baseEvent.timestamp;
     repeatLogin.deltaSeconds = deltaSeconds;
     repeatLogin.probability = 0;
     markAnomaly(repeatLogin, 'protocolViolation', { reason: 'logoutLoginLoop' }, markField);
@@ -341,7 +403,7 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
 
   const referenceEvent = events[loginIndex];
   const preLoginEvents = Array.isArray(config.preLoginEvents) && config.preLoginEvents.length > 0
-    ? config.preLoginEvents
+    ? (config.preLoginEvents as unknown[]).map((item) => String(item))
     : ['edit', 'view'];
   const selected = preLoginEvents[Math.floor(randomFn() * preLoginEvents.length)] || 'edit';
   const insertOffsetSeconds = Number(config.insertOffsetSeconds);
@@ -353,8 +415,8 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
 
   const inserted = deepClone(referenceEvent);
   inserted.event = selected;
-  inserted.from = config.preLoginFrom || 'anonymous';
-  inserted.to = config.preLoginTo || referenceEvent.from || 'unauthorized';
+  inserted.from = String(config.preLoginFrom || 'anonymous');
+  inserted.to = (referenceEvent.from as string) || 'unauthorized';
   inserted.timestamp = formatTimestamp(insertedTimestamp) || referenceEvent.timestamp;
   inserted.deltaSeconds = deltaSeconds;
   inserted.probability = 0;
@@ -365,12 +427,12 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
   return true;
 };
 
-const applyTimeDeviation = ({ events, options, randomFn, markField }) => {
+const applyTimeDeviation = ({ events, options, randomFn, markField }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length < 2) {
     return false;
   }
-  const config = options.strategies.timeDeviation;
-  const candidateIndices = [];
+  const config = (options.strategies.timeDeviation || {}) as Record<string, unknown>;
+  const candidateIndices: number[] = [];
   for (let index = 1; index < events.length; index += 1) {
     const current = events[index];
     const previous = events[index - 1];
@@ -411,15 +473,15 @@ const applyTimeDeviation = ({ events, options, randomFn, markField }) => {
   return true;
 };
 
-const applyAuthenticationBypass = ({ events, options, randomFn, markField }) => {
+const applyAuthenticationBypass = ({ events, options, randomFn, markField }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length === 0) {
     return false;
   }
-  const config = options.strategies.authenticationBypass;
+  const config = (options.strategies.authenticationBypass || {}) as Record<string, unknown>;
   const unauthorizedEvents = new Set(
     Array.isArray(config.unauthorizedEvents) && config.unauthorizedEvents.length > 0
-      ? config.unauthorizedEvents.map((item) => String(item).toLowerCase())
-      : []
+      ? (config.unauthorizedEvents as unknown[]).map((item) => String(item).toLowerCase())
+      : [],
   );
 
   const candidates = events
@@ -448,20 +510,11 @@ const applyAuthenticationBypass = ({ events, options, randomFn, markField }) => 
 
   const target = selectedEntry.event;
   const suffix = Math.floor(randomFn() * 0xfffff).toString(16);
-  const invalidSessionPrefix = config.invalidSessionPrefix || 'invalid-session';
-  const invalidUserPrefix = config.invalidUserPrefix || 'spoofed-user';
+  const invalidSessionPrefix = String(config.invalidSessionPrefix || 'invalid-session');
+  const invalidUserPrefix = String(config.invalidUserPrefix || 'spoofed-user');
 
-  if (typeof target.session_id === 'string' && target.session_id.length > 0) {
-    target.session_id = `${invalidSessionPrefix}-${suffix}`;
-  } else {
-    target.session_id = `${invalidSessionPrefix}-${suffix}`;
-  }
-
-  if (typeof target.user_id === 'string' && target.user_id.length > 0) {
-    target.user_id = `${invalidUserPrefix}-${suffix}`;
-  } else {
-    target.user_id = `${invalidUserPrefix}-${suffix}`;
-  }
+  target.session_id = `${invalidSessionPrefix}-${suffix}`;
+  target.user_id = `${invalidUserPrefix}-${suffix}`;
 
   if (config.markAsUnauthenticated) {
     target.authenticated = false;
@@ -469,8 +522,10 @@ const applyAuthenticationBypass = ({ events, options, randomFn, markField }) => 
   if (!target.metadata || typeof target.metadata !== 'object') {
     target.metadata = {};
   }
-  target.metadata.auth = {
-    ...(target.metadata.auth || {}),
+  const metadata = target.metadata as Record<string, unknown>;
+  const existingAuth = (metadata.auth as Record<string, unknown>) || {};
+  metadata.auth = {
+    ...existingAuth,
     status: 'invalid',
     reason: 'unauthorizedOperation',
   };
@@ -481,7 +536,10 @@ const applyAuthenticationBypass = ({ events, options, randomFn, markField }) => 
   return true;
 };
 
-const injectAnomaly = (sequence, userOptions = {}) => {
+export const injectAnomaly = (
+  sequence: readonly SimulationEvent[],
+  userOptions: AnomalyInjectionOptions = {},
+): SimulationEvent[] => {
   if (!Array.isArray(sequence)) {
     return [];
   }
@@ -489,9 +547,36 @@ const injectAnomaly = (sequence, userOptions = {}) => {
     return [];
   }
 
-  const mergedOptions = deepMerge(DEFAULT_OPTIONS, userOptions || {});
+  const mergedOptions: NormalizedOptions = {
+    ...deepMerge(DEFAULT_OPTIONS, userOptions as Record<string, unknown>),
+    anomalyRate: DEFAULT_OPTIONS.anomalyRate,
+    anomalyCount: DEFAULT_OPTIONS.anomalyCount,
+    interval: DEFAULT_OPTIONS.interval,
+    minAnomalies: DEFAULT_OPTIONS.minAnomalies,
+    maxAnomalies: DEFAULT_OPTIONS.maxAnomalies,
+    seed: userOptions.seed ?? DEFAULT_OPTIONS.seed,
+    markField: (userOptions.markField ?? DEFAULT_OPTIONS.markField) as string | null,
+    strategies: deepMerge(DEFAULT_OPTIONS.strategies, userOptions.strategies as Record<string, unknown> | undefined),
+  };
+
+  if (typeof userOptions.anomalyRate === 'number') {
+    mergedOptions.anomalyRate = userOptions.anomalyRate;
+  }
+  if (userOptions.anomalyCount !== undefined) {
+    mergedOptions.anomalyCount = userOptions.anomalyCount as number | null;
+  }
+  if (userOptions.interval !== undefined) {
+    mergedOptions.interval = userOptions.interval as number | null;
+  }
+  if (typeof userOptions.minAnomalies === 'number') {
+    mergedOptions.minAnomalies = userOptions.minAnomalies;
+  }
+  if (userOptions.maxAnomalies !== undefined) {
+    mergedOptions.maxAnomalies = userOptions.maxAnomalies as number | null;
+  }
+
   const randomFn = createPrng(mergedOptions.seed);
-  const deltaMap = new WeakMap();
+  const deltaMap = new WeakMap<SimulationEvent, number>();
   const mutated = cloneSequence(sequence, deltaMap);
 
   const desiredCount = computeDesiredCount(sequence.length, mergedOptions);
@@ -506,7 +591,7 @@ const injectAnomaly = (sequence, userOptions = {}) => {
     return mutated;
   }
 
-  const context = {
+  const context: MutationContext = {
     events: mutated,
     options: mergedOptions,
     randomFn,
@@ -537,6 +622,8 @@ const injectAnomaly = (sequence, userOptions = {}) => {
   return mutated;
 };
 
-module.exports = {
+const anomalyInjector = {
   injectAnomaly,
 };
+
+export default anomalyInjector;
