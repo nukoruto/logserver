@@ -174,7 +174,7 @@ python -m trainer.scripts.train --config trainer/configs/default.yaml
 
 # 3) スコアリングと閾値設計（分位点 or EVT-POT）
 python -m trainer.scripts.score --config trainer/configs/default.yaml
-python -m trainer.scripts.threshold --config trainer/configs/default.yaml
+python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-error keep-partial
 
 # 4) 説明レポート（ケース単位）
 python -m trainer.scripts.explain --config trainer/configs/default.yaml
@@ -182,6 +182,9 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 # 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
 cd collector && node scripts/check-ntp.js
 ```
+
+- 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。
+- `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。
 
 ### 5.6 シナリオ生成 CLI / API
 
