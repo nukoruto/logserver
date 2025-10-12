@@ -72,11 +72,11 @@ describe('csvSinkMiddleware pipeline', () => {
   };
 
   const invokeMiddleware = (
-    middleware: (req: TestRequest, res: TestResponse, next: TestNextFunction) => void,
+    middleware: (req: any, res: any, next: TestNextFunction) => void,
     res: TestResponse,
     next: TestNextFunction
   ) => {
-    middleware({} as TestRequest, res, next);
+    middleware({}, res, next);
     const finish = res.__events.finish;
     if (finish) {
       finish();
