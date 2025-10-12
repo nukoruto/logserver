@@ -91,6 +91,45 @@ function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): Normali
   };
 }
 
+export function rollingQuantilesR7(
+  past: readonly number[],
+  qs: readonly number[] = [0.25, 0.5, 0.75]
+): number[] {
+  const finiteValues = past.filter((value) => isFiniteNumber(value));
+
+  if (finiteValues.length === 0) {
+    return qs.map(() => 0);
+  }
+
+  const sorted = [...finiteValues].sort((a, b) => a - b);
+  const n = sorted.length;
+
+  return qs.map((rawQ) => {
+    const q = Number.isFinite(rawQ) ? Math.min(Math.max(rawQ, 0), 1) : 0.5;
+
+    if (n === 1 || q === 0) {
+      return sorted[0];
+    }
+    if (q === 1) {
+      return sorted[n - 1];
+    }
+
+    const h = (n - 1) * q + 1;
+    const lowerIndex = Math.floor(h) - 1;
+    const upperIndex = Math.ceil(h) - 1;
+    const fraction = h - Math.floor(h);
+
+    if (lowerIndex === upperIndex) {
+      return sorted[lowerIndex];
+    }
+
+    const lowerValue = sorted[Math.max(0, Math.min(lowerIndex, n - 1))];
+    const upperValue = sorted[Math.max(0, Math.min(upperIndex, n - 1))];
+
+    return lowerValue + fraction * (upperValue - lowerValue);
+  });
+}
+
 function computeMedian(values: readonly number[]): number {
   if (values.length === 0) {
     throw new Error('Cannot compute median of empty array');
