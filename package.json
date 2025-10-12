@@ -1,0 +1,14 @@
+{
+  "name": "logserver-monorepo",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Workspace root configuration for logserver pnpm projects",
+  "engines": {
+    "node": "^20.12.2"
+  },
+  "packageManager": "pnpm@9.0.0",
+  "scripts": {
+    "test:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli test",
+    "build:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli build"
+  }
+}
