@@ -1,4 +1,19 @@
+import logger from '../utils/logger';
 import { checkNtpOffset } from '../ntp/offset';
+
+const DEFAULT_INTERVAL_MS = 60_000;
+const DEFAULT_WARN_THRESHOLD_MS = 50;
+const DEFAULT_WARN_PERCENTILE = 95;
+const DEFAULT_MAX_SAMPLES = 1_440; // store up to 24 hours of per-minute samples
+
+const parseDisabled = (): boolean => {
+  const raw = process.env.NTP_MONITOR_DISABLED;
+  if (!raw) {
+    return false;
+  }
+  const normalised = raw.trim().toLowerCase();
+  return normalised === '1' || normalised === 'true' || normalised === 'yes' || normalised === 'on';
+};
 
 export interface LoggerLike {
   debug: (message: string, meta?: Record<string, unknown>) => void;
@@ -30,20 +45,6 @@ export interface NtpHealthStatus {
   lastCheck: Date | null;
 }
 
-const DEFAULT_INTERVAL_MS = 60_000;
-const DEFAULT_WARN_THRESHOLD_MS = 50;
-const DEFAULT_WARN_PERCENTILE = 95;
-const DEFAULT_MAX_SAMPLES = 1_440; // store up to 24h of per-minute samples
-
-const parseDisabled = (): boolean => {
-  const raw = process.env.NTP_MONITOR_DISABLED;
-  if (!raw) {
-    return false;
-  }
-  const normalised = raw.trim().toLowerCase();
-  return normalised === '1' || normalised === 'true' || normalised === 'yes' || normalised === 'on';
-};
-
 type CheckFunction = () => Promise<number>;
 
 export class NtpMonitor {
@@ -57,7 +58,7 @@ export class NtpMonitor {
 
   private readonly maxSamples: number;
 
-  private readonly logger: LoggerLike | null;
+  private readonly logger: LoggerLike;
 
   private readonly disabled: boolean;
 
@@ -82,8 +83,8 @@ export class NtpMonitor {
     this.intervalMs = options.intervalMs ?? DEFAULT_INTERVAL_MS;
     this.warnThresholdMs = options.warnThresholdMs ?? DEFAULT_WARN_THRESHOLD_MS;
     this.warnPercentile = options.warnPercentile ?? DEFAULT_WARN_PERCENTILE;
-    this.maxSamples = options.maxSamples ?? DEFAULT_MAX_SAMPLES;
-    this.logger = options.logger ?? null;
+    this.maxSamples = Math.max(1, options.maxSamples ?? DEFAULT_MAX_SAMPLES);
+    this.logger = options.logger ?? logger;
     this.disabled = options.disabled ?? parseDisabled();
   }
 
@@ -94,11 +95,11 @@ export class NtpMonitor {
     this.started = true;
 
     if (this.disabled) {
-      this.logger?.info('NTP offset monitoring disabled');
+      this.logger.info('NTP offset monitoring disabled');
       return;
     }
 
-    this.logger?.info('Starting NTP offset monitor', {
+    this.logger.info('Starting NTP offset monitor', {
       interval_ms: this.intervalMs,
       warn_threshold_ms: this.warnThresholdMs,
       warn_percentile: this.warnPercentile,
@@ -185,6 +186,21 @@ export class NtpMonitor {
     };
   }
 
+  private async runCheck(): Promise<void> {
+    try {
+      const offset = await this.checkFn();
+      this.handleMeasurement(offset);
+      this.logger.debug('Measured NTP offset', { offset_ms: offset });
+    } catch (error) {
+      const message = error instanceof Error ? error.message : String(error);
+      this.lastError = message;
+      this.logger.warn('Failed to measure NTP offset', { error: message });
+    } finally {
+      this.lastCheck = new Date();
+      this.scheduleNext();
+    }
+  }
+
   private scheduleNext(): void {
     if (!this.started || this.disabled) {
       return;
@@ -192,23 +208,8 @@ export class NtpMonitor {
     this.timer = setTimeout(() => {
       void this.runCheck();
     }, this.intervalMs);
-    if (typeof this.timer.unref === 'function') {
+    if (this.timer && typeof this.timer.unref === 'function') {
       this.timer.unref();
-    }
-  }
-
-  private async runCheck(): Promise<void> {
-    try {
-      const offset = await this.checkFn();
-      this.handleMeasurement(offset);
-      this.logger?.debug('Measured NTP offset', { offset_ms: offset });
-    } catch (error) {
-      const message = error instanceof Error ? error.message : String(error);
-      this.lastError = message;
-      this.logger?.warn('Failed to measure NTP offset', { error: message });
-    } finally {
-      this.lastCheck = new Date();
-      this.scheduleNext();
     }
   }
 
@@ -228,13 +229,13 @@ export class NtpMonitor {
     const unhealthy = this.lastPercentile !== null && this.lastPercentile > this.warnThresholdMs;
 
     if (unhealthy && !this.unhealthy) {
-      this.logger?.warn('NTP offset percentile exceeded threshold', {
+      this.logger.warn('NTP offset percentile exceeded threshold', {
         percentile_rank: this.warnPercentile,
         percentile_ms: this.lastPercentile,
         threshold_ms: this.warnThresholdMs,
       });
     } else if (!unhealthy && this.unhealthy) {
-      this.logger?.info('NTP offset percentile recovered within threshold', {
+      this.logger.info('NTP offset percentile recovered within threshold', {
         percentile_rank: this.warnPercentile,
         percentile_ms: this.lastPercentile,
         threshold_ms: this.warnThresholdMs,

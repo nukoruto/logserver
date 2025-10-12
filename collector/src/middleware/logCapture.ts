@@ -228,6 +228,7 @@ const logCapture: Middleware = (req, res, next) => {
         message: `method must be one of ${HTTP_METHODS.join(', ')}`,
         expected: HTTP_METHODS,
         received: rawMethod || req.method,
+        code: 'invalid_value',
       },
     ]);
     next(error);
