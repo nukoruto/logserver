@@ -35,6 +35,16 @@ const firstHeaderValue = (value) => {
   return '';
 };
 
+const getHeaderValue = (headers, name) => {
+  const normalized = name.toLowerCase();
+  for (const [key, value] of Object.entries(headers)) {
+    if (key.toLowerCase() === normalized) {
+      return firstHeaderValue(value);
+    }
+  }
+  return '';
+};
+
 const normalise = (value) => {
   if (typeof value !== 'string') {
     return '';
@@ -90,8 +100,9 @@ const extractSessionId = (req, cookieHeader) => {
     }
   }
 
+  const headers = req.headers || {};
   for (const headerName of SESSION_HEADER_CANDIDATES) {
-    const value = normalise(firstHeaderValue(req.headers?.[headerName]));
+    const value = normalise(getHeaderValue(headers, headerName));
     if (value) {
       return value;
     }
@@ -109,7 +120,8 @@ const extractSessionId = (req, cookieHeader) => {
 };
 
 const extractClientIp = (req) => {
-  const forwarded = normalise(firstHeaderValue(req.headers?.[HEADER_XFF]));
+  const headers = req.headers || {};
+  const forwarded = normalise(getHeaderValue(headers, HEADER_XFF));
   if (forwarded) {
     const primary = forwarded.split(',')[0]?.trim();
     if (primary) {
@@ -162,7 +174,7 @@ const extractUid = (authorizationHeader) => {
   if (!token) {
     return '';
   }
-  const hmacKey = config.security?.jwtHmacKey;
+  const hmacKey = config.security?.jwtHmacKey || process.env.JWT_HMAC_KEY || '';
   if (!hmacKey) {
     return '';
   }
@@ -186,8 +198,8 @@ const ALLOWED_METHODS = new Set(HTTP_METHODS);
 
 const logCapture = (req, res, next) => {
   const headers = req.headers || {};
-  const authorization = firstHeaderValue(headers[HEADER_AUTHORIZATION]);
-  const cookie = firstHeaderValue(headers[HEADER_COOKIE]);
+  const authorization = getHeaderValue(headers, HEADER_AUTHORIZATION);
+  const cookie = getHeaderValue(headers, HEADER_COOKIE);
 
   ensureLocals(res);
 
@@ -211,10 +223,10 @@ const logCapture = (req, res, next) => {
     method,
     path: normalise(req.originalUrl || req.url) || '',
     referer:
-      normalise(firstHeaderValue(headers[HEADER_REFERRER])) ||
-      normalise(firstHeaderValue(headers[HEADER_REFERRER_FALLBACK])) ||
+      normalise(getHeaderValue(headers, HEADER_REFERRER)) ||
+      normalise(getHeaderValue(headers, HEADER_REFERRER_FALLBACK)) ||
       '',
-    user_agent: normalise(firstHeaderValue(headers[HEADER_USER_AGENT])) || '',
+    user_agent: normalise(getHeaderValue(headers, HEADER_USER_AGENT)) || '',
     ip: extractClientIp(req),
     session_id: extractSessionId(req, cookie),
     uid: extractUid(authorization),

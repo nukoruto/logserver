@@ -2,6 +2,8 @@ import {
   HTTP_METHODS,
   LogRecordValidationError,
   OPERATION_CATEGORIES,
+  type HttpMethod,
+  type OperationCategory,
   validateLogRecord,
 } from '../../src/schema/logRecord';
 
@@ -43,7 +45,7 @@ describe('logRecord schema', () => {
     expect(() =>
       validateLogRecord({
         timestamp_utc: '2024-08-01T12:34:56.789Z',
-        method: 'TRACE' as (typeof HTTP_METHODS)[number],
+        method: 'TRACE' as HttpMethod,
         op_category: 'READ',
       })
     ).toThrow(LogRecordValidationError);
@@ -54,7 +56,7 @@ describe('logRecord schema', () => {
       validateLogRecord({
         timestamp_utc: '2024-08-01T12:34:56.789Z',
         method: 'GET',
-        op_category: 'DELETE' as (typeof OPERATION_CATEGORIES)[number],
+        op_category: 'DELETE' as OperationCategory,
       })
     ).toThrow(LogRecordValidationError);
   });
