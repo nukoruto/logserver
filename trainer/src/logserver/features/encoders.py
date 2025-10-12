@@ -9,6 +9,8 @@ from typing import Dict, Iterable, List, Sequence
 import numpy as np
 import pandas as pd
 
+from .robust import choose_epsilon
+
 PAD_TOKEN = "<pad>"
 UNK_TOKEN = "<unk>"
 
@@ -77,6 +79,7 @@ class FeaturePack:
     event_vocab: EventVocabulary
     delta_normalizer: ContinuousNormalizer
     latency_normalizer: ContinuousNormalizer
+    delta_epsilon: float
 
     def save(self, path: str) -> None:
         import json
@@ -85,6 +88,7 @@ class FeaturePack:
             "event_vocab": self.event_vocab.idx_to_token,
             "delta_normalizer": {"mean": self.delta_normalizer.mean, "std": self.delta_normalizer.std},
             "latency_normalizer": {"mean": self.latency_normalizer.mean, "std": self.latency_normalizer.std},
+            "delta_epsilon": self.delta_epsilon,
         }
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
@@ -100,14 +104,17 @@ class FeaturePack:
             vocab.add_token(token)
         delta = ContinuousNormalizer(mean=data["delta_normalizer"]["mean"], std=data["delta_normalizer"]["std"])
         latency = ContinuousNormalizer(mean=data["latency_normalizer"]["mean"], std=data["latency_normalizer"]["std"])
-        return cls(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency)
+        epsilon = float(data.get("delta_epsilon", 1e-6))
+        return cls(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency, delta_epsilon=epsilon)
 
 
 def build_feature_pack(df: pd.DataFrame) -> FeaturePack:
     vocab = EventVocabulary.build(df["event"].tolist())
-    delta = ContinuousNormalizer.fit(df["delta_t"].fillna(0.0).astype(float).tolist())
+    delta_values = df["delta_t"].fillna(0.0).astype(float).to_numpy()
+    delta = ContinuousNormalizer.fit(delta_values.tolist())
     latency = ContinuousNormalizer.fit(df["latency_ms"].fillna(0.0).astype(float).tolist())
-    return FeaturePack(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency)
+    epsilon = choose_epsilon(delta_values[delta_values > 0.0])
+    return FeaturePack(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency, delta_epsilon=epsilon)
 
 
 def encode_dataframe(df: pd.DataFrame, pack: FeaturePack) -> Dict[str, np.ndarray]:

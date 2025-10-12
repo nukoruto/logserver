@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
-from typing import List
+from typing import List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -20,12 +20,51 @@ class RobustDeltaStats:
     sigma_r: float
 
 
+def choose_epsilon(
+    train_dt_positives: Sequence[float],
+    *,
+    quantile: float = 0.05,
+    unit_scale: float = 1.0,
+) -> float:
+    """Determine the logarithmic stabiliser ε from training Δt statistics.
+
+    Parameters
+    ----------
+    train_dt_positives:
+        Sequence of strictly positive Δt values collected from the training
+        split.
+    quantile:
+        Lower-tail quantile used to approximate the minimum resolvable Δt.
+        Defaults to the 5th percentile.
+    unit_scale:
+        Conversion factor from the provided unit to seconds. For example,
+        specify ``1e-3`` when the input is expressed in milliseconds.
+
+    Returns
+    -------
+    float
+        Stabiliser ε in seconds, clipped to the hardware resolution band.
+    """
+
+    positives = np.asarray(list(train_dt_positives), dtype=np.float64)
+    positives = positives[np.isfinite(positives) & (positives > 0.0)]
+    if positives.size == 0:
+        return 1e-6
+
+    scaled = positives * float(unit_scale)
+    min_positive = float(np.quantile(scaled, quantile))
+    epsilon = 0.5 * min_positive
+    epsilon = float(np.clip(epsilon, 1e-6, 1e-2))
+    return epsilon
+
+
 def robustZ(
     user_deltas: pd.DataFrame,
     *,
     user_col: str = "user_id",
     delta_col: str = "delta_t",
-    eps: float = 1e-6,
+    eps: Optional[float] = None,
+    unit_scale: float = 1.0,
     clip: float = 5.0,
 ) -> pd.DataFrame:
     """Compute robust z-scores for Δt values in the log domain.
@@ -63,7 +102,11 @@ def robustZ(
     if np.any(delta_values < 0):
         raise ValueError("Delta values must be non-negative for logarithmic scaling")
 
-    log_delta = np.log(delta_values + eps)
+    delta_seconds = delta_values * float(unit_scale)
+    if eps is None:
+        eps = choose_epsilon(delta_seconds[delta_seconds > 0.0])
+
+    log_delta = np.log(delta_seconds + eps)
     df["log_delta"] = log_delta.astype(np.float64)
 
     grouped = df.groupby(user_col, sort=False, observed=True)["log_delta"]
@@ -109,5 +152,5 @@ def summarize_stats(df: pd.DataFrame, user_col: str = "user_id") -> List[RobustD
     return stats
 
 
-__all__ = ["robustZ", "summarize_stats", "RobustDeltaStats"]
+__all__ = ["choose_epsilon", "robustZ", "summarize_stats", "RobustDeltaStats"]
 
