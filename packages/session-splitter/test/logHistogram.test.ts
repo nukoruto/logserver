@@ -2,9 +2,10 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 
 import { makeLogHistogram, otsuThreshold } from '../dist/index.js';
+import type { LogHistogramResult } from '../dist/index.js';
 
 test('makeLogHistogram enforces minimum bin count of 32', () => {
-  const dense = Array.from({ length: 48 }, (_, index) => 1 + index * 1e-6);
+  const dense = Array.from({ length: 48 }, (_: unknown, index) => 1 + index * 1e-6);
   const result = makeLogHistogram(dense);
   assert.equal(result.binCount, 32);
   assert.equal(result.binEdges.length, result.binCount + 1);
@@ -12,8 +13,8 @@ test('makeLogHistogram enforces minimum bin count of 32', () => {
 });
 
 test('makeLogHistogram enforces maximum bin count of 512', () => {
-  const narrow = Array.from({ length: 4096 }, (_, index) => 1 + index * 1e-6);
-  const tail = Array.from({ length: 32 }, (_, index) => 10 ** (index + 1));
+  const narrow = Array.from({ length: 4096 }, (_: unknown, index) => 1 + index * 1e-6);
+  const tail = Array.from({ length: 32 }, (_: unknown, index) => 10 ** (index + 1));
   const result = makeLogHistogram([...narrow, ...tail]);
   assert.equal(result.binCount, 512);
   assert.equal(result.binEdges.length, result.binCount + 1);
@@ -24,13 +25,13 @@ test('otsuThreshold returns stable log-domain boundary on bimodal mixture', () =
   const binCount = 32;
   const logMin = 0;
   const logBinWidth = 0.25;
-  const binCounts = Array.from({ length: binCount }, (_, index) => {
+  const binCounts = Array.from({ length: binCount }, (_: unknown, index) => {
     if (index < 8) return 120;
     if (index >= 24) return 90;
     return 2;
   });
   const binEdges = Array.from({ length: binCount + 1 }, (_, index) => Math.exp(logMin + logBinWidth * index));
-  const histogram = {
+  const histogram: LogHistogramResult = {
     binEdges,
     binCounts,
     binCount,

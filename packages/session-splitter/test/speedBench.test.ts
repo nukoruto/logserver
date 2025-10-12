@@ -7,8 +7,21 @@ import { performance } from 'node:perf_hooks';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
-function buildRows(userCount, perUser) {
-  const rows = [];
+type BenchRow = {
+  algo_ver: typeof algoVersion;
+  uid: string;
+  generatedSessionId: string;
+  sessionSequence: number;
+  sessionIndex: number;
+  timestampUtc: string;
+  deltaSeconds: number | null;
+  idleTimeoutSeconds: number;
+  splitReason: 'continuous';
+  original: Record<string, unknown>;
+};
+
+function buildRows(userCount: number, perUser: number): BenchRow[] {
+  const rows: BenchRow[] = [];
   for (let i = 0; i < userCount; i += 1) {
     const uid = `bench-${i}`;
     for (let j = 0; j < perUser; j += 1) {

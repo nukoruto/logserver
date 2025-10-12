@@ -6,8 +6,19 @@ import { tmpdir } from 'node:os';
 import path from 'node:path';
 
 import { algoVersion, writeMeta } from '../dist/index.js';
+import type { ThresholdMetaInput } from '../dist/index.js';
 
-function matchesType(type, value) {
+type JsonSchemaType = 'number' | 'string' | 'null' | 'object';
+
+type JsonSchema = {
+  type: JsonSchemaType | JsonSchemaType[];
+  required?: string[];
+  properties?: Record<string, JsonSchema>;
+  patternProperties?: Record<string, JsonSchema>;
+  additionalProperties?: boolean;
+};
+
+function matchesType(type: JsonSchemaType, value: unknown): boolean {
   switch (type) {
     case 'number':
       return typeof value === 'number' && Number.isFinite(value);
@@ -22,15 +33,15 @@ function matchesType(type, value) {
   }
 }
 
-function validateAgainstSchema(schema, data, pointer = '#') {
-  const errors = [];
-  const types = Array.isArray(schema.type) ? schema.type : [schema.type];
-  if (!types.some((type) => matchesType(type, data))) {
-    errors.push(`${pointer}: expected type ${types.join(' | ')}`);
+function validateAgainstSchema(schema: JsonSchema, data: unknown, pointer = '#'): string[] {
+  const errors: string[] = [];
+  const schemaTypes = Array.isArray(schema.type) ? schema.type : [schema.type];
+  if (!schemaTypes.some((type) => matchesType(type, data))) {
+    errors.push(`${pointer}: expected type ${schemaTypes.join(' | ')}`);
     return errors;
   }
 
-  if (types.includes('object')) {
+  if (schemaTypes.includes('object') && data !== null && typeof data === 'object' && !Array.isArray(data)) {
     const required = schema.required ?? [];
     for (const key of required) {
       if (!(key in data)) {
@@ -41,11 +52,12 @@ function validateAgainstSchema(schema, data, pointer = '#') {
     const propertySchemas = schema.properties ?? {};
     const patternSchemas = schema.patternProperties ?? {};
     const additionalAllowed = schema.additionalProperties !== false;
+    const record = data as Record<string, unknown>;
 
-    for (const [key, value] of Object.entries(data)) {
+    for (const [key, value] of Object.entries(record)) {
       let matched = false;
       if (key in propertySchemas) {
-        const childErrors = validateAgainstSchema(propertySchemas[key], value, `${pointer}/${key}`);
+        const childErrors = validateAgainstSchema(propertySchemas[key]!, value, `${pointer}/${key}`);
         errors.push(...childErrors);
         matched = true;
       } else {
@@ -74,7 +86,7 @@ test('writeMeta outputs schema-compliant JSON with dataset hash', async () => {
   await fs.writeFile(datasetPath, 'timestamp_utc,uid\n2024-01-01T00:00:00Z,user-1\n');
 
   const metaPath = path.join(tmpDir, 'meta.json');
-  const metaInput = {
+  const metaInput: ThresholdMetaInput = {
     algo_ver: algoVersion,
     epsilon: 0.0005,
     ntp_p95_ms: 12,
