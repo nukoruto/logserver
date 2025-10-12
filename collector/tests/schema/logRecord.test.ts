@@ -1,7 +1,5 @@
 import {
-  HTTP_METHODS,
   LogRecordValidationError,
-  OPERATION_CATEGORIES,
   type HttpMethod,
   type OperationCategory,
   validateLogRecord,
