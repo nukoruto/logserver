@@ -9,32 +9,38 @@ const isDisabled = (): boolean => {
   return ['1', 'true', 'yes', 'on'].includes(normalised);
 };
 
-async function main(): Promise<void> {
+const main = async (): Promise<void> => {
   if (isDisabled()) {
-    console.log(JSON.stringify({
-      status: 'skipped',
-      reason: 'NTP monitoring disabled by environment',
-      timestamp: new Date().toISOString(),
-    }));
+    console.log(
+      JSON.stringify({
+        status: 'skipped',
+        reason: 'NTP monitoring disabled by environment',
+        timestamp: new Date().toISOString(),
+      }),
+    );
     return;
   }
 
   try {
     const offsetMs = await checkNtpOffset();
-    console.log(JSON.stringify({
-      status: 'ok',
-      offset_ms: offsetMs,
-      timestamp: new Date().toISOString(),
-    }));
-  } catch (error) {
+    console.log(
+      JSON.stringify({
+        status: 'ok',
+        offset_ms: offsetMs,
+        timestamp: new Date().toISOString(),
+      }),
+    );
+  } catch (error: unknown) {
     const message = error instanceof Error ? error.message : String(error);
-    console.error(JSON.stringify({
-      status: 'error',
-      error: message,
-      timestamp: new Date().toISOString(),
-    }));
+    console.error(
+      JSON.stringify({
+        status: 'error',
+        error: message,
+        timestamp: new Date().toISOString(),
+      }),
+    );
     process.exitCode = 1;
   }
-}
+};
 
 void main();

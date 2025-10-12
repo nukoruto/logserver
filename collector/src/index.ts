@@ -1,12 +1,30 @@
-import type { Request, Response, NextFunction } from 'express';
-import CsvSink, { type CsvRecord, type Rotation } from './sink/csvSink';
-import { LogRecordValidationError, validateLogRecord, DEFAULT_OPERATION_CATEGORY } from './schema/logRecord';
+import type { NextFunction, Request, Response } from 'express';
+import { CsvSink } from './sink/csvSink';
 import config from './config';
 import logger from './utils/logger';
+import {
+  LogRecordValidationError,
+  validateLogRecord,
+  DEFAULT_OPERATION_CATEGORY,
+} from './schema/logRecord';
 import { OP_CATEGORY_FLAG } from './middleware/opCategory';
 
-type LogframeMeta = Record<string, unknown> & {
-  [OP_CATEGORY_FLAG]?: boolean;
+type Rotation = 'hourly' | 'daily';
+
+type LogframeInput = Record<string, unknown>;
+
+type SanitizedLogframe = {
+  timestamp_utc: string;
+  method: string;
+  path: string;
+  referer: string;
+  user_agent: string;
+  uid: string;
+  session_id: string;
+  ip: string;
+  op_category: string;
+  status_code?: number;
+  latency_ms?: number;
 };
 
 const toRotation = (input: unknown): Rotation => {
@@ -14,26 +32,6 @@ const toRotation = (input: unknown): Rotation => {
     return 'hourly';
   }
   return 'daily';
-};
-
-const csvSink = new CsvSink({
-  dir: config.csvRoot,
-  rotation: toRotation((config as Record<string, unknown>).csvRotation ?? process.env.CSV_ROTATION),
-});
-
-const sigtermHandler = async (): Promise<void> => {
-  try {
-    await csvSink.shutdown();
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    logger.error('Failed to gracefully shutdown CSV sink', { error: message });
-  }
-};
-
-process.once('SIGTERM', sigtermHandler);
-
-type LocalsWithLogframe = {
-  __logframe?: LogframeMeta;
 };
 
 const sanitizeString = (value: unknown): string => {
@@ -53,14 +51,14 @@ const sanitizeTimestamp = (value: unknown): string => {
   return new Date().toISOString();
 };
 
-const sanitizeMethod = (value: unknown): CsvRecord['method'] => {
+const sanitizeMethod = (value: unknown): string => {
   const normalized = sanitizeString(value).toUpperCase();
-  return (normalized || 'GET') as CsvRecord['method'];
+  return normalized || 'GET';
 };
 
-const sanitizeCategory = (value: unknown): CsvRecord['op_category'] => {
+const sanitizeCategory = (value: unknown): string => {
   const normalized = sanitizeString(value).toUpperCase();
-  return (normalized || DEFAULT_OPERATION_CATEGORY) as CsvRecord['op_category'];
+  return normalized || DEFAULT_OPERATION_CATEGORY;
 };
 
 const sanitizeInteger = (value: unknown): number | undefined => {
@@ -89,8 +87,12 @@ const sanitizeFloat = (value: unknown): number | undefined => {
   return undefined;
 };
 
-const sanitizeLogframe = (input: Record<string, unknown>): CsvRecord => {
-  const sanitized: Partial<CsvRecord> = {
+const isRecord = (value: unknown): value is Record<string, unknown> => {
+  return typeof value === 'object' && value !== null && !Array.isArray(value);
+};
+
+const sanitizeLogframe = (input: LogframeInput): SanitizedLogframe => {
+  const sanitized: SanitizedLogframe = {
     timestamp_utc: sanitizeTimestamp(input.timestamp_utc),
     method: sanitizeMethod(input.method),
     path: sanitizeString(input.path),
@@ -102,22 +104,25 @@ const sanitizeLogframe = (input: Record<string, unknown>): CsvRecord => {
     op_category: sanitizeCategory(input.op_category),
   };
 
-  const statusCode = sanitizeInteger((input as Record<string, unknown>).status_code);
+  const statusCode = sanitizeInteger(input.status_code);
   if (statusCode !== undefined) {
     sanitized.status_code = statusCode;
   }
 
-  const latency = sanitizeFloat((input as Record<string, unknown>).latency_ms);
+  const latency = sanitizeFloat(input.latency_ms);
   if (latency !== undefined) {
     sanitized.latency_ms = latency;
   }
 
-  return sanitized as CsvRecord;
+  return sanitized;
 };
 
 const missingCategoryWarnings = new Set<string>();
 
-const warnMissingOperationCategory = (record: CsvRecord, categoryApplied: boolean): void => {
+const warnMissingOperationCategory = (
+  record: SanitizedLogframe,
+  categoryApplied: boolean,
+): void => {
   if (categoryApplied) {
     return;
   }
@@ -135,7 +140,29 @@ const warnMissingOperationCategory = (record: CsvRecord, categoryApplied: boolea
   });
 };
 
-const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): void => {
+const csvSink = new CsvSink({
+  dir: config.csvRoot,
+  rotation: toRotation(config.csvRotation ?? process.env.CSV_ROTATION),
+});
+
+const sigtermHandler = async (): Promise<void> => {
+  try {
+    await csvSink.shutdown();
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : String(error);
+    logger.error('Failed to gracefully shutdown CSV sink', { error: message });
+  }
+};
+
+process.once('SIGTERM', () => {
+  void sigtermHandler();
+});
+
+const csvSinkMiddleware = (
+  _req: Request,
+  res: Response,
+  next: NextFunction,
+): void => {
   const start = process.hrtime.bigint();
   let flushed = false;
 
@@ -145,9 +172,9 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
     }
     flushed = true;
 
-    const locals = res.locals as LocalsWithLogframe;
+    const locals = (res.locals ?? {}) as Record<string, unknown>;
     const base = locals.__logframe;
-    if (!base || typeof base !== 'object') {
+    if (!isRecord(base)) {
       return;
     }
 
@@ -155,9 +182,11 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
     const elapsedMs = Number(elapsedNs) / 1_000_000;
 
     const sanitized = sanitizeLogframe(base);
-    const record: CsvRecord = { ...sanitized };
+    const record: SanitizedLogframe = { ...sanitized };
 
-    const statusFromResponse = Number.isFinite(res.statusCode) ? Math.trunc(res.statusCode) : undefined;
+    const statusFromResponse = Number.isFinite(res.statusCode)
+      ? Math.trunc(res.statusCode)
+      : undefined;
     if (statusFromResponse !== undefined) {
       record.status_code = statusFromResponse;
     }
@@ -166,22 +195,26 @@ const csvSinkMiddleware = (_req: Request, res: Response, next: NextFunction): vo
       record.latency_ms = Number(elapsedMs.toFixed(3));
     }
 
-    const categoryApplied = Boolean((base as LogframeMeta)[OP_CATEGORY_FLAG]);
+    const categoryApplied = Boolean(base[OP_CATEGORY_FLAG]);
     warnMissingOperationCategory(record, categoryApplied);
 
     try {
       const validated = validateLogRecord(record);
-      void csvSink.write(validated).catch((error: unknown) => {
+      csvSink.write(validated).catch((error: unknown) => {
         if (error instanceof LogRecordValidationError) {
-          logger.error('Rejected CSV logframe due to schema violation', { issues: error.issues });
+          logger.error('Rejected CSV logframe due to schema violation', {
+            issues: error.issues,
+          });
           return;
         }
         const message = error instanceof Error ? error.message : String(error);
         logger.error('Failed to write CSV logframe', { error: message });
       });
-    } catch (error) {
+    } catch (error: unknown) {
       if (error instanceof LogRecordValidationError) {
-        logger.error('Discarded CSV logframe due to schema violation', { issues: error.issues });
+        logger.error('Discarded CSV logframe due to schema violation', {
+          issues: error.issues,
+        });
         return;
       }
       const message = error instanceof Error ? error.message : String(error);
