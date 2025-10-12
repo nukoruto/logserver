@@ -47,8 +47,6 @@ const STRATEGY_HANDLERS = {
   authenticationBypass: (context) => applyAuthenticationBypass(context),
 };
 
-const isFiniteNumber = (value) => Number.isFinite(value);
-
 const deepClone = (value) => {
   if (typeof value !== 'object' || value === null) {
     return value;
@@ -93,15 +91,15 @@ const normalizeSeed = (seed) => {
     return null;
   }
   if (typeof seed === 'number' && Number.isFinite(seed)) {
-    return seed >>> 0; // eslint-disable-line no-bitwise
+    return seed >>> 0;
   }
   if (typeof seed === 'string' && seed.length > 0) {
     let hash = 0;
     for (let index = 0; index < seed.length; index += 1) {
-      hash = (hash << 5) - hash + seed.charCodeAt(index); // eslint-disable-line no-bitwise
-      hash |= 0; // eslint-disable-line no-bitwise
+      hash = (hash << 5) - hash + seed.charCodeAt(index);
+      hash |= 0;
     }
-    return hash >>> 0; // eslint-disable-line no-bitwise
+    return hash >>> 0;
   }
   return null;
 };
@@ -113,8 +111,8 @@ const createPrng = (seed) => {
   }
   let state = normalizedSeed || 1;
   return () => {
-    state = (state * 1664525 + 1013904223) >>> 0; // eslint-disable-line no-bitwise
-    return state / 0x100000000; // eslint-disable-line no-bitwise
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
   };
 };
 

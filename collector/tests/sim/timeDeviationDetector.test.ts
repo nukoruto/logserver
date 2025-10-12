@@ -1,4 +1,4 @@
-const { detectTimeDeviation } = require('../../src/sim/detector/timeDeviationDetector');
+import { detectTimeDeviation } from '../../src/sim/detector/timeDeviationDetector';
 
 describe('detectTimeDeviation', () => {
   it('基準系列の分位点を用いて長いΔtを異常検知する', () => {

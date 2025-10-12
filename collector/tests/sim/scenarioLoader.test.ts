@@ -1,4 +1,4 @@
-const { loadScenario, DEFAULT_SCENARIO_FILE } = require('../../src/sim/scenario');
+import { loadScenario, DEFAULT_SCENARIO_FILE } from '../../src/sim/scenario';
 
 describe('scenario loader with external JSON', () => {
   it('prefers configs/scenario_default.json when present', () => {

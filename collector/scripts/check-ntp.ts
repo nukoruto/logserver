@@ -11,7 +11,6 @@ const isDisabled = (): boolean => {
 
 async function main(): Promise<void> {
   if (isDisabled()) {
-    // eslint-disable-next-line no-console
     console.log(JSON.stringify({
       status: 'skipped',
       reason: 'NTP monitoring disabled by environment',
@@ -22,7 +21,6 @@ async function main(): Promise<void> {
 
   try {
     const offsetMs = await checkNtpOffset();
-    // eslint-disable-next-line no-console
     console.log(JSON.stringify({
       status: 'ok',
       offset_ms: offsetMs,
@@ -30,7 +28,6 @@ async function main(): Promise<void> {
     }));
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
-    // eslint-disable-next-line no-console
     console.error(JSON.stringify({
       status: 'error',
       error: message,

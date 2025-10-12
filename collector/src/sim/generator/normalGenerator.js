@@ -23,9 +23,9 @@ const normalizeSeed = (seed) => {
     let hash = 0;
     for (let index = 0; index < seed.length; index += 1) {
       hash = (hash << 5) - hash + seed.charCodeAt(index);
-      hash |= 0; // eslint-disable-line no-bitwise
+      hash |= 0;
     }
-    return hash >>> 0; // eslint-disable-line no-bitwise
+    return hash >>> 0;
   }
   return null;
 };
@@ -37,8 +37,8 @@ const createPrng = (seed) => {
   }
   let state = normalizedSeed || 1;
   return () => {
-    state = (state * 1664525 + 1013904223) >>> 0; // eslint-disable-line no-bitwise
-    return state / 0x100000000; // eslint-disable-line no-bitwise
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0x100000000;
   };
 };
 

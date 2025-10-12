@@ -1,8 +1,7 @@
 import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
-
-const { generateScenario } = require('../../src/services/simulationService');
+import { generateScenario } from '../../src/services/simulationService';
 
 describe('simulationService.generateScenario', () => {
   let tempDir: string;

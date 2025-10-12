@@ -40,7 +40,7 @@ const serializeMetadata = (metadata) => JSON.stringify(metadata || {});
 const deserializeMetadata = (value) => {
   try {
     return value ? JSON.parse(value) : {};
-  } catch (error) {
+  } catch {
     return { raw: value };
   }
 };
@@ -103,7 +103,6 @@ const insertEventsBulk = async (events) => {
   const inserted = [];
   try {
     for (const event of events) {
-      // eslint-disable-next-line no-await-in-loop
       const created = await insertEvent(event);
       inserted.push(created);
     }

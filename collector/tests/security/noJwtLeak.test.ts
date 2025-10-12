@@ -29,7 +29,7 @@ async function collectFiles(dir: string): Promise<string[]> {
     let stat;
     try {
       stat = await fs.stat(current);
-    } catch (error) {
+    } catch {
       continue;
     }
 
@@ -37,7 +37,7 @@ async function collectFiles(dir: string): Promise<string[]> {
       let entries: string[] = [];
       try {
         entries = await fs.readdir(current);
-      } catch (error) {
+      } catch {
         continue;
       }
       for (const entry of entries) {
@@ -59,7 +59,7 @@ describe('artifact pseudonymisation hygiene', () => {
       let stat;
       try {
         stat = await fs.stat(dir);
-      } catch (error) {
+      } catch {
         continue;
       }
 
@@ -72,7 +72,7 @@ describe('artifact pseudonymisation hygiene', () => {
         let content: string;
         try {
           content = await fs.readFile(file, 'utf8');
-        } catch (error) {
+        } catch {
           continue;
         }
 

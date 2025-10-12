@@ -1,12 +1,12 @@
-const fs = require('node:fs/promises');
-const path = require('node:path');
-const os = require('node:os');
-const {
+import { promises as fs } from 'node:fs';
+import path from 'node:path';
+import os from 'node:os';
+import {
   persistSimulationRun,
   summarizeDeltas,
   augmentRows,
   formatCsvAugmented,
-} = require('../../src/sim/persistence/simWriter');
+} from '../../src/sim/persistence/simWriter';
 
 describe('simWriter.persistSimulationRun', () => {
   let tempDir: string;

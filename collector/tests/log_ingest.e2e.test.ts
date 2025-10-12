@@ -46,9 +46,8 @@ describe('log ingestion pseudonymisation', () => {
 
     let stored;
     try {
-      // eslint-disable-next-line global-require, @typescript-eslint/no-var-requires
-      const logService = require('../src/services/logService');
-      stored = await logService.ingestEvent({
+      const { ingestEvent } = await import('../src/services/logService');
+      stored = await ingestEvent({
         session_id: 'sess-123',
         jwt: rawJwt,
         event: 'login',

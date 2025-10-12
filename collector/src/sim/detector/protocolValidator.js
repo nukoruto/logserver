@@ -19,7 +19,7 @@ const DEFAULT_OPTIONS = {
   sessionIdField: 'session_id',
   userIdField: 'user_id',
   tokenField: 'uid',
-  sessionIdPattern: /^[A-Za-z0-9:_\-]{8,}$/u,
+  sessionIdPattern: /^[A-Za-z0-9:_-]{8,}$/u,
   allowedTransitions: [
     { from: 'login', to: 'browse' },
     { from: 'login', to: 'logout' },
