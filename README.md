@@ -200,6 +200,24 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
   --pretty
 ```
 
+### 5.7 Electron GUI（セッション分割サポート）
+
+Electron ベースの GUI から CSV ログのセッション分割・閾値確認・ΔT 上書きを実施できます。
+
+```bash
+pnpm --filter @logserver/splitter-gui build
+JWT_HMAC_KEY=... pnpm --filter @logserver/splitter-gui exec electron dist/main.js
+```
+
+- GUI 上で CSV を選択 → ユーザを切り替えてヒストグラム（Otsu 線付き）、セッション数曲線（膝点表示）、ΔT スライダ/数値入力が利用可能。
+- ΔT を変更するとプレビューが即時更新され、閾値一覧とセッション抜粋が再描画されます。
+- 「エクスポート」は CLI (`@logserver/session-splitter-cli`) と同一構成（NDJSON + thresholds JSON + meta.json）で出力します。
+- E2E テストは Playwright によりレンダラの主要要素を検証し、静的ビルドの品質を担保します。
+
+```bash
+pnpm --filter @logserver/splitter-gui exec playwright test
+```
+
 - CLI の出力および `/api/v1/simulations` POST のレスポンスは以下のフォーマットで統一されています（抜粋）。GUI では `summary` や `params` を利用してメタ情報を表示できます。
 
 ```json

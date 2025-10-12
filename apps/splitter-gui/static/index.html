@@ -4,25 +4,146 @@
     <meta charset="UTF-8" />
     <title>Session Splitter GUI</title>
     <style>
+      :root {
+        color-scheme: light dark;
+      }
       body {
         font-family: 'Segoe UI', sans-serif;
-        margin: 16px;
+        margin: 0;
+        padding: 24px;
+        background-color: #f8fafc;
+        color: #0f172a;
       }
       header {
-        margin-bottom: 12px;
+        margin-bottom: 24px;
       }
-      #output {
-        white-space: pre;
-        background-color: #0f172a;
-        color: #f1f5f9;
-        padding: 12px;
+      h1 {
+        margin: 0 0 8px;
+        font-size: 28px;
+      }
+      .controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 16px;
+        align-items: end;
+        margin-bottom: 24px;
+      }
+      .controls label {
+        display: flex;
+        flex-direction: column;
+        font-size: 14px;
+        gap: 4px;
+      }
+      .controls input,
+      .controls select {
+        padding: 8px;
         border-radius: 8px;
-        max-height: 400px;
-        overflow: auto;
+        border: 1px solid #cbd5f5;
+        font-size: 14px;
       }
-      label {
-        display: block;
-        margin-bottom: 8px;
+      button {
+        padding: 10px 16px;
+        border-radius: 8px;
+        border: none;
+        font-size: 14px;
+        font-weight: 600;
+        background-color: #2563eb;
+        color: #fff;
+        cursor: pointer;
+      }
+      button.secondary {
+        background-color: #475569;
+      }
+      button:disabled {
+        cursor: not-allowed;
+        opacity: 0.6;
+      }
+      .status {
+        margin-top: 8px;
+        font-size: 13px;
+      }
+      .status.info {
+        color: #2563eb;
+      }
+      .status.error {
+        color: #dc2626;
+      }
+      .charts {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(360px, 1fr));
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+      canvas {
+        width: 100%;
+        max-width: 520px;
+        height: 280px;
+        background-color: #fff;
+        border-radius: 12px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+      }
+      .thresholds {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(240px, 1fr));
+        gap: 24px;
+        margin-bottom: 24px;
+      }
+      .card {
+        background-color: #fff;
+        padding: 16px;
+        border-radius: 12px;
+        box-shadow: 0 12px 28px rgba(15, 23, 42, 0.1);
+      }
+      .card h2 {
+        margin-top: 0;
+        font-size: 18px;
+      }
+      .card ul {
+        list-style: none;
+        padding: 0;
+        margin: 0;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .card li span.selected-user {
+        font-weight: 700;
+        color: #2563eb;
+      }
+      .override-controls {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(220px, 1fr));
+        gap: 16px;
+        align-items: center;
+        margin-bottom: 24px;
+      }
+      .override-controls label {
+        font-size: 14px;
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+      }
+      .results-table {
+        width: 100%;
+        border-collapse: collapse;
+      }
+      .results-table th,
+      .results-table td {
+        border-bottom: 1px solid #e2e8f0;
+        padding: 8px;
+        font-size: 13px;
+      }
+      .results-table th {
+        text-align: left;
+        background-color: #f1f5f9;
+      }
+      .summary {
+        display: flex;
+        gap: 24px;
+        font-size: 14px;
+      }
+      .summary span {
+        font-weight: 600;
       }
     </style>
   </head>
@@ -31,17 +152,57 @@
       <h1>Session Splitter GUI</h1>
       <p>アルゴリズム版: <span id="algo-version"></span></p>
     </header>
-    <section>
+    <section class="controls">
+      <button id="select-file">CSV を選択</button>
       <label>
-        アイドルタイムアウト秒数:
+        アイドルタイムアウト秒数
         <input id="idle-timeout" type="number" min="1" placeholder="1800" />
       </label>
-      <button id="select-file">CSV を選択</button>
-      <p id="status">ファイルを選択して処理を開始してください。</p>
+      <label>
+        ユーザ選択
+        <select id="user-select"></select>
+      </label>
+      <button id="export" class="secondary">エクスポート</button>
     </section>
-    <section>
-      <h2>出力</h2>
-      <pre id="output">{}</pre>
+    <p>選択中: <span id="file-path">未選択</span></p>
+    <p id="status" class="status info">CSV を選択してプレビューを開始してください。</p>
+    <section class="override-controls">
+      <label>
+        ΔT スライダー (秒)
+        <input id="delta-slider" type="range" min="0" max="10" step="0.1" />
+      </label>
+      <label>
+        ΔT 手動入力 (秒)
+        <input id="delta-input" type="number" min="0" step="0.1" />
+      </label>
+      <div class="summary">
+        <div>自動推奨 ΔT: <span id="auto-threshold">-</span></div>
+        <div>手動 ΔT: <span id="manual-threshold">-</span></div>
+      </div>
+    </section>
+    <section class="charts">
+      <canvas id="histogram" width="520" height="320"></canvas>
+      <canvas id="session-curve" width="520" height="320"></canvas>
+    </section>
+    <section class="thresholds">
+      <div class="card">
+        <h2>ユーザ別 ΔT 推定値</h2>
+        <ul id="threshold-list"></ul>
+      </div>
+      <div class="card">
+        <h2>プレビューサマリ (上位 25 行)</h2>
+        <table class="results-table" id="preview-table">
+          <thead>
+            <tr>
+              <th>UID</th>
+              <th>ΔT</th>
+              <th>分割理由</th>
+              <th>タイムスタンプ</th>
+            </tr>
+          </thead>
+          <tbody></tbody>
+        </table>
+      </div>
     </section>
     <script type="module" src="../renderer.js"></script>
   </body>
