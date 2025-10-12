@@ -3,7 +3,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trainer.logserver.features import robustZ
+from trainer.logserver.features import choose_epsilon, robustZ
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
 
 
@@ -20,6 +20,17 @@ def test_encode_dataframe_returns_arrays() -> None:
     encoded = encode_dataframe(df, pack)
     assert encoded["event_id"].shape[0] == len(df)
     assert encoded["delta_t"].shape[0] == len(df)
+    assert 1e-6 <= pack.delta_epsilon <= 1e-2
+
+
+def test_choose_epsilon_quantile_and_clipping() -> None:
+    positives = [1e-5, 5e-5, 1e-4, 2e-4]
+    eps = choose_epsilon(positives)
+    expected = 0.5 * np.quantile(np.array(positives), 0.05)
+    assert eps == pytest.approx(max(1e-6, min(expected, 1e-2)))
+
+    # When only non-positive values are present the lower clip should be used.
+    assert choose_epsilon([0.0, 0.0]) == 1e-6
 
 
 def test_robust_z_quantiles_align_with_normal_distribution() -> None:
@@ -41,4 +52,17 @@ def test_robust_z_quantiles_align_with_normal_distribution() -> None:
         assert np.isfinite(q90)
         assert q90 == pytest.approx(1.28, abs=0.2)
         assert user_rows["z_clipped"].between(-5.0, 5.0).all()
+
+
+def test_robust_z_unit_invariance_between_seconds_and_milliseconds() -> None:
+    rng = np.random.default_rng(17)
+    seconds = rng.lognormal(mean=-4.5, sigma=0.6, size=1024)
+    df_seconds = pd.DataFrame({"user_id": ["u"] * len(seconds), "delta_t": seconds})
+    z_seconds = robustZ(df_seconds, unit_scale=1.0)
+
+    milliseconds = seconds * 1e3
+    df_ms = pd.DataFrame({"user_id": ["u"] * len(milliseconds), "delta_t": milliseconds})
+    z_ms = robustZ(df_ms, unit_scale=1e-3)
+
+    np.testing.assert_allclose(z_seconds["z"].to_numpy(), z_ms["z"].to_numpy(), atol=1e-6)
 
