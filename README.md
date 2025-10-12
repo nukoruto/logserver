@@ -174,7 +174,8 @@ python -m trainer.scripts.train --config trainer/configs/default.yaml
 
 # 3) スコアリングと閾値設計（分位点 or EVT-POT）
 python -m trainer.scripts.score --config trainer/configs/default.yaml
-python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-error keep-partial
+python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-error keep-partial \
+  --dump-eval data/processed/boundary_eval.json --dump-hist data/processed/anomaly_hist.json
 
 # 4) 説明レポート（ケース単位）
 python -m trainer.scripts.explain --config trainer/configs/default.yaml
@@ -185,6 +186,8 @@ cd collector && node scripts/check-ntp.js
 
 - 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。
 - `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。
+- `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
+- `--dump-hist` を指定すると、異常スコアのヒストグラム（bin 辺・中心・密度・要約統計）を JSON 形式で保存し、二峰性の可視化にそのまま利用できます。`--hist-bins` でビン数を調整できます。
 
 ### 5.6 シナリオ生成 CLI / API
 
