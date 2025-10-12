@@ -1,0 +1,152 @@
+{
+  "targets": [
+    "collector/scripts/check-ntp.js",
+    "collector/server.js",
+    "collector/src/app.js",
+    "collector/src/config/index.js",
+    "collector/src/index.js",
+    "collector/src/middleware/auth.js",
+    "collector/src/middleware/errorHandler.js",
+    "collector/src/middleware/logCapture.js",
+    "collector/src/middleware/opCategory.js",
+    "collector/src/middleware/requestLogger.js",
+    "collector/src/middleware/sanitize.js",
+    "collector/src/ntp/offset.js",
+    "collector/src/routes/events.js",
+    "collector/src/routes/health.js",
+    "collector/src/routes/metrics.js",
+    "collector/src/routes/simulations.js",
+    "collector/src/schema/logRecord.js",
+    "collector/src/security/uid.js",
+    "collector/src/services/logService.js",
+    "collector/src/services/ntpMonitor.js",
+    "collector/src/services/simulationService.js",
+    "collector/src/sim/detector/protocolValidator.js",
+    "collector/src/sim/detector/timeDeviationDetector.js",
+    "collector/src/sim/generator/anomalyInjector.js",
+    "collector/src/sim/generator/normalGenerator.js",
+    "collector/src/sim/index.js",
+    "collector/src/sim/labeler.js",
+    "collector/src/sim/persistence/simWriter.js",
+    "collector/src/sim/scenario/index.js",
+    "collector/src/sink/csvSink.js",
+    "collector/src/storage/csvWriter.js",
+    "collector/src/storage/database.js",
+    "collector/src/storage/eventRepository.js",
+    "collector/src/utils/asyncHandler.js",
+    "collector/src/utils/errors.js",
+    "collector/src/utils/logger.js",
+    "collector/src/utils/validators.js"
+  ],
+  "importPolicy": "default",
+  "risks": [
+    {"file": "collector/src/app.js", "kind": "cjs-exports"},
+    {"file": "collector/src/config/index.js", "kind": "cjs-exports"},
+    {"file": "collector/src/index.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/auth.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/errorHandler.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/logCapture.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/opCategory.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/requestLogger.js", "kind": "cjs-exports"},
+    {"file": "collector/src/middleware/sanitize.js", "kind": "cjs-exports"},
+    {"file": "collector/src/ntp/offset.js", "kind": "cjs-exports"},
+    {"file": "collector/src/routes/events.js", "kind": "cjs-exports"},
+    {"file": "collector/src/routes/health.js", "kind": "cjs-exports"},
+    {"file": "collector/src/routes/metrics.js", "kind": "cjs-exports"},
+    {"file": "collector/src/routes/simulations.js", "kind": "cjs-exports"},
+    {"file": "collector/src/schema/logRecord.js", "kind": "cjs-exports"},
+    {"file": "collector/src/security/uid.js", "kind": "cjs-exports"},
+    {"file": "collector/src/services/logService.js", "kind": "cjs-exports"},
+    {"file": "collector/src/services/ntpMonitor.js", "kind": "cjs-exports"},
+    {"file": "collector/src/services/simulationService.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/index.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/detector/protocolValidator.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/detector/timeDeviationDetector.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/generator/anomalyInjector.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/generator/normalGenerator.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/labeler.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/persistence/simWriter.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sim/scenario/index.js", "kind": "cjs-exports"},
+    {"file": "collector/src/sink/csvSink.js", "kind": "cjs-exports"},
+    {"file": "collector/src/storage/csvWriter.js", "kind": "cjs-exports"},
+    {"file": "collector/src/storage/database.js", "kind": "cjs-exports"},
+    {"file": "collector/src/storage/eventRepository.js", "kind": "cjs-exports"},
+    {"file": "collector/src/utils/asyncHandler.js", "kind": "cjs-exports"},
+    {"file": "collector/src/utils/errors.js", "kind": "cjs-exports"},
+    {"file": "collector/src/utils/logger.js", "kind": "cjs-exports"},
+    {"file": "collector/src/utils/validators.js", "kind": "cjs-exports"},
+    {"file": "collector/src/config/index.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/sink/csvSink.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/storage/database.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/storage/csvWriter.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/ntp/offset.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/services/simulationService.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/security/uid.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/sim/persistence/simWriter.js", "kind": "node-builtins-require"},
+    {"file": "collector/src/sim/scenario/index.js", "kind": "node-builtins-require"}
+  ],
+  "batches": [
+    {
+      "name": "collector-entry",
+      "files": [
+        "collector/scripts/check-ntp.js",
+        "collector/server.js",
+        "collector/src/app.js",
+        "collector/src/index.js"
+      ]
+    },
+    {
+      "name": "collector-config-utils",
+      "files": [
+        "collector/src/config/index.js",
+        "collector/src/schema/logRecord.js",
+        "collector/src/security/uid.js",
+        "collector/src/utils/asyncHandler.js",
+        "collector/src/utils/errors.js",
+        "collector/src/utils/logger.js",
+        "collector/src/utils/validators.js"
+      ]
+    },
+    {
+      "name": "collector-middleware-routes",
+      "files": [
+        "collector/src/middleware/auth.js",
+        "collector/src/middleware/errorHandler.js",
+        "collector/src/middleware/logCapture.js",
+        "collector/src/middleware/opCategory.js",
+        "collector/src/middleware/requestLogger.js",
+        "collector/src/middleware/sanitize.js",
+        "collector/src/routes/events.js",
+        "collector/src/routes/health.js",
+        "collector/src/routes/metrics.js",
+        "collector/src/routes/simulations.js"
+      ]
+    },
+    {
+      "name": "collector-services-storage",
+      "files": [
+        "collector/src/ntp/offset.js",
+        "collector/src/services/logService.js",
+        "collector/src/services/ntpMonitor.js",
+        "collector/src/services/simulationService.js",
+        "collector/src/sink/csvSink.js",
+        "collector/src/storage/csvWriter.js",
+        "collector/src/storage/database.js",
+        "collector/src/storage/eventRepository.js"
+      ]
+    },
+    {
+      "name": "collector-sim",
+      "files": [
+        "collector/src/sim/index.js",
+        "collector/src/sim/detector/protocolValidator.js",
+        "collector/src/sim/detector/timeDeviationDetector.js",
+        "collector/src/sim/generator/anomalyInjector.js",
+        "collector/src/sim/generator/normalGenerator.js",
+        "collector/src/sim/labeler.js",
+        "collector/src/sim/persistence/simWriter.js",
+        "collector/src/sim/scenario/index.js"
+      ]
+    }
+  ]
+}
