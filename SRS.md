@@ -91,6 +91,8 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 ## 10. 評価指標
 ### 10.1 検知性能
 - Precision、Recall、F1、AUROC、AUPRC（イベント単位/セッション単位両方）
+- 閾値 CLI (`trainer.scripts.threshold`) の `--dump-eval` は、アノテーション（例: `boundary_annotation`）が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力し、論文用図表生成へ直接利用できる形式とする。
+- 同 CLI の `--dump-hist` は異常スコア分布のヒストグラムデータ（bin 辺、中心、密度、要約統計）を JSON 化し、二峰性の可視化や閾値設計レポートに再利用できること。
 
 ### 10.2 制御性能（Simulink 応答）
 - 立上り時間、オーバーシュート（%）、整定時間、IAE/ISE、定常偏差  

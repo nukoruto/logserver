@@ -13,8 +13,11 @@ from trainer.logserver.scoring.threshold import ThresholdConfig, compute_thresho
 from trainer.scripts import threshold as threshold_script
 
 
-def _write_scores(path: Path, scores: list[float]) -> None:
-    df = pd.DataFrame({"anomaly_score": scores})
+def _write_scores(path: Path, scores: list[float], annotations: list[int] | None = None) -> None:
+    data = {"anomaly_score": scores}
+    if annotations is not None:
+        data["boundary_annotation"] = annotations
+    df = pd.DataFrame(data)
     df.to_csv(path, index=False)
 
 
@@ -118,3 +121,64 @@ def test_run_keep_partial_preserves_files(tmp_path: Path, monkeypatch: pytest.Mo
         assert path.is_file()
     assert not (processed_dir / "threshold.json").exists()
     assert not (processed_dir / "scores_with_labels.csv").exists()
+
+
+def test_run_dump_eval_and_hist(tmp_path: Path) -> None:
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    scores_path = processed_dir / "scores.csv"
+    _write_scores(scores_path, [0.1, 0.9, 0.8, 0.2], annotations=[0, 1, 1, 0])
+    config_path = tmp_path / "config.yaml"
+    _write_config(config_path, processed_dir)
+
+    eval_path = processed_dir / "boundary_eval.json"
+    hist_path = processed_dir / "hist.json"
+
+    threshold_script.run(
+        config_path,
+        on_error="abort",
+        dump_eval_path=eval_path,
+        dump_hist_path=hist_path,
+        hist_bins=4,
+    )
+
+    assert eval_path.exists()
+    assert hist_path.exists()
+
+    with eval_path.open("r", encoding="utf-8") as handle:
+        eval_payload = json.load(handle)
+    assert eval_payload["status"] == "ok"
+    assert pytest.approx(eval_payload["metrics"]["f1"], rel=1e-6) == 1.0
+    assert pytest.approx(eval_payload["metrics"]["jaccard"], rel=1e-6) == 1.0
+    assert pytest.approx(eval_payload["metrics"]["variation_of_information"], rel=1e-6) == 0.0
+
+    with hist_path.open("r", encoding="utf-8") as handle:
+        hist_payload = json.load(handle)
+    assert hist_payload["status"] == "ok"
+    assert hist_payload["bins"] == 4
+    assert len(hist_payload["counts"]) == 4
+    assert len(hist_payload["bin_edges"]) == 5
+    assert hist_payload["summary"]["count"] == 4
+
+
+def test_run_dump_eval_missing_annotation(tmp_path: Path) -> None:
+    processed_dir = tmp_path / "processed"
+    processed_dir.mkdir()
+    scores_path = processed_dir / "scores.csv"
+    _write_scores(scores_path, [0.1, 0.9])
+    config_path = tmp_path / "config.yaml"
+    _write_config(config_path, processed_dir)
+
+    eval_path = processed_dir / "boundary_eval.json"
+
+    threshold_script.run(
+        config_path,
+        on_error="abort",
+        dump_eval_path=eval_path,
+    )
+
+    assert eval_path.exists()
+    with eval_path.open("r", encoding="utf-8") as handle:
+        payload = json.load(handle)
+    assert payload["status"] == "skipped"
+    assert payload["reason"] == "annotation_column_missing"
