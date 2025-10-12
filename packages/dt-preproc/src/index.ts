@@ -12,8 +12,41 @@ import { lburst } from './math.js';
 
 const ROBUST_SCALE_FACTOR = 1.4826;
 const ROBUST_Z_FLOOR = 1e-12;
+const LOG_EPS_FLOOR = 1e-12;
 
 export type LogRow = CsvRow;
+
+export interface RobustScaleStats {
+  x_med: number;
+  x_mad: number;
+  x_smad: number;
+}
+
+export interface RobustStats extends RobustScaleStats {
+  byHour: Record<number, RobustScaleStats>;
+}
+
+export type GroupKey = { uid: string; session_id?: string };
+
+export interface PreprocCfg {
+  epsilon: number;
+  epsilon_t: number;
+  grouping?: 'uid' | 'uid_session';
+}
+
+export interface FittedStats {
+  epsilon: number;
+  groups: Map<string, RobustStats>;
+  global: RobustStats;
+}
+
+export interface FrozenRobustStats extends RobustStats {}
+
+export interface FrozenFittedStats {
+  epsilon: number;
+  groups: Record<string, FrozenRobustStats>;
+  global: FrozenRobustStats;
+}
 
 export interface LogRowWithFeats extends LogRow {
   delta_seconds: number | null;
@@ -35,11 +68,6 @@ export interface FeatureOptions {
 }
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
-
-export interface RobustStats {
-  x_med: number;
-  x_smad: number;
-}
 
 export interface FeatureStats {
   total: number;
@@ -158,11 +186,7 @@ function computeMedian(values: readonly number[]): number {
   return sorted[mid];
 }
 
-interface RobustSummary extends RobustStats {
-  x_mad: number;
-}
-
-function computeRobustSummary(values: readonly number[]): RobustSummary | null {
+function computeRobustSummary(values: readonly number[]): RobustScaleStats | null {
   if (values.length === 0) {
     return null;
   }
@@ -170,14 +194,10 @@ function computeRobustSummary(values: readonly number[]): RobustSummary | null {
   const deviations = values.map((value) => Math.abs(value - median));
   const mad = computeMedian(deviations);
   const smad = ROBUST_SCALE_FACTOR * mad;
-  return {
-    x_med: median,
-    x_mad: mad,
-    x_smad: smad
-  };
+  return { x_med: median, x_mad: mad, x_smad: smad };
 }
 
-export function robustZ(x: number, stats: RobustStats): number {
+export function robustZ(x: number, stats: RobustScaleStats): number {
   const smad = Math.max(stats.x_smad, ROBUST_Z_FLOOR);
   return (x - stats.x_med) / smad;
 }
@@ -324,29 +344,35 @@ export function computeFeatureRows(
 
   if (measuredValues.length > 0) {
     const globalSummary = computeRobustSummary(measuredValues);
-    const fallbackStats: RobustStats | null = globalSummary
+    const fallbackStats: RobustScaleStats | null = globalSummary
       ? {
           x_med: globalSummary.x_med,
+          x_mad: globalSummary.x_mad,
           x_smad: Math.max(globalSummary.x_smad, normalized.robustScaleEpsilon)
         }
       : null;
 
     if (fallbackStats) {
       stats.deltaMedian = fallbackStats.x_med;
-      stats.deltaMad = fallbackStats.x_smad / ROBUST_SCALE_FACTOR;
+      stats.deltaMad = fallbackStats.x_mad;
       stats.deltaRobustScale = fallbackStats.x_smad;
     }
 
-    const perUserStats = new Map<string, RobustStats>();
+    const perUserStats = new Map<string, RobustScaleStats>();
     for (const [uid, values] of measuredValuesByUser.entries()) {
       const summary = computeRobustSummary(values);
       if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
-        perUserStats.set(uid, { x_med: summary.x_med, x_smad: summary.x_smad });
+        perUserStats.set(uid, {
+          x_med: summary.x_med,
+          x_mad: summary.x_mad,
+          x_smad: summary.x_smad
+        });
       } else if (fallbackStats) {
         perUserStats.set(uid, fallbackStats);
       } else if (summary) {
         perUserStats.set(uid, {
           x_med: summary.x_med,
+          x_mad: summary.x_mad,
           x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
         });
       }
@@ -402,3 +428,232 @@ export async function loadLogRowsWithFeatures(
 
 export { DEFAULT_FEATURE_OPTIONS };
 export { lburst } from './math.js';
+
+function normalizeGrouping(grouping?: 'uid' | 'uid_session'): 'uid' | 'uid_session' {
+  if (grouping === 'uid_session') {
+    return 'uid_session';
+  }
+  return 'uid';
+}
+
+function serializeGroupKey(key: GroupKey): string {
+  if (key.session_id !== undefined) {
+    return JSON.stringify({ uid: key.uid, session_id: key.session_id });
+  }
+  return JSON.stringify({ uid: key.uid });
+}
+
+function extractHour(row: LogRow): number | null {
+  if (Number.isFinite(row.timestamp_epoch_seconds)) {
+    const epochMs = Number(row.timestamp_epoch_seconds) * 1000;
+    const date = new Date(epochMs);
+    if (!Number.isNaN(date.getTime())) {
+      return date.getUTCHours();
+    }
+  }
+  if (typeof row.timestamp_utc === 'string') {
+    const date = new Date(row.timestamp_utc);
+    if (!Number.isNaN(date.getTime())) {
+      return date.getUTCHours();
+    }
+  }
+  return null;
+}
+
+function appendHourly(map: Map<number, number[]>, hour: number | null, value: number): void {
+  if (!Number.isInteger(hour) || hour === null) {
+    return;
+  }
+  const normalizedHour = ((hour % 24) + 24) % 24;
+  const bucket = map.get(normalizedHour);
+  if (bucket) {
+    bucket.push(value);
+  } else {
+    map.set(normalizedHour, [value]);
+  }
+}
+
+function buildHourlyStats(
+  hourlyValues: Map<number, number[]>,
+  defaultStats: RobustScaleStats,
+  fallbackByHour?: Record<number, RobustScaleStats>
+): Record<number, RobustScaleStats> {
+  const record: Record<number, RobustScaleStats> = {};
+  for (let hour = 0; hour < 24; hour += 1) {
+    const values = hourlyValues.get(hour);
+    if (values && values.length > 0) {
+      const summary = computeRobustSummary(values);
+      if (summary) {
+        record[hour] = { ...summary };
+        continue;
+      }
+    }
+    if (fallbackByHour && fallbackByHour[hour]) {
+      record[hour] = { ...fallbackByHour[hour] };
+    } else {
+      record[hour] = { ...defaultStats };
+    }
+  }
+  return record;
+}
+
+function sanitizeRobustScaleStats(
+  stats: RobustScaleStats | null | undefined,
+  fallback?: RobustScaleStats
+): RobustScaleStats {
+  const baseFallback = fallback ?? { x_med: 0, x_mad: 0, x_smad: ROBUST_Z_FLOOR };
+  const median = Number.isFinite(stats?.x_med) ? (stats!.x_med as number) : baseFallback.x_med;
+  const madCandidate = Number.isFinite(stats?.x_mad) && (stats!.x_mad as number) >= 0 ? (stats!.x_mad as number) : baseFallback.x_mad;
+  const smadCandidate = Number.isFinite(stats?.x_smad) && (stats!.x_smad as number) >= 0 ? (stats!.x_smad as number) : baseFallback.x_smad;
+  const mad = madCandidate >= 0 ? madCandidate : 0;
+  const smad = Math.max(smadCandidate, ROBUST_Z_FLOOR);
+  return { x_med: median, x_mad: mad, x_smad: smad };
+}
+
+function cloneHourlyRecord(
+  byHour: Record<number, RobustScaleStats> | undefined,
+  fallback: RobustScaleStats
+): Record<number, RobustScaleStats> {
+  const normalizedFallback = sanitizeRobustScaleStats(fallback);
+  const record: Record<number, RobustScaleStats> = {};
+  const source = byHour as Record<number | string, RobustScaleStats> | undefined;
+  for (let hour = 0; hour < 24; hour += 1) {
+    const entry = source ? source[hour] ?? source[String(hour)] : undefined;
+    record[hour] = sanitizeRobustScaleStats(entry, normalizedFallback);
+  }
+  return record;
+}
+
+function normalizeRobustStatsInput(stats: RobustStats | FrozenRobustStats | undefined): RobustStats {
+  const base = sanitizeRobustScaleStats(stats ?? null);
+  const byHour = cloneHourlyRecord(stats?.byHour, base);
+  return {
+    x_med: base.x_med,
+    x_mad: base.x_mad,
+    x_smad: base.x_smad,
+    byHour
+  };
+}
+
+export function freezeFittedStats(stats: FittedStats): FrozenFittedStats {
+  if (!stats || typeof stats !== 'object') {
+    throw new TypeError('stats must be a FittedStats object');
+  }
+  const epsilon = Number.isFinite(stats.epsilon) && stats.epsilon >= 0 ? stats.epsilon : LOG_EPS_FLOOR;
+  const frozenGlobal: FrozenRobustStats = { ...normalizeRobustStatsInput(stats.global) };
+  const frozenGroups: Record<string, FrozenRobustStats> = {};
+  for (const [key, value] of stats.groups.entries()) {
+    frozenGroups[key] = { ...normalizeRobustStatsInput(value) };
+  }
+  return {
+    epsilon: Math.max(epsilon, LOG_EPS_FLOOR),
+    global: frozenGlobal,
+    groups: frozenGroups
+  };
+}
+
+export function thawFittedStats(frozen: FrozenFittedStats): FittedStats {
+  if (!frozen || typeof frozen !== 'object') {
+    throw new TypeError('frozen stats must be an object');
+  }
+  const epsilonCandidate = Number.isFinite(frozen.epsilon) && frozen.epsilon >= 0 ? frozen.epsilon : LOG_EPS_FLOOR;
+  const global = normalizeRobustStatsInput(frozen.global);
+  const groups = new Map<string, RobustStats>();
+  if (frozen.groups && typeof frozen.groups === 'object') {
+    for (const key of Object.keys(frozen.groups)) {
+      groups.set(key, normalizeRobustStatsInput(frozen.groups[key]));
+    }
+  }
+  return {
+    epsilon: Math.max(epsilonCandidate, LOG_EPS_FLOOR),
+    global,
+    groups
+  };
+}
+
+export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
+  if (!Array.isArray(rows)) {
+    throw new TypeError('rows must be an array');
+  }
+  const epsilon = Number.isFinite(cfg?.epsilon) && cfg.epsilon >= 0 ? cfg.epsilon : 0;
+  const epsilonT = Number.isFinite(cfg?.epsilon_t) && cfg.epsilon_t >= 0 ? cfg.epsilon_t : 0;
+  const grouping = normalizeGrouping(cfg?.grouping);
+  const logEps = Math.max(epsilon, LOG_EPS_FLOOR);
+
+  const globalValues: number[] = [];
+  const globalHourly = new Map<number, number[]>();
+  const perGroup = new Map<
+    string,
+    { key: GroupKey; values: number[]; hourly: Map<number, number[]> }
+  >();
+
+  forEachUser(rows, (uid, userRows) => {
+    const deltaResult = computeDeltas(userRows, { epsilon, epsilon_t: epsilonT });
+    for (const { row, deltaSeconds, timeLabel } of deltaResult.rows) {
+      if (timeLabel !== 'measured' || deltaSeconds === null) {
+        continue;
+      }
+      if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0) {
+        continue;
+      }
+      const x = Math.log(deltaSeconds + logEps);
+      if (!Number.isFinite(x)) {
+        continue;
+      }
+      const hour = extractHour(row);
+      globalValues.push(x);
+      appendHourly(globalHourly, hour, x);
+
+      const groupKey: GroupKey = grouping === 'uid_session'
+        ? row.session_id !== undefined
+          ? { uid, session_id: row.session_id }
+          : { uid }
+        : { uid };
+      const serialized = serializeGroupKey(groupKey);
+      let acc = perGroup.get(serialized);
+      if (!acc) {
+        acc = { key: groupKey, values: [], hourly: new Map<number, number[]>() };
+        perGroup.set(serialized, acc);
+      }
+      acc.values.push(x);
+      appendHourly(acc.hourly, hour, x);
+    }
+  });
+
+  if (globalValues.length === 0) {
+    throw new Error('No measured Δt values available to fit robust statistics');
+  }
+
+  const globalSummary = computeRobustSummary(globalValues);
+  if (!globalSummary) {
+    throw new Error('Failed to compute global robust statistics');
+  }
+
+  const globalStats: RobustStats = {
+    x_med: globalSummary.x_med,
+    x_mad: globalSummary.x_mad,
+    x_smad: globalSummary.x_smad,
+    byHour: buildHourlyStats(globalHourly, globalSummary)
+  };
+
+  const groupStats = new Map<string, RobustStats>();
+  for (const [serialized, acc] of perGroup.entries()) {
+    const summary = computeRobustSummary(acc.values);
+    const baseStats: RobustScaleStats = summary
+      ? summary
+      : { x_med: globalStats.x_med, x_mad: globalStats.x_mad, x_smad: globalStats.x_smad };
+    const hourly = buildHourlyStats(acc.hourly, baseStats, globalStats.byHour);
+    groupStats.set(serialized, {
+      x_med: baseStats.x_med,
+      x_mad: baseStats.x_mad,
+      x_smad: baseStats.x_smad,
+      byHour: hourly
+    });
+  }
+
+  return {
+    epsilon: logEps,
+    groups: groupStats,
+    global: globalStats
+  };
+}
