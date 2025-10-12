@@ -99,7 +99,7 @@
    python -m trainer.scripts.preprocess --config trainer/configs/default.yaml
    python -m trainer.scripts.train --config trainer/configs/default.yaml
    python -m trainer.scripts.score --config trainer/configs/default.yaml
-   python -m trainer.scripts.threshold --config trainer/configs/default.yaml
+   python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-error keep-partial
    python -m trainer.scripts.explain --config trainer/configs/default.yaml
    ```
 2. 学習履歴と閾値を確認。
@@ -107,6 +107,8 @@
    jq '.' runs/latest/history.json
    jq '.' data/processed/threshold.json
    ```
+   - `threshold.json` には入力 CSV の SHA-256 とフォールバック理由（NaN/空集合など）が記録され、閾値決定に失敗した場合は WARN ログとともに `status=skipped` が保存されます。
+   - `--on-error=keep-partial` を指定すると例外発生時に `.partial` ファイルを残し、`abort`（既定）は部分成果物を削除します。
 3. Δt 統計は `data/processed/dt_stats.json`、ケースレポートは `data/processed/reports/` に出力。
 
 ![メトリクス閲覧画面](images/runbook_metrics.svg)

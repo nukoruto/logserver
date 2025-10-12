@@ -1,10 +1,13 @@
-﻿# -*- coding: utf-8 -*-
+# -*- coding: utf-8 -*-
 """CLI for threshold computation."""
 
 from __future__ import annotations
 
+import hashlib
 import json
+import logging
 from pathlib import Path
+from typing import Callable, Dict, Iterable, Optional
 
 import pandas as pd
 import yaml
@@ -15,13 +18,43 @@ from trainer.logserver.scoring.threshold import (
     compute_threshold,
 )
 
+LOGGER = logging.getLogger("trainer.scripts.threshold")
+
+
+def _configure_logging() -> None:
+    if not logging.getLogger().handlers:
+        logging.basicConfig(level=logging.INFO, format="%(message)s")
+
 
 def _load_config(path: Path) -> dict:
     with path.open("r", encoding="utf-8") as handle:
         return yaml.safe_load(handle)
 
 
-def main(config_path: Path) -> None:
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    with path.open("rb") as handle:
+        for chunk in iter(lambda: handle.read(8192), b""):
+            digest.update(chunk)
+    return digest.hexdigest()
+
+
+def _emit(event: str, payload: Dict[str, object], level: int = logging.INFO) -> None:
+    LOGGER.log(level, "%s", json.dumps({"event": event, **payload}, ensure_ascii=False))
+
+
+def run(
+    config_path: Path,
+    *,
+    on_error: str = "abort",
+    threshold_fn: Callable[[Iterable[float], ThresholdConfig], tuple[Optional[float], Dict[str, object]]] = compute_threshold,
+    apply_threshold_fn: Callable[[Iterable[float], float], Iterable[int]] = apply_threshold,
+) -> Dict[str, object]:
+    if on_error not in {"abort", "keep-partial"}:
+        raise ValueError("on_error must be either 'abort' or 'keep-partial'")
+
+    _configure_logging()
+
     config = _load_config(config_path)
     data_cfg = config.get("data", {})
     scoring_cfg = config.get("scoring", {})
@@ -31,19 +64,76 @@ def main(config_path: Path) -> None:
     scores_path = processed_dir / "scores.csv"
     if not scores_path.exists():
         raise FileNotFoundError(f"Score file not found: {scores_path}")
+    processed_dir.mkdir(parents=True, exist_ok=True)
+
+    scores_hash = _sha256(scores_path)
     df = pd.read_csv(scores_path)
 
     threshold_config = ThresholdConfig(
         method=threshold_cfg.get("method", "quantile"),
         quantile=float(threshold_cfg.get("quantile", 0.995)),
     )
-    threshold, meta = compute_threshold(df["anomaly_score"].tolist(), threshold_config)
-    df["anomaly_label"] = apply_threshold(df["anomaly_score"].tolist(), threshold)
-    df.to_csv(processed_dir / "scores_with_labels.csv", index=False)
+    threshold, meta = threshold_fn(df["anomaly_score"].tolist(), threshold_config)
 
-    payload = {"threshold": threshold, **meta}
-    with (processed_dir / "threshold.json").open("w", encoding="utf-8") as handle:
-        json.dump(payload, handle, ensure_ascii=False, indent=2)
+    payload: Dict[str, object] = {
+        **meta,
+        "threshold": threshold,
+        "data_path": str(scores_path),
+        "data_sha256": scores_hash,
+        "scoring_config": scoring_cfg,
+    }
+
+    status = payload.get("status")
+    if status == "ok":
+        _emit("threshold_computed", payload)
+    else:
+        _emit(
+            "threshold_skipped",
+            {**payload, "message": "threshold computation skipped"},
+            level=logging.WARNING,
+        )
+
+    outputs: Dict[Path, Path] = {}
+    threshold_path = processed_dir / "threshold.json"
+    threshold_partial = threshold_path.with_suffix(threshold_path.suffix + ".partial")
+    outputs[threshold_path] = threshold_partial
+
+    def _cleanup_partial() -> None:
+        for final_path, partial_path in outputs.items():
+            if partial_path.exists():
+                if on_error == "abort":
+                    partial_path.unlink()
+                else:
+                    if final_path.exists():
+                        final_path.unlink()
+
+    try:
+        if status == "ok" and threshold is not None:
+            labels_path = processed_dir / "scores_with_labels.csv"
+            labels_partial = labels_path.with_suffix(labels_path.suffix + ".partial")
+            outputs[labels_path] = labels_partial
+            df_with_labels = df.copy()
+            labels_iter = apply_threshold_fn(df_with_labels["anomaly_score"].tolist(), threshold)
+            df_with_labels["anomaly_label"] = list(labels_iter)
+            df_with_labels.to_csv(labels_partial, index=False)
+            payload["anomaly_label_applied"] = True
+        else:
+            payload["anomaly_label_applied"] = False
+        with threshold_partial.open("w", encoding="utf-8") as handle:
+            json.dump(payload, handle, ensure_ascii=False, indent=2)
+    except Exception:
+        _cleanup_partial()
+        raise
+    else:
+        for final_path, partial_path in outputs.items():
+            if partial_path.exists():
+                partial_path.replace(final_path)
+
+    return payload
+
+
+def main(config_path: Path, on_error: str = "abort") -> None:
+    run(config_path, on_error=on_error)
 
 
 if __name__ == "__main__":  # pragma: no cover
@@ -55,5 +145,11 @@ if __name__ == "__main__":  # pragma: no cover
         default="trainer/configs/default.yaml",
         help="Path to YAML configuration",
     )
+    parser.add_argument(
+        "--on-error",
+        choices=("abort", "keep-partial"),
+        default="abort",
+        help="Error handling policy for partial outputs",
+    )
     args = parser.parse_args()
-    main(Path(args.config))
+    main(Path(args.config), on_error=args.on_error)
