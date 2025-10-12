@@ -113,6 +113,7 @@ async function writeCsv(
         clip_max_seconds: normalized.clipMaxSeconds,
         robust_scale_epsilon: normalized.robustScaleEpsilon,
         robust_z_clip: normalized.robustZClip,
+        min_samples: normalized.minSamples,
         validate_schema: options.validateSchema,
         ignored_uid_count: featureStats.filteredOut,
         ignore_source: options.ignoreUids ?? null

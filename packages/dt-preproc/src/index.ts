@@ -32,9 +32,74 @@ export interface FeatureOptions {
   clipMaxSeconds: number;
   robustScaleEpsilon: number;
   robustZClip: number;
+  minSamples: number;
 }
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
+
+export interface GroupKey {
+  uid: string;
+  [dimension: string]: string | null | undefined;
+}
+
+export interface FittedStats {
+  global: RobustStats | null;
+  groups: Map<string, RobustStats>;
+}
+
+function keyEntries(key: GroupKey): [string, string][] {
+  const entries: [string, string][] = [];
+  for (const [field, rawValue] of Object.entries(key)) {
+    if (field === 'uid') {
+      if (typeof rawValue === 'string' && rawValue.length > 0) {
+        entries.push([field, rawValue]);
+      }
+      continue;
+    }
+    if (typeof rawValue !== 'string') {
+      continue;
+    }
+    const trimmed = rawValue.trim();
+    if (trimmed.length === 0) {
+      continue;
+    }
+    entries.push([field, trimmed]);
+  }
+
+  entries.sort(([a], [b]) => {
+    if (a === 'uid') {
+      return b === 'uid' ? 0 : -1;
+    }
+    if (b === 'uid') {
+      return 1;
+    }
+    return a.localeCompare(b);
+  });
+
+  return entries;
+}
+
+export function keyStr(key: GroupKey): string {
+  const entries = keyEntries(key);
+  if (entries.length === 0) {
+    return '';
+  }
+  return entries
+    .map(([field, value]) => `${encodeURIComponent(field)}=${encodeURIComponent(value)}`)
+    .join('&');
+}
+
+export function chooseStats(key: GroupKey, fitted: FittedStats): RobustStats | null {
+  const direct = fitted.groups.get(keyStr(key));
+  if (direct) {
+    return direct;
+  }
+  const perUser = fitted.groups.get(keyStr({ uid: key.uid }));
+  if (perUser) {
+    return perUser;
+  }
+  return fitted.global;
+}
 
 export interface RobustStats {
   x_med: number;
@@ -72,7 +137,8 @@ const DEFAULT_FEATURE_OPTIONS: FeatureOptions = {
   epsilonT: 0.05,
   clipMaxSeconds: 300,
   robustScaleEpsilon: 1e-9,
-  robustZClip: 5
+  robustZClip: 5,
+  minSamples: 8
 };
 
 export const DEFAULT_OPTIONS: FeatureOptions = { ...DEFAULT_FEATURE_OPTIONS };
@@ -97,13 +163,18 @@ function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): Normali
   const robustScaleEpsilon = options.robustScaleEpsilon ?? DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon;
   const clipLimitCandidate = options.robustZClip ?? DEFAULT_FEATURE_OPTIONS.robustZClip;
   const robustZClip = clipLimitCandidate > 0 ? clipLimitCandidate : DEFAULT_FEATURE_OPTIONS.robustZClip;
+  const minSamplesCandidate = options.minSamples ?? DEFAULT_FEATURE_OPTIONS.minSamples;
+  const minSamples = Number.isFinite(minSamplesCandidate)
+    ? Math.max(1, Math.floor(minSamplesCandidate))
+    : DEFAULT_FEATURE_OPTIONS.minSamples;
 
   return {
     epsilon,
     epsilonT,
     clipMaxSeconds,
     robustScaleEpsilon: robustScaleEpsilon > 0 ? robustScaleEpsilon : DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon,
-    robustZClip
+    robustZClip,
+    minSamples
   };
 }
 
@@ -226,6 +297,7 @@ export function computeFeatureRows(
 
   const measuredValues: number[] = [];
   const measuredValuesByUser = new Map<string, number[]>();
+  const measuredValuesByGroup = new Map<string, number[]>();
   const featureRows: LogRowWithFeats[] = [];
   const stats: MutableFeatureStats = {
     total: 0,
@@ -286,6 +358,13 @@ export function computeFeatureRows(
         } else {
           measuredValuesByUser.set(baseRow.uid, [clipped]);
         }
+        const groupKey = keyStr({ uid: baseRow.uid, session_id: baseRow.session_id });
+        const perGroup = measuredValuesByGroup.get(groupKey);
+        if (perGroup) {
+          perGroup.push(clipped);
+        } else {
+          measuredValuesByGroup.set(groupKey, [clipped]);
+        }
       }
 
       if (timeLabel === 'measured') {
@@ -337,26 +416,50 @@ export function computeFeatureRows(
       stats.deltaRobustScale = fallbackStats.x_smad;
     }
 
-    const perUserStats = new Map<string, RobustStats>();
+    const fittedGroups = new Map<string, RobustStats>();
+    const minSamples = normalized.minSamples;
+
     for (const [uid, values] of measuredValuesByUser.entries()) {
+      if (values.length < minSamples) {
+        continue;
+      }
       const summary = computeRobustSummary(values);
       if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
-        perUserStats.set(uid, { x_med: summary.x_med, x_smad: summary.x_smad });
+        fittedGroups.set(keyStr({ uid }), { x_med: summary.x_med, x_smad: summary.x_smad });
       } else if (fallbackStats) {
-        perUserStats.set(uid, fallbackStats);
+        fittedGroups.set(keyStr({ uid }), fallbackStats);
       } else if (summary) {
-        perUserStats.set(uid, {
+        fittedGroups.set(keyStr({ uid }), {
           x_med: summary.x_med,
           x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
         });
       }
     }
 
+    for (const [groupKey, values] of measuredValuesByGroup.entries()) {
+      if (values.length < minSamples) {
+        continue;
+      }
+      const summary = computeRobustSummary(values);
+      if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
+        fittedGroups.set(groupKey, { x_med: summary.x_med, x_smad: summary.x_smad });
+      } else if (fallbackStats) {
+        fittedGroups.set(groupKey, fallbackStats);
+      } else if (summary) {
+        fittedGroups.set(groupKey, {
+          x_med: summary.x_med,
+          x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
+        });
+      }
+    }
+
+    const fitted: FittedStats = { global: fallbackStats, groups: fittedGroups };
+
     for (const row of featureRows) {
       if (row.delta_clipped_seconds === null) {
         continue;
       }
-      const statsForUser = perUserStats.get(row.uid) ?? fallbackStats;
+      const statsForUser = chooseStats({ uid: row.uid, session_id: row.session_id }, fitted);
       if (!statsForUser) {
         continue;
       }
