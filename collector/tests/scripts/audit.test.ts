@@ -20,13 +20,54 @@ describe('audit CLI', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'audit-ok-'));
     try {
       const filePath = path.join(dir, '2024-01-01.csv');
-      const header = 'timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category,status_code,latency_ms';
-      const row = '2024-01-01T00:00:00.000Z,uid,session,GET,/health,,agent,127.0.0.1,READ,200,1.23';
-      writeFileSync(filePath, `${header}\n${row}\n`, 'utf8');
+      const metaPath = path.join(dir, 'meta.json');
+      const header = [
+        'timestamp_utc',
+        'uid',
+        'session_id',
+        'method',
+        'path',
+        'referer',
+        'user_agent',
+        'ip',
+        'op_category',
+        'status_code',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+      ].join(',');
+      const rows = [
+        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:01:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+      writeFileSync(
+        metaPath,
+        JSON.stringify(
+          {
+            DeltaT: { 'uid-1': 30 },
+            tau_otsu: { 'uid-1': Math.log(25) },
+            tau_knee: { 'uid-1': Math.log(30) },
+            tau_final: { 'uid-1': Math.log(30) },
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
 
       const result = runAudit(['--dir', dir, '--fail-on-error']);
       expect(result.status).toBe(0);
-      expect(result.stdout).toContain('"findings":0');
+      const summary = JSON.parse(result.stdout.trim().split('\n').pop() ?? '{}');
+      expect(summary.findings).toBe(0);
+      expect(summary.sid_final_transition_checks).toBe(1);
+      expect(summary.per_uid_delta_t['uid-1']).toBeCloseTo(30);
+      expect(summary.method_usage.knee).toBe(1);
+      expect(summary.unknown_time_label_ratio).toBe(0);
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }
@@ -36,14 +77,49 @@ describe('audit CLI', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'audit-bad-'));
     try {
       const filePath = path.join(dir, '2024-01-01.csv');
-      const header = 'timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category,status_code,latency_ms';
-      const row = 'invalid,uid,session,FETCH,/health,,agent,127.0.0.1,UNKNOWN,200,1.23';
-      writeFileSync(filePath, `${header}\n${row}\n`, 'utf8');
+      const metaPath = path.join(dir, 'meta.json');
+      const header = [
+        'timestamp_utc',
+        'uid',
+        'session_id',
+        'method',
+        'path',
+        'referer',
+        'user_agent',
+        'ip',
+        'op_category',
+        'status_code',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+      ].join(',');
+      const rows = [
+        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:00:20.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+      writeFileSync(
+        metaPath,
+        JSON.stringify(
+          {
+            DeltaT: { 'uid-1': 30 },
+            tau_otsu: { 'uid-1': Math.log(30) },
+            tau_knee: { 'uid-1': Math.log(30) },
+            tau_final: { 'uid-1': Math.log(30) },
+          },
+          null,
+          2
+        ),
+        'utf8'
+      );
 
       const result = runAudit(['--dir', dir, '--fail-on-error']);
       expect(result.status).toBe(1);
-      expect(result.stderr).toContain('Invalid HTTP method');
-      expect(result.stderr).toContain('Invalid op_category');
+      expect(result.stderr).toContain('sid_final changed without exceeding ΔT');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

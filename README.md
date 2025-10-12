@@ -200,7 +200,31 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
   --pretty
 ```
 
-### 5.7 Electron GUI（セッション分割サポート）
+### 5.7 セッション分割成果の静的監査
+
+`scripts/audit.ts` は、セッション分割後の CSV と `meta.json` を静的に検証し、Δt と ΔT の整合性を確かめます。
+
+```bash
+pnpm --filter collector run audit -- --dir artifacts/sessions --fail-on-error
+```
+
+- 連続イベントで `sid_final` が変化する際に `Δt` > `ΔT` を満たしているかをチェックし、違反時はエラー終了。
+- `time_label` の unknown 比率（`unknown_time_label_ratio`）、UID ごとの `ΔT`（`per_uid_delta_t`）、Otsu/knee の採用数（`method_usage`）を集計。
+- 出力例:
+
+```json
+{
+  "files": 2,
+  "rows": 6400,
+  "findings": 0,
+  "unknown_time_label_ratio": 0.0125,
+  "per_uid_delta_t": { "uid-1": 45.0 },
+  "method_usage": { "otsu": 6, "knee": 2, "other": 1, "unknown": 0 },
+  "sid_final_transition_checks": 188
+}
+```
+
+### 5.8 Electron GUI（セッション分割サポート）
 
 Electron ベースの GUI から CSV ログのセッション分割・閾値確認・ΔT 上書きを実施できます。
 
