@@ -8,6 +8,7 @@ import {
   type DeltaTimeLabel,
   type ParseCsvOptions
 } from '@logserver/csv-schema';
+import { lburst } from './math.js';
 
 export type LogRow = CsvRow;
 
@@ -15,6 +16,7 @@ export interface LogRowWithFeats extends LogRow {
   delta_seconds: number | null;
   delta_clipped_seconds: number | null;
   delta_robust_z: number | null;
+  delta_log_burst: number | null;
   delta_time_label: DeltaTimeLabel;
   session_sequence: number;
   session_elapsed_seconds: number | null;
@@ -68,6 +70,7 @@ export const DEFAULT_OPTIONS: FeatureOptions = { ...DEFAULT_FEATURE_OPTIONS };
 interface SessionState {
   sequence: number;
   startTime: number | null;
+  prevMeasuredDelta: number | null;
 }
 
 interface MutableFeatureStats extends FeatureStats {}
@@ -115,6 +118,19 @@ function computeSessionElapsed(state: SessionState, timestamp: number | null): n
   return elapsed >= 0 ? elapsed : 0;
 }
 
+function sanitizeDelta(deltaSeconds: number | null): number | null {
+  if (deltaSeconds === null) {
+    return null;
+  }
+  if (!Number.isFinite(deltaSeconds)) {
+    return null;
+  }
+  if (deltaSeconds <= 0) {
+    return 0;
+  }
+  return deltaSeconds;
+}
+
 export function computeFeatureRows(
   rows: readonly LogRow[],
   options: Partial<FeatureOptions> = {}
@@ -150,7 +166,8 @@ export function computeFeatureRows(
       if (!state) {
         state = {
           sequence: 0,
-          startTime: isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null
+          startTime: isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null,
+          prevMeasuredDelta: null
         };
         sessionState.set(sessionId, state);
       } else if (state.startTime === null && isFiniteNumber(baseRow.timestamp_epoch_seconds)) {
@@ -162,10 +179,12 @@ export function computeFeatureRows(
 
       const elapsed = computeSessionElapsed(state, isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null);
 
+      const sanitized = sanitizeDelta(deltaSeconds);
+
       let clipped: number | null = null;
-      if (deltaSeconds !== null) {
-        const sanitized = Math.max(0, deltaSeconds);
-        clipped = Math.min(sanitized, normalized.clipMaxSeconds);
+      if (sanitized !== null) {
+        const bounded = Math.min(sanitized, normalized.clipMaxSeconds);
+        clipped = bounded;
         if (sanitized > normalized.clipMaxSeconds) {
           stats.clipped += 1;
         }
@@ -180,11 +199,22 @@ export function computeFeatureRows(
         stats.initial += 1;
       }
 
+      let logBurst: number | null = null;
+      if (timeLabel === 'measured' && sanitized !== null) {
+        if (state.prevMeasuredDelta !== null && sequence > 0) {
+          logBurst = lburst(state.prevMeasuredDelta, sanitized, normalized.epsilon);
+        }
+        state.prevMeasuredDelta = sequence > 0 ? sanitized : null;
+      } else {
+        state.prevMeasuredDelta = null;
+      }
+
       featureRows.push({
         ...baseRow,
         delta_seconds: deltaSeconds,
         delta_clipped_seconds: clipped,
         delta_robust_z: null,
+        delta_log_burst: logBurst,
         delta_time_label: timeLabel,
         session_sequence: sequence,
         session_elapsed_seconds: elapsed,
@@ -250,3 +280,4 @@ export async function loadLogRowsWithFeatures(
 }
 
 export { DEFAULT_FEATURE_OPTIONS };
+export { lburst } from './math.js';
