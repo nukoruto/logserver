@@ -1,13 +1,20 @@
-'use strict';
+import type { SimulationEvent, SimulationEventMetadata } from '../services/simulationService';
 
-const MARK_FIELD_CANDIDATES = ['_anomalyType', 'anomalyType', 'anomaly_type'];
-const MARK_TYPE_MAP = {
+export type LabeledEvent = SimulationEvent & {
+  anomaly: boolean;
+  anomalyLabel: number;
+  anomaly_type: string;
+  metadata: SimulationEventMetadata;
+};
+
+const MARK_FIELD_CANDIDATES = ['_anomalyType', 'anomalyType', 'anomaly_type'] as const;
+const MARK_TYPE_MAP: Record<string, string> = {
   authenticationbypass: 'auth_failure',
-  'auth_failure': 'auth_failure',
+  auth_failure: 'auth_failure',
   protocolviolation: 'protocol_violation',
-  'protocol_violation': 'protocol_violation',
+  protocol_violation: 'protocol_violation',
   timedeviation: 'time_deviation',
-  'time_deviation': 'time_deviation',
+  time_deviation: 'time_deviation',
 };
 
 const AUTH_REASON_CODES = new Set([
@@ -24,13 +31,13 @@ const AUTH_REASON_CODES = new Set([
 
 const AUTH_STATUS_VALUES = new Set(['invalid', 'revoked', 'expired', 'unauthorized', 'forbidden']);
 
-const PRIORITY_ORDER = {
+const PRIORITY_ORDER: Record<string, number> = {
   auth_failure: 1,
   protocol_violation: 2,
   time_deviation: 3,
 };
 
-const normalizeString = (value) => {
+const normalizeString = (value: unknown): string | null => {
   if (typeof value !== 'string') {
     return null;
   }
@@ -38,12 +45,12 @@ const normalizeString = (value) => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
-const normalizeLower = (value) => {
+const normalizeLower = (value: unknown): string | null => {
   const normalized = normalizeString(value);
   return normalized ? normalized.toLowerCase() : null;
 };
 
-const resolveMarkLabel = (event) => {
+const resolveMarkLabel = (event: SimulationEvent | null | undefined): string | null => {
   if (!event || typeof event !== 'object') {
     return null;
   }
@@ -62,7 +69,7 @@ const resolveMarkLabel = (event) => {
   return null;
 };
 
-const collectProtocolReasons = (event) => {
+const collectProtocolReasons = (event: SimulationEvent | null | undefined): string[] => {
   if (!event || typeof event !== 'object') {
     return [];
   }
@@ -71,10 +78,10 @@ const collectProtocolReasons = (event) => {
     : [];
   return reasons
     .map((reason) => normalizeLower(reason))
-    .filter((reason) => typeof reason === 'string' && reason.length > 0);
+    .filter((reason): reason is string => typeof reason === 'string' && reason.length > 0);
 };
 
-const hasAuthFailureIndicator = (event, reasons) => {
+const hasAuthFailureIndicator = (event: SimulationEvent | null | undefined, reasons: readonly string[]): boolean => {
   if (reasons.some((reason) => AUTH_REASON_CODES.has(reason))) {
     return true;
   }
@@ -82,7 +89,7 @@ const hasAuthFailureIndicator = (event, reasons) => {
   if (event && typeof event === 'object') {
     const anomalyDetails = event._anomalyDetails;
     if (anomalyDetails && typeof anomalyDetails === 'object') {
-      const detailReason = normalizeLower(anomalyDetails.reason);
+      const detailReason = normalizeLower((anomalyDetails as Record<string, unknown>).reason);
       if (detailReason && AUTH_REASON_CODES.has(detailReason)) {
         return true;
       }
@@ -90,13 +97,13 @@ const hasAuthFailureIndicator = (event, reasons) => {
 
     const metadata = event.metadata;
     if (metadata && typeof metadata === 'object' && !Array.isArray(metadata)) {
-      const authInfo = metadata.auth;
+      const authInfo = (metadata as Record<string, unknown>).auth;
       if (authInfo && typeof authInfo === 'object' && !Array.isArray(authInfo)) {
-        const status = normalizeLower(authInfo.status);
+        const status = normalizeLower((authInfo as Record<string, unknown>).status);
         if (status && AUTH_STATUS_VALUES.has(status)) {
           return true;
         }
-        const authReason = normalizeLower(authInfo.reason);
+        const authReason = normalizeLower((authInfo as Record<string, unknown>).reason);
         if (authReason && AUTH_REASON_CODES.has(authReason)) {
           return true;
         }
@@ -111,9 +118,9 @@ const hasAuthFailureIndicator = (event, reasons) => {
   return false;
 };
 
-const determineLabel = (event) => {
-  const candidates = [];
-  const pushCandidate = (label) => {
+const determineLabel = (event: SimulationEvent | null | undefined): string => {
+  const candidates: string[] = [];
+  const pushCandidate = (label: string | null) => {
     if (!label) {
       return;
     }
@@ -158,39 +165,40 @@ const determineLabel = (event) => {
   return selected;
 };
 
-const cloneMetadata = (metadata) => {
+const cloneMetadata = (metadata: SimulationEventMetadata | undefined): SimulationEventMetadata => {
   if (!metadata || typeof metadata !== 'object' || Array.isArray(metadata)) {
     return {};
   }
   return { ...metadata };
 };
 
-const labelSequence = (sequence) => {
+export const labelSequence = (sequence: readonly SimulationEvent[]): LabeledEvent[] => {
   if (!Array.isArray(sequence)) {
     return [];
   }
 
   return sequence.map((event) => {
-    const label = determineLabel(event || {});
+    const baseEvent = event ?? {};
+    const label = determineLabel(baseEvent);
     const anomalyFlag = label !== 'normal';
-    const metadata = cloneMetadata(event && event.metadata);
+    const metadata = cloneMetadata((baseEvent as SimulationEvent).metadata);
     metadata.anomaly = label;
 
-    const base = event && typeof event === 'object' ? event : {};
-
-    const derivedAnomaly = base.anomaly === true || anomalyFlag;
+    const derivedAnomaly = baseEvent.anomaly === true || anomalyFlag;
     const anomalyLabel = derivedAnomaly ? 1 : 0;
 
     return {
-      ...base,
+      ...(baseEvent as Record<string, unknown>),
       anomaly: derivedAnomaly,
       anomalyLabel,
       anomaly_type: label,
       metadata,
-    };
+    } as LabeledEvent;
   });
 };
 
-module.exports = {
+const labeler = {
   labelSequence,
 };
+
+export default labeler;

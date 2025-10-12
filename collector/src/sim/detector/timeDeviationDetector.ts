@@ -1,49 +1,69 @@
-'use strict';
+import type { SimulationEvent } from '../../services/simulationService';
 
-const DEFAULT_OPTIONS = {
+export interface TimeDeviationOptions extends Record<string, unknown> {
+  method?: 'quantile' | 'fixed' | 'spot' | string;
+  quantile?: number;
+  minSamples?: number;
+  fallbackThresholdSeconds?: number | string | null;
+  thresholdSeconds?: number | string | null;
+  baselineSequence?: readonly SimulationEvent[];
+}
+
+export interface TimeDeviationEvent extends SimulationEvent {
+  timeDeviationObservedDeltaSeconds?: number;
+  timeDeviationThresholdSeconds?: number;
+  timeDeviationScore?: number;
+  timeDeviationFlag?: boolean;
+}
+
+const DEFAULT_OPTIONS: Required<Pick<TimeDeviationOptions, 'method' | 'quantile' | 'minSamples' | 'fallbackThresholdSeconds'>> = {
   method: 'quantile',
   quantile: 0.99,
   minSamples: 5,
   fallbackThresholdSeconds: null,
 };
 
-const isFiniteNumber = (value) => Number.isFinite(value);
+const isFiniteNumber = (value: unknown): value is number =>
+  typeof value === 'number' && Number.isFinite(value);
 
-const parseTimestamp = (value) => {
+const parseTimestamp = (value: unknown): Date | null => {
   if (!value) {
     return null;
   }
-  const date = value instanceof Date ? value : new Date(value);
+  const date = value instanceof Date ? value : new Date(value as string);
   if (Number.isNaN(date.getTime())) {
     return null;
   }
   return date;
 };
 
-const resolveDeltaSeconds = (current, previous) => {
+const resolveDeltaSeconds = (
+  current: SimulationEvent | null | undefined,
+  previous: SimulationEvent | null | undefined,
+): number | null => {
   if (!current) {
     return null;
   }
-  const declared = Number(current.deltaSeconds);
+  const declared = Number((current as Record<string, unknown>).deltaSeconds);
   if (isFiniteNumber(declared) && declared >= 0) {
     return declared;
   }
   if (!previous) {
     return null;
   }
-  const currentTimestamp = parseTimestamp(current.timestamp);
-  const previousTimestamp = parseTimestamp(previous.timestamp);
+  const currentTimestamp = parseTimestamp((current as Record<string, unknown>).timestamp);
+  const previousTimestamp = parseTimestamp((previous as Record<string, unknown>).timestamp);
   if (currentTimestamp && previousTimestamp) {
     return Math.max(0, (currentTimestamp.getTime() - previousTimestamp.getTime()) / 1000);
   }
   return null;
 };
 
-const extractDeltaSeries = (sequence) => {
+export const extractDeltaSeries = (sequence: readonly SimulationEvent[]): number[] => {
   if (!Array.isArray(sequence)) {
     return [];
   }
-  const deltas = [];
+  const deltas: number[] = [];
   for (let index = 1; index < sequence.length; index += 1) {
     const delta = resolveDeltaSeconds(sequence[index], sequence[index - 1]);
     if (isFiniteNumber(delta)) {
@@ -53,9 +73,9 @@ const extractDeltaSeries = (sequence) => {
   return deltas;
 };
 
-const computeQuantile = (values, quantile) => {
+const computeQuantile = (values: readonly number[], quantile: number): number => {
   if (!Array.isArray(values) || values.length === 0) {
-    return NaN;
+    return Number.NaN;
   }
   const clampedQuantile = Math.min(Math.max(quantile, 0), 1);
   const sorted = [...values].sort((a, b) => a - b);
@@ -72,14 +92,18 @@ const computeQuantile = (values, quantile) => {
   return sorted[lowerIndex] * (1 - weight) + sorted[upperIndex] * weight;
 };
 
-const resolveThreshold = (values, options) => {
+export const resolveThreshold = (
+  values: readonly number[],
+  options: TimeDeviationOptions,
+): number => {
   if (!Array.isArray(values) || values.length === 0) {
-    return NaN;
+    return Number.NaN;
   }
-  const method = typeof options.method === 'string' ? options.method.toLowerCase() : DEFAULT_OPTIONS.method;
+  const methodRaw = options.method;
+  const method = typeof methodRaw === 'string' ? methodRaw.toLowerCase() : DEFAULT_OPTIONS.method;
   if (method === 'fixed') {
     const fixed = Number(options.thresholdSeconds);
-    return isFiniteNumber(fixed) ? fixed : NaN;
+    return isFiniteNumber(fixed) ? fixed : Number.NaN;
   }
   if (method === 'spot') {
     // TODO: Implement SPOT (Peaks Over Threshold) method.
@@ -90,23 +114,28 @@ const resolveThreshold = (values, options) => {
   return computeQuantile(values, targetQuantile);
 };
 
-const detectTimeDeviation = (sequence, options = {}) => {
+export const detectTimeDeviation = (
+  sequence: readonly SimulationEvent[],
+  options: TimeDeviationOptions = {},
+): TimeDeviationEvent[] => {
   if (!Array.isArray(sequence)) {
     return [];
   }
 
-  const mergedOptions = {
+  const mergedOptions: TimeDeviationOptions = {
     ...DEFAULT_OPTIONS,
     ...options,
   };
 
-  const baselineSource = Array.isArray(mergedOptions.baselineSequence) ? mergedOptions.baselineSequence : sequence;
+  const baselineSource = Array.isArray(mergedOptions.baselineSequence)
+    ? mergedOptions.baselineSequence
+    : sequence;
   const baselineDeltas = extractDeltaSeries(baselineSource).filter((value) => isFiniteNumber(value));
-  const minSamples = Number.isInteger(mergedOptions.minSamples) && mergedOptions.minSamples > 0
-    ? mergedOptions.minSamples
+  const minSamples = Number.isInteger(mergedOptions.minSamples) && (mergedOptions.minSamples as number) > 0
+    ? (mergedOptions.minSamples as number)
     : DEFAULT_OPTIONS.minSamples;
 
-  let threshold = NaN;
+  let threshold = Number.NaN;
   if (baselineDeltas.length >= minSamples) {
     threshold = resolveThreshold(baselineDeltas, mergedOptions);
   } else {
@@ -137,15 +166,15 @@ const detectTimeDeviation = (sequence, options = {}) => {
     threshold = 0;
   }
 
-  const decorated = [];
+  const decorated: TimeDeviationEvent[] = [];
   for (let index = 0; index < sequence.length; index += 1) {
-    const current = sequence[index];
-    const previous = index > 0 ? sequence[index - 1] : null;
+    const current = sequence[index] ?? null;
+    const previous = index > 0 ? sequence[index - 1] ?? null : null;
     const observedDelta = index === 0 ? 0 : resolveDeltaSeconds(current, previous);
     const safeDelta = isFiniteNumber(observedDelta) ? observedDelta : 0;
     const score = Math.max(0, safeDelta - threshold);
     decorated.push({
-      ...current,
+      ...(current as Record<string, unknown>),
       timeDeviationObservedDeltaSeconds: safeDelta,
       timeDeviationThresholdSeconds: threshold,
       timeDeviationScore: score,
@@ -156,8 +185,10 @@ const detectTimeDeviation = (sequence, options = {}) => {
   return decorated;
 };
 
-module.exports = {
+const timeDeviationDetector = {
   detectTimeDeviation,
   extractDeltaSeries,
   resolveThreshold,
 };
+
+export default timeDeviationDetector;

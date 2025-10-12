@@ -15,7 +15,7 @@ describe('checkNtpOffset', () => {
   });
 
   it('parses chronyc tracking output', async () => {
-    execFileMock.mockImplementation((command: string, _args: string[], callback: (...args: unknown[]) => void) => {
+    execFileMock.mockImplementation((_command: string, _args: string[], callback: (...args: unknown[]) => void) => {
       if (typeof callback === 'function') {
         callback(null, 'Last offset     : -0.000123 seconds\nRMS offset      : 0.000200 seconds\n', '');
       }
@@ -28,7 +28,7 @@ describe('checkNtpOffset', () => {
   });
 
   it('falls back to ntpstat when chronyc is unavailable', async () => {
-    execFileMock.mockImplementationOnce((command: string, _args: string[], callback: (...args: unknown[]) => void) => {
+    execFileMock.mockImplementationOnce((_command: string, _args: string[], callback: (...args: unknown[]) => void) => {
       if (typeof callback === 'function') {
         const error = Object.assign(new Error('not found'), { code: 'ENOENT' });
         callback(error, '', '');
@@ -36,7 +36,7 @@ describe('checkNtpOffset', () => {
       return {};
     });
 
-    execFileMock.mockImplementationOnce((command: string, _args: string[], callback: (...args: unknown[]) => void) => {
+    execFileMock.mockImplementationOnce((_command: string, _args: string[], callback: (...args: unknown[]) => void) => {
       if (typeof callback === 'function') {
         callback(null, 'synchronised to NTP server (10.0.0.1) at stratum 2\ntime correct to within 42 ms\n', '');
       }
@@ -50,7 +50,7 @@ describe('checkNtpOffset', () => {
   });
 
   it('throws when neither command yields an offset', async () => {
-    execFileMock.mockImplementation((command: string, _args: string[], callback: (...args: unknown[]) => void) => {
+    execFileMock.mockImplementation((_command: string, _args: string[], callback: (...args: unknown[]) => void) => {
       if (typeof callback === 'function') {
         callback(null, 'unsynchronised\n', '');
       }

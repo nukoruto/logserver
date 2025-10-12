@@ -1,4 +1,6 @@
-const { start } = require('./src/app');
+require('ts-node/register/transpile-only');
+
+const { start } = require('./src/app.ts');
 const logger = require('./src/utils/logger');
 
 start().catch((error) => {
