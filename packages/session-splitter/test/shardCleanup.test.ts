@@ -6,7 +6,20 @@ import path from 'node:path';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
-function makeRow(uid, delta, index) {
+type ShardRow = {
+  algo_ver: typeof algoVersion;
+  uid: string;
+  generatedSessionId: string;
+  sessionSequence: number;
+  sessionIndex: number;
+  timestampUtc: string;
+  deltaSeconds: number | null;
+  idleTimeoutSeconds: number;
+  splitReason: 'continuous';
+  original: Record<string, unknown>;
+};
+
+function makeRow(uid: string, delta: number | null, index: number): ShardRow {
   return {
     algo_ver: algoVersion,
     uid,
@@ -24,7 +37,7 @@ function makeRow(uid, delta, index) {
 test('temporary shards are removed after estimation', async () => {
   const baseDir = await mkdtemp(path.join(os.tmpdir(), 'session-shard-test-'));
   try {
-    const rows = [];
+    const rows: ShardRow[] = [];
     for (let i = 0; i < 3; i += 1) {
       const uid = `user-${i}`;
       for (let j = 0; j < 32; j += 1) {

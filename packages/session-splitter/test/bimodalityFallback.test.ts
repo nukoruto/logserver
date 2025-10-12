@@ -12,12 +12,25 @@ import {
   deriveDatasetKey
 } from '../dist/index.js';
 
-function buildUnimodalDeltas(count) {
+type SessionRow = {
+  algo_ver: typeof algoVersion;
+  uid: string;
+  generatedSessionId: string;
+  sessionSequence: number;
+  sessionIndex: number;
+  timestampUtc: string;
+  deltaSeconds: number | null;
+  idleTimeoutSeconds: number;
+  splitReason: 'continuous';
+  original: Record<string, unknown>;
+};
+
+function buildUnimodalDeltas(count: number): number[] {
   const values = Array.from({ length: count }, (_, index) => 1 + (index % 5) * 1e-4);
   return values.sort((a, b) => a - b);
 }
 
-function percentile(sortedValues, fraction) {
+function percentile(sortedValues: readonly number[], fraction: number): number {
   if (sortedValues.length === 0) {
     return 0;
   }
@@ -37,7 +50,7 @@ test('unimodal distributions fall back to knee threshold', async () => {
   const datasetKey = deriveDatasetKey('c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=');
   const sessionStartEpoch = Math.trunc(Date.parse('2024-01-01T00:00:00.000Z') / 1000);
   const sid = makeSid('user-1', sessionStartEpoch, algoVersion, datasetKey);
-  const rows = deltas.map((delta, index) => ({
+  const rows = deltas.map<SessionRow>((delta, index) => ({
     algo_ver: algoVersion,
     uid: 'user-1',
     generatedSessionId: sid,

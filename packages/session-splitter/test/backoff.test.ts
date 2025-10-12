@@ -3,7 +3,25 @@ import assert from 'node:assert/strict';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
-function makeRow(uid, deltaSeconds, userAgentType, index = 0) {
+type BackoffTestRow = {
+  algo_ver: typeof algoVersion;
+  uid: string;
+  generatedSessionId: string;
+  sessionSequence: number;
+  sessionIndex: number;
+  timestampUtc: string;
+  deltaSeconds: number | null;
+  idleTimeoutSeconds: number;
+  splitReason: 'continuous';
+  original: { user_agent_type?: string | null };
+};
+
+function makeRow(
+  uid: string,
+  deltaSeconds: number | null,
+  userAgentType: string | null,
+  index = 0
+): BackoffTestRow {
   return {
     algo_ver: algoVersion,
     uid,
@@ -19,7 +37,7 @@ function makeRow(uid, deltaSeconds, userAgentType, index = 0) {
 }
 
 test('hierarchical backoff provides stable thresholds for sparse users', async () => {
-  const rows = [];
+  const rows: BackoffTestRow[] = [];
 
   for (let i = 0; i < 100; i += 1) {
     rows.push(makeRow('rich-desktop', 5, 'desktop', i));

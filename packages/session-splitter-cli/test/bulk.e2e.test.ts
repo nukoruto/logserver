@@ -1,6 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
+import type { SpawnOptionsWithoutStdio } from 'node:child_process';
 import { promises as fs } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
@@ -12,27 +13,42 @@ const PACKAGE_ROOT = path.resolve(fileURLToPath(new URL('..', import.meta.url)))
 const DIST_CLI_PATH = path.join(PACKAGE_ROOT, 'dist', 'bulk.js');
 const FIXTURE_DIR = path.join(PACKAGE_ROOT, 'test', 'fixtures');
 
-async function runCli(args, options = {}) {
+interface CliResult {
+  code: number;
+  stdout: string;
+  stderr: string;
+}
+
+async function runCli(
+  args: readonly string[],
+  options: SpawnOptionsWithoutStdio = {}
+): Promise<CliResult> {
   const child = spawn(process.execPath, [DIST_CLI_PATH, ...args], {
     stdio: ['ignore', 'pipe', 'pipe'],
     env: { ...process.env, JWT_HMAC_KEY: FIXTURE_JWT_KEY },
     ...options
   });
+
+  if (!child.stdout || !child.stderr) {
+    throw new Error('Expected stdout and stderr streams');
+  }
+
   let stdout = '';
   let stderr = '';
   child.stdout.setEncoding('utf8');
   child.stderr.setEncoding('utf8');
-  child.stdout.on('data', (chunk) => {
+  child.stdout.on('data', (chunk: string) => {
     stdout += chunk;
   });
-  child.stderr.on('data', (chunk) => {
+  child.stderr.on('data', (chunk: string) => {
     stderr += chunk;
   });
-  const [code] = await once(child, 'exit');
-  return { code, stdout, stderr };
+
+  const [code] = (await once(child, 'exit')) as [number | null, NodeJS.Signals | null];
+  return { code: code ?? -1, stdout, stderr };
 }
 
-test('split-sessions CLI produces golden CSV and meta', async (t) => {
+test('split-sessions CLI produces golden CSV and meta', async () => {
   const tmpDir = await fs.mkdtemp(path.join(tmpdir(), 'split-cli-'));
   const inputPath = path.join(tmpDir, 'logs.csv');
   const outputPath = path.join(tmpDir, 'logs_session.csv');

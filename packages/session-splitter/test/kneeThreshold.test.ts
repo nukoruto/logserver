@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 
 import { kneeThreshold, makeLogHistogram, otsuThreshold } from '../dist/index.js';
 
-function computeSigmaLog(values) {
+function computeSigmaLog(values: readonly number[]): number {
   const logValues = values.map((value) => Math.log(value));
   const mean = logValues.reduce((acc, value) => acc + value, 0) / logValues.length;
   const variance = logValues.reduce((acc, value) => acc + (value - mean) ** 2, 0) / logValues.length;

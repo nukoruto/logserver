@@ -5,7 +5,7 @@ import { makeSid, deriveDatasetKey, algoVersion } from '../dist/index.js';
 
 const FIXTURE_JWT_KEY = 'c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=';
 
-function epochSeconds(timestampUtc) {
+function epochSeconds(timestampUtc: string): number {
   return Math.trunc(Date.parse(timestampUtc) / 1000);
 }
 
