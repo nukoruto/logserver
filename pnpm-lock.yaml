@@ -75,6 +75,9 @@ importers:
       '@types/node':
         specifier: ^20.12.7
         version: 20.19.21
+      tsx:
+        specifier: ^4.7.1
+        version: 4.20.6
       typescript:
         specifier: ^5.4.5
         version: 5.9.3

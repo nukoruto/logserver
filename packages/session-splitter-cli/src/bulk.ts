@@ -301,6 +301,9 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
   const bimodality = toSortedRecord(
     perUserEntries.map(([uid, detail]) => [uid, detail.bimodality_test] as [string, number | null])
   );
+  const backoffLevel = toSortedRecord(
+    perUserEntries.map(([uid, detail]) => [uid, detail.backoff_level] as [string, string])
+  );
 
   await fsPromises.mkdir(path.dirname(cliOptions.meta), { recursive: true });
   const kid = cliOptions.kid ?? createHash('sha256').update(splitOptions.datasetKey!).digest('hex').slice(0, 32);
@@ -315,6 +318,7 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
     tau_final: tauFinal,
     DeltaT: deltaT,
     bimodality_test: bimodality,
+    backoff_level: backoffLevel,
     k: thresholdsResult.k,
     scan_step: thresholdsResult.scan_step,
     hkdf_info: HKDF_INFO_BASE64,

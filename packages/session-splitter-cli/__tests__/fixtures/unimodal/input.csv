@@ -1,0 +1,8 @@
+timestamp_utc,uid,event,status,path
+2024-02-01T00:00:00Z,unimodal-1,login,200,/login
+2024-02-01T00:10:00Z,unimodal-1,view,200,/dashboard
+2024-02-01T00:20:00Z,unimodal-1,edit,200,/edit
+2024-02-01T00:30:00Z,unimodal-1,logout,200,/logout
+2024-02-01T01:00:00Z,unimodal-2,login,200,/login
+2024-02-01T01:10:00Z,unimodal-2,view,200,/reports
+2024-02-01T01:20:00Z,unimodal-2,logout,200,/logout

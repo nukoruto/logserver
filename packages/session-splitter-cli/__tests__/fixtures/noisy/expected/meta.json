@@ -1,0 +1,43 @@
+{
+  "algo_ver": "otsu+kneedle-v1",
+  "epsilon": 0.001,
+  "ntp_p95_ms": 0,
+  "ingress_jitter_ms": 0,
+  "fd_bins": {
+    "noisy-1": 32,
+    "noisy-2": 1
+  },
+  "tau_otsu": {
+    "noisy-1": 3.70801521485805,
+    "noisy-2": 2.995732273553991
+  },
+  "tau_knee": {
+    "noisy-1": 6.058050201102199,
+    "noisy-2": 2.995732273553991
+  },
+  "tau_final": {
+    "noisy-1": 7.033065469947583,
+    "noisy-2": 2.995732273553991
+  },
+  "DeltaT": {
+    "noisy-1": 1133.4999999999993,
+    "noisy-2": 20
+  },
+  "bimodality_test": {
+    "noisy-1": -1.9730989811029787,
+    "noisy-2": null
+  },
+  "backoff_level": {
+    "noisy-1": "user",
+    "noisy-2": "user"
+  },
+  "k": 2,
+  "scan_step": 0.05,
+  "hkdf_info": "c2lk",
+  "kid": "SCN-NOISY",
+  "thresholds_by_uid": {
+    "noisy-1": 1133.4999999999993,
+    "noisy-2": 20
+  },
+  "dataset_hash": "a18b3eae0f88e78818b90e4382c810f02315b32fae4cbfee9b0b0461e844486a"
+}

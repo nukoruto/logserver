@@ -7,8 +7,10 @@
     "split-sessions": "dist/bulk.js"
   },
   "scripts": {
+    "prebuild": "pnpm --filter @logserver/session-splitter run build",
     "build": "tsc -p tsconfig.json",
-    "test": "pnpm run build && node --test"
+    "test": "pnpm run build && pnpm run test:e2e",
+    "test:e2e": "tsx --test __tests__/e2e/*.spec.ts"
   },
   "dependencies": {
     "@logserver/session-splitter": "workspace:*",
@@ -16,6 +18,7 @@
   },
   "devDependencies": {
     "@types/node": "^20.12.7",
+    "tsx": "^4.7.1",
     "typescript": "^5.4.5"
   }
 }

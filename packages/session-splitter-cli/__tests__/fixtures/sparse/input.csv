@@ -1,0 +1,5 @@
+timestamp_utc,uid,event,status,path
+2024-02-01T00:00:00Z,sparse-1,login,200,/login
+2024-02-05T00:00:00Z,sparse-1,logout,200,/logout
+2024-02-01T12:00:00Z,sparse-2,login,200,/login
+2024-02-01T12:05:00Z,sparse-2,logout,200,/logout

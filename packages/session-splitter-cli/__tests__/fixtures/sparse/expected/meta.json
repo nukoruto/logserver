@@ -1,0 +1,35 @@
+{
+  "algo_ver": "otsu+kneedle-v1",
+  "epsilon": 0.001,
+  "ntp_p95_ms": 0,
+  "ingress_jitter_ms": 0,
+  "fd_bins": {
+    "sparse-2": 1
+  },
+  "tau_otsu": {
+    "sparse-2": 5.703782474656201
+  },
+  "tau_knee": {
+    "sparse-2": 5.703782474656201
+  },
+  "tau_final": {
+    "sparse-2": 5.703782474656201
+  },
+  "DeltaT": {
+    "sparse-2": 300
+  },
+  "bimodality_test": {
+    "sparse-2": null
+  },
+  "backoff_level": {
+    "sparse-2": "user"
+  },
+  "k": 2,
+  "scan_step": 0.05,
+  "hkdf_info": "c2lk",
+  "kid": "SCN-SPARSE",
+  "thresholds_by_uid": {
+    "sparse-2": 300
+  },
+  "dataset_hash": "a97c9edf2f46ddfe6db18ed4b91a790cb4c1c560cc4348f521c08d8caaa7a3ed"
+}

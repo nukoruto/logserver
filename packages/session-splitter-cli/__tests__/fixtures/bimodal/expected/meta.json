@@ -1,0 +1,43 @@
+{
+  "algo_ver": "otsu+kneedle-v1",
+  "epsilon": 0.001,
+  "ntp_p95_ms": 0,
+  "ingress_jitter_ms": 0,
+  "fd_bins": {
+    "bimodal-1": 1,
+    "bimodal-2": 1
+  },
+  "tau_otsu": {
+    "bimodal-1": 4.0943445622221,
+    "bimodal-2": 6.396929655216146
+  },
+  "tau_knee": {
+    "bimodal-1": 4.0943445622221,
+    "bimodal-2": 6.396929655216146
+  },
+  "tau_final": {
+    "bimodal-1": 4.0943445622221,
+    "bimodal-2": 6.396929655216146
+  },
+  "DeltaT": {
+    "bimodal-1": 60,
+    "bimodal-2": 600
+  },
+  "bimodality_test": {
+    "bimodal-1": null,
+    "bimodal-2": null
+  },
+  "backoff_level": {
+    "bimodal-1": "user",
+    "bimodal-2": "user"
+  },
+  "k": 2,
+  "scan_step": 0.05,
+  "hkdf_info": "c2lk",
+  "kid": "SCN-BIMODAL",
+  "thresholds_by_uid": {
+    "bimodal-1": 60,
+    "bimodal-2": 600
+  },
+  "dataset_hash": "b4d7dc44fcf6fcc4ca8f0c7580d03e58276849da9b46b234384dc102283707f5"
+}
