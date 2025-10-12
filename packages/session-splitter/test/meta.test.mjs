@@ -85,6 +85,7 @@ test('writeMeta outputs schema-compliant JSON with dataset hash', async () => {
     tau_final: { 'user-1': 0.55 },
     DeltaT: { 'user-1': 13.2 },
     bimodality_test: { 'user-1': -1.2 },
+    backoff_level: { 'user-1': 'user' },
     k: 2,
     scan_step: 0.05,
     hkdf_info: 'c2lk',
@@ -112,6 +113,7 @@ test('writeMeta outputs schema-compliant JSON with dataset hash', async () => {
       'tau_final',
       'DeltaT',
       'bimodality_test',
+      'backoff_level',
       'k',
       'scan_step',
       'hkdf_info',
@@ -170,6 +172,13 @@ test('writeMeta outputs schema-compliant JSON with dataset hash', async () => {
         additionalProperties: false,
         patternProperties: {
           '.*': { type: ['number', 'null'] }
+        }
+      },
+      backoff_level: {
+        type: 'object',
+        additionalProperties: false,
+        patternProperties: {
+          '.*': { type: 'string' }
         }
       },
       thresholds_by_uid: {
