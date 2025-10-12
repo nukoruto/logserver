@@ -84,7 +84,10 @@ const runCommand = async (command: string, args: readonly string[]): Promise<str
   return stdout;
 };
 
-export const checkNtpOffset = async (): Promise<number> => {
+/**
+ * Returns the absolute NTP offset in milliseconds.
+ */
+export async function checkNtpOffset(): Promise<number> {
   const errors: string[] = [];
 
   try {
@@ -112,6 +115,6 @@ export const checkNtpOffset = async (): Promise<number> => {
   }
 
   throw new Error(`Unable to determine NTP offset (${errors.join('; ')})`);
-};
+}
 
 export default checkNtpOffset;
