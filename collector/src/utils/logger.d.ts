@@ -1,9 +1,17 @@
-import type { Logger } from 'winston';
+import type { LeveledLogMethod, Logger } from 'winston';
 
-declare const logger: Logger & {
-  stream: {
-    write(message: string): void;
-  };
+export type LoggerStream = {
+  write(message: string): void;
 };
 
-export = logger;
+export interface LoggerWithStream extends Logger {
+  http: LeveledLogMethod;
+  stream: LoggerStream;
+}
+
+declare const logger: LoggerWithStream;
+
+declare const loggerStream: LoggerStream;
+
+export { loggerStream };
+export default logger;

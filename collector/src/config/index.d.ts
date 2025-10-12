@@ -1,26 +1,26 @@
-type Rotation = 'daily' | 'hourly';
+export type Rotation = 'daily' | 'hourly';
 
-type SecurityConfig = {
+export interface SecurityConfig {
   jwtHmacKey: string;
   kid: string;
-};
+}
 
-type AuthConfig = {
+export interface AuthConfig {
   required: boolean;
   audience?: string;
   issuer?: string;
-};
+}
 
-type CorsConfig = {
+export interface CorsConfig {
   allowedOrigins: string[];
-};
+}
 
-type PaginationConfig = {
+export interface PaginationConfig {
   defaultLimit: number;
   maxLimit: number;
-};
+}
 
-type AppConfig = {
+export interface AppConfig {
   env: string;
   port: number;
   requestLimit: string;
@@ -33,9 +33,8 @@ type AppConfig = {
   auth: AuthConfig;
   cors: CorsConfig;
   pagination: PaginationConfig;
-};
+}
 
 declare const config: AppConfig;
 
-export type { AppConfig, AuthConfig, CorsConfig, PaginationConfig, Rotation, SecurityConfig };
-export = config;
+export default config;

@@ -1,8 +1,19 @@
 import { z } from 'zod';
 
-const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
-const OPERATION_CATEGORIES = ['AUTH', 'READ', 'UPDATE'] as const;
-const DEFAULT_OPERATION_CATEGORY: (typeof OPERATION_CATEGORIES)[number] = 'READ';
+export const HTTP_METHODS = ['GET', 'POST', 'PUT', 'DELETE'] as const;
+export const OPERATION_CATEGORIES = ['AUTH', 'READ', 'UPDATE'] as const;
+export const DEFAULT_OPERATION_CATEGORY = 'READ';
+
+type OptionalIssueKey =
+  | 'expected'
+  | 'received'
+  | 'minimum'
+  | 'maximum'
+  | 'inclusive'
+  | 'exact'
+  | 'type'
+  | 'options'
+  | 'input';
 
 const blankableString = z
   .union([z.string(), z.undefined(), z.null()])
@@ -14,92 +25,83 @@ const blankableString = z
   });
 
 const statusCodeSchema = z
-  .number()
+  .number({ invalid_type_error: 'status_code must be a number' })
   .int('status_code must be an integer')
   .min(100, 'status_code must be between 100 and 599')
   .max(599, 'status_code must be between 100 and 599');
 
-const latencySchema = z.number().finite('latency_ms must be finite').min(0, 'latency_ms must be greater than or equal to 0');
+const latencySchema = z
+  .number({ invalid_type_error: 'latency_ms must be a number' })
+  .finite('latency_ms must be finite')
+  .min(0, 'latency_ms must be greater than or equal to 0');
 
-const logRecordSchema = z.object({
+export const logRecordSchema = z.object({
   timestamp_utc: z.string().datetime({ offset: true, message: 'timestamp_utc must be RFC 3339' }),
-  method: z.enum(HTTP_METHODS),
+  method: z.enum(HTTP_METHODS, {
+    invalid_type_error: 'method must be a string',
+    required_error: 'method is required',
+  }),
   path: blankableString,
   referer: blankableString,
   user_agent: blankableString,
   uid: blankableString,
   session_id: blankableString,
   ip: blankableString,
-  op_category: z.enum(OPERATION_CATEGORIES),
+  op_category: z.enum(OPERATION_CATEGORIES, {
+    invalid_type_error: 'op_category must be a string',
+    required_error: 'op_category is required',
+  }),
   status_code: statusCodeSchema.optional(),
   latency_ms: latencySchema.optional(),
 });
 
-type LogRecord = z.infer<typeof logRecordSchema>;
+export type LogRecord = z.infer<typeof logRecordSchema>;
 
-type ValidationIssue = {
+export type LogRecordIssue = {
   path: (string | number)[];
   message: string;
-  code: z.ZodIssue['code'];
-  expected?: unknown;
-  received?: unknown;
-  minimum?: number;
-  maximum?: number;
-  inclusive?: boolean;
-  exact?: number;
-  type?: string;
-  options?: readonly unknown[];
-  input?: unknown;
-};
+  code: string;
+} & Partial<Record<OptionalIssueKey, unknown>>;
 
-class LogRecordValidationError extends Error {
-  public readonly statusCode = 500;
+export class LogRecordValidationError extends Error {
+  public readonly statusCode: number;
 
-  public readonly issues: readonly ValidationIssue[];
+  public readonly issues: LogRecordIssue[];
 
-  constructor(message: string, issues: readonly ValidationIssue[]) {
+  constructor(message: string, issues: LogRecordIssue[]) {
     super(message);
     this.name = 'LogRecordValidationError';
+    this.statusCode = 500;
     this.issues = issues;
   }
 }
 
-const validateLogRecord = (input: unknown): LogRecord => {
+export const validateLogRecord = (input: unknown): LogRecord => {
   const result = logRecordSchema.safeParse(input);
   if (!result.success) {
-    const issues: ValidationIssue[] = result.error.issues.map((issue) => {
-      const base: ValidationIssue = {
-        path: issue.path.map((segment) => (typeof segment === 'number' ? segment : String(segment))),
+    const issues: LogRecordIssue[] = result.error.issues.map((issue) => {
+      const base: LogRecordIssue = {
+        path: issue.path,
         message: issue.message,
         code: issue.code,
       };
 
-      if ('expected' in issue) {
-        base.expected = (issue as { expected?: unknown }).expected;
-      }
-      if ('received' in issue) {
-        base.received = (issue as { received?: unknown }).received;
-      }
-      if ('minimum' in issue) {
-        base.minimum = (issue as { minimum?: number }).minimum;
-      }
-      if ('maximum' in issue) {
-        base.maximum = (issue as { maximum?: number }).maximum;
-      }
-      if ('inclusive' in issue) {
-        base.inclusive = (issue as { inclusive?: boolean }).inclusive;
-      }
-      if ('exact' in issue) {
-        base.exact = (issue as { exact?: number }).exact;
-      }
-      if ('type' in issue) {
-        base.type = (issue as { type?: string }).type;
-      }
-      if ('options' in issue) {
-        base.options = (issue as { options?: readonly unknown[] }).options;
-      }
-      if ('input' in issue) {
-        base.input = (issue as { input?: unknown }).input;
+      const optionalKeys: OptionalIssueKey[] = [
+        'expected',
+        'received',
+        'minimum',
+        'maximum',
+        'inclusive',
+        'exact',
+        'type',
+        'options',
+        'input',
+      ];
+
+      for (const key of optionalKeys) {
+        if (key in issue) {
+          (base as Record<string, unknown>)[key] = (issue as Record<string, unknown>)[key];
+        }
       }
 
       return base;
@@ -107,14 +109,4 @@ const validateLogRecord = (input: unknown): LogRecord => {
     throw new LogRecordValidationError('Invalid log record', issues);
   }
   return result.data;
-};
-
-export type { LogRecord, ValidationIssue };
-export {
-  DEFAULT_OPERATION_CATEGORY,
-  HTTP_METHODS,
-  LogRecordValidationError,
-  OPERATION_CATEGORIES,
-  logRecordSchema,
-  validateLogRecord,
 };

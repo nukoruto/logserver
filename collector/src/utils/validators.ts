@@ -1,15 +1,37 @@
-const config = require('../config');
-const { jwtToUid } = require('../security/uid');
-const { ValidationError } = require('./errors');
+import config from '../config';
+import { jwtToUid } from '../security/uid';
+import { ValidationError } from './errors';
 
-const REQUIRED_FIELDS = ['session_id', 'event'];
-const ISO_DATE_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/;
+const REQUIRED_FIELDS = ['session_id', 'event'] as const;
+const ISO_DATE_PATTERN = /\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z/u;
 
-const normalizeTimestamp = (value) => {
-  if (!value) {
+type Payload = Record<string, unknown>;
+
+type NormalizedEventPayload = {
+  timestamp: string;
+  session_id: string;
+  user_id: string;
+  event: string;
+  method: string | null;
+  path: string | null;
+  status: number | null;
+  latency_ms: number | null;
+  metadata: Record<string, unknown>;
+};
+
+const coerceField = (payload: Payload, key: string): unknown => {
+  if (key in payload) {
+    return payload[key];
+  }
+  const camel = key.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
+  return payload[camel];
+};
+
+const normalizeTimestamp = (value: unknown): string => {
+  if (value === undefined || value === null || value === '') {
     return new Date().toISOString();
   }
-  const date = new Date(value);
+  const date = new Date(value as string);
   if (Number.isNaN(date.getTime())) {
     throw new ValidationError('Invalid timestamp format', { field: 'timestamp' });
   }
@@ -20,7 +42,7 @@ const normalizeTimestamp = (value) => {
   return isoValue;
 };
 
-const normalizeString = (value, field) => {
+const normalizeString = (value: unknown, field: string): string => {
   if (value === undefined || value === null) {
     return '';
   }
@@ -31,12 +53,12 @@ const normalizeString = (value, field) => {
   return trimmed;
 };
 
-const ensureRequired = (payload) => {
+const ensureRequired = (payload: Payload): void => {
   const missing = REQUIRED_FIELDS.filter((field) => {
     if (payload[field] !== undefined && payload[field] !== null) {
       return false;
     }
-    const camel = field.replace(/_([a-z])/g, (match, letter) => letter.toUpperCase());
+    const camel = field.replace(/_([a-z])/g, (_match, letter: string) => letter.toUpperCase());
     return payload[camel] === undefined || payload[camel] === null;
   });
   if (missing.length > 0) {
@@ -44,7 +66,7 @@ const ensureRequired = (payload) => {
   }
 };
 
-const resolveJwt = (payload) => {
+const resolveJwt = (payload: Payload): string | null => {
   const jwt = coerceField(payload, 'jwt');
   if (jwt === undefined || jwt === null) {
     return null;
@@ -53,7 +75,7 @@ const resolveJwt = (payload) => {
   if (!normalized) {
     throw new ValidationError('jwt cannot be empty', { field: 'jwt' });
   }
-  if (!config.security || !config.security.jwtHmacKey) {
+  if (!config.security.jwtHmacKey) {
     throw new ValidationError('JWT_HMAC_KEY is not configured', { field: 'jwt' });
   }
   try {
@@ -61,12 +83,12 @@ const resolveJwt = (payload) => {
   } catch (error) {
     throw new ValidationError('Failed to derive uid from jwt', {
       field: 'jwt',
-      cause: error instanceof Error ? error.message : error,
+      cause: error instanceof Error ? error.message : String(error),
     });
   }
 };
 
-const resolveUserId = (payload) => {
+const resolveUserId = (payload: Payload): string => {
   const userId = coerceField(payload, 'user_id');
   if (userId !== undefined && userId !== null) {
     return normalizeString(userId, 'user_id');
@@ -80,25 +102,17 @@ const resolveUserId = (payload) => {
   });
 };
 
-const coerceField = (payload, key) => {
-  if (payload[key] !== undefined) {
-    return payload[key];
-  }
-  const camel = key.replace(/_([a-z])/g, (match, letter) => letter.toUpperCase());
-  return payload[camel];
-};
-
-const normalizeMetadata = (payload) => {
+const normalizeMetadata = (payload: Payload): Record<string, unknown> => {
   const meta = coerceField(payload, 'meta');
   const metadata = coerceField(payload, 'metadata');
-  const merged = meta || metadata || {};
-  if (typeof merged !== 'object' || Array.isArray(merged)) {
+  const merged = (meta ?? metadata ?? {}) as unknown;
+  if (typeof merged !== 'object' || merged === null || Array.isArray(merged)) {
     throw new ValidationError('Metadata must be an object', { field: 'metadata' });
   }
-  return merged;
+  return merged as Record<string, unknown>;
 };
 
-const normalizeEventPayload = (payload) => {
+export const normalizeEventPayload = (payload: Payload): NormalizedEventPayload => {
   ensureRequired(payload);
 
   const sessionId = normalizeString(coerceField(payload, 'session_id'), 'session_id');
@@ -111,22 +125,25 @@ const normalizeEventPayload = (payload) => {
   const latencyMs = coerceField(payload, 'latency_ms');
   const metadata = normalizeMetadata(payload);
 
-  const result = {
+  const normalizedStatus = Number.isFinite(Number(status)) ? Number(status) : null;
+  const normalizedLatency = Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null;
+
+  const result: NormalizedEventPayload = {
     timestamp,
     session_id: sessionId,
     user_id: userId,
     event,
     method: method ? String(method).toUpperCase() : null,
     path: path ? String(path) : null,
-    status: Number.isFinite(Number(status)) ? Number(status) : null,
-    latency_ms: Number.isFinite(Number(latencyMs)) ? Number(latencyMs) : null,
+    status: normalizedStatus,
+    latency_ms: normalizedLatency,
     metadata,
   };
 
   return result;
 };
 
-const normalizeBatchPayload = (payload) => {
+export const normalizeBatchPayload = (payload: unknown): NormalizedEventPayload[] => {
   if (!Array.isArray(payload)) {
     throw new ValidationError('Batch payload must be an array');
   }
@@ -135,7 +152,7 @@ const normalizeBatchPayload = (payload) => {
   }
   return payload.map((entry, index) => {
     try {
-      return normalizeEventPayload(entry);
+      return normalizeEventPayload(entry as Payload);
     } catch (error) {
       if (error instanceof ValidationError) {
         throw new ValidationError(error.message, { index, details: error.details });
@@ -145,7 +162,4 @@ const normalizeBatchPayload = (payload) => {
   });
 };
 
-module.exports = {
-  normalizeEventPayload,
-  normalizeBatchPayload,
-};
+export type { NormalizedEventPayload };
