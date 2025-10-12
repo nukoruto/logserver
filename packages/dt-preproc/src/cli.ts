@@ -92,6 +92,7 @@ async function writeCsv(
       delta_seconds: row.delta_seconds ?? '',
       delta_clipped_seconds: row.delta_clipped_seconds ?? '',
       delta_robust_z: row.delta_robust_z ?? '',
+      delta_log_burst: row.delta_log_burst ?? '',
       delta_time_label: row.delta_time_label,
       session_sequence: row.session_sequence,
       session_elapsed_seconds: row.session_elapsed_seconds ?? '',
