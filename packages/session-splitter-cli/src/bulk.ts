@@ -5,16 +5,24 @@ import { finished } from 'node:stream/promises';
 import path from 'node:path';
 
 import { Command } from 'commander';
+import { compile, TopLevelSpec } from 'vega-lite';
+import * as vega from 'vega';
+import { Resvg } from '@resvg/resvg-js';
 
 import {
   AugmentedRow,
+  KneeCurve,
   SessionSplitOptions,
   algoVersion,
+  computeKneeCurve,
   deriveDatasetKey,
   estimateThresholdsWithMeta,
+  makeLogHistogram,
+  otsuThreshold,
   splitSessions,
   writeMeta,
   SessionSplitterError,
+  ThresholdDetail,
   ThresholdMetaInput
 } from '@logserver/session-splitter';
 
@@ -37,6 +45,7 @@ interface BulkCliOptions {
   sessionColumn?: string;
   concurrency?: number;
   shardDir?: string;
+  report?: string;
 }
 
 interface AugmentedColumnSpec {
@@ -143,6 +152,662 @@ async function countCsvRecords(filePath: string): Promise<number> {
 
 function toSortedRecord<T>(entries: Iterable<[string, T]>): Record<string, T> {
   return Object.fromEntries(Array.from(entries).sort(([a], [b]) => a.localeCompare(b)));
+}
+
+function sanitizeForFilename(input: string): string {
+  return input.replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+function formatNumber(value: number | null | undefined, fractionDigits = 6): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'N/A';
+  }
+  return value.toFixed(fractionDigits);
+}
+
+function computeLogStandardDeviation(values: Iterable<number>): number {
+  const logs: number[] = [];
+  for (const value of values) {
+    if (typeof value !== 'number') {
+      continue;
+    }
+    if (!Number.isFinite(value) || value <= 0) {
+      continue;
+    }
+    logs.push(Math.log(value));
+  }
+  if (logs.length === 0) {
+    return 0;
+  }
+  let sum = 0;
+  for (const value of logs) {
+    sum += value;
+  }
+  const mean = sum / logs.length;
+  let sumSq = 0;
+  for (const value of logs) {
+    const diff = value - mean;
+    sumSq += diff * diff;
+  }
+  const variance = sumSq / logs.length;
+  return variance > 0 && Number.isFinite(variance) ? Math.sqrt(variance) : 0;
+}
+
+const CRC32_TABLE: Uint32Array = (() => {
+  const table = new Uint32Array(256);
+  for (let i = 0; i < 256; i += 1) {
+    let c = i;
+    for (let j = 0; j < 8; j += 1) {
+      if (c & 1) {
+        c = 0xedb88320 ^ (c >>> 1);
+      } else {
+        c >>>= 1;
+      }
+    }
+    table[i] = c >>> 0;
+  }
+  return table;
+})();
+
+function crc32(buffer: Buffer): number {
+  let crc = 0xffffffff;
+  for (let i = 0; i < buffer.length; i += 1) {
+    const byte = buffer[i]!;
+    const index = (crc ^ byte) & 0xff;
+    crc = (CRC32_TABLE[index]! ^ (crc >>> 8)) >>> 0;
+  }
+  return (crc ^ 0xffffffff) >>> 0;
+}
+
+function addPngTextChunk(png: Buffer, keyword: string, text: string): Buffer {
+  if (!png || png.length < 8) {
+    return png;
+  }
+  const signature = png.subarray(0, 8);
+  const remainder = png.subarray(8);
+  const keywordBuffer = Buffer.from(keyword, 'latin1');
+  const textBuffer = Buffer.from(text, 'latin1');
+  const nullSeparator = Buffer.from([0]);
+  const data = Buffer.concat([keywordBuffer, nullSeparator, textBuffer]);
+  const lengthBuffer = Buffer.alloc(4);
+  lengthBuffer.writeUInt32BE(data.length, 0);
+  const typeBuffer = Buffer.from('tEXt', 'ascii');
+  const crcBuffer = Buffer.alloc(4);
+  const crc = crc32(Buffer.concat([typeBuffer, data]));
+  crcBuffer.writeUInt32BE(crc >>> 0, 0);
+  const chunk = Buffer.concat([lengthBuffer, typeBuffer, data, crcBuffer]);
+  return Buffer.concat([signature, chunk, remainder]);
+}
+
+interface ThresholdAnnotation {
+  key: string;
+  label: string;
+  threshold: number;
+  logThreshold: number | null;
+  formatted: string;
+  color: string;
+}
+
+interface HistogramDataPoint {
+  binStart: number;
+  binEnd: number;
+  count: number;
+}
+
+interface UserReportArtifacts {
+  uid: string;
+  sanitizedUid: string;
+  histogramSpec: TopLevelSpec;
+  sessionSpec: TopLevelSpec;
+  summaryHtml: string;
+  histogramPng: Buffer;
+  sessionPng: Buffer;
+}
+
+const HISTOGRAM_WIDTH = 640;
+const HISTOGRAM_HEIGHT = 360;
+const CURVE_WIDTH = 640;
+const CURVE_HEIGHT = 360;
+
+const THRESHOLD_STYLES: Record<string, { label: string; color: string }> = {
+  tau_final: { label: '最終閾値 (τ_final)', color: '#1f77b4' },
+  tau_otsu: { label: 'Otsu 閾値 (τ_otsu)', color: '#d62728' },
+  tau_knee: { label: '膝点 (τ_knee)', color: '#2ca02c' }
+};
+
+function buildThresholdAnnotations(detail: ThresholdDetail): ThresholdAnnotation[] {
+  const annotations: ThresholdAnnotation[] = [];
+  const finalValue = detail.DeltaT;
+  annotations.push({
+    key: 'tau_final',
+    label: THRESHOLD_STYLES.tau_final.label,
+    threshold: finalValue,
+    logThreshold: detail.tau_final,
+    formatted: `τ_final=${formatNumber(finalValue)}`,
+    color: THRESHOLD_STYLES.tau_final.color
+  });
+
+  if (typeof detail.tau_otsu === 'number' && Number.isFinite(detail.tau_otsu)) {
+    const value = Math.exp(detail.tau_otsu);
+    annotations.push({
+      key: 'tau_otsu',
+      label: THRESHOLD_STYLES.tau_otsu.label,
+      threshold: value,
+      logThreshold: detail.tau_otsu,
+      formatted: `τ_otsu=${formatNumber(value)}`,
+      color: THRESHOLD_STYLES.tau_otsu.color
+    });
+  }
+
+  if (typeof detail.tau_knee === 'number' && Number.isFinite(detail.tau_knee)) {
+    const value = Math.exp(detail.tau_knee);
+    annotations.push({
+      key: 'tau_knee',
+      label: THRESHOLD_STYLES.tau_knee.label,
+      threshold: value,
+      logThreshold: detail.tau_knee,
+      formatted: `τ_knee=${formatNumber(value)}`,
+      color: THRESHOLD_STYLES.tau_knee.color
+    });
+  }
+
+  return annotations;
+}
+
+function buildHistogramData(histogram: ReturnType<typeof makeLogHistogram>): HistogramDataPoint[] {
+  const points: HistogramDataPoint[] = [];
+  const { binEdges, binCounts } = histogram;
+  if (binEdges.length <= 1) {
+    return points;
+  }
+  for (let i = 0; i < binCounts.length && i + 1 < binEdges.length; i += 1) {
+    points.push({
+      binStart: binEdges[i]!,
+      binEnd: binEdges[i + 1]!,
+      count: binCounts[i] ?? 0
+    });
+  }
+  return points;
+}
+
+function createHistogramSpec(
+  uid: string,
+  histogramPoints: HistogramDataPoint[],
+  annotations: ThresholdAnnotation[],
+  sampleCount: number
+): TopLevelSpec {
+  if (histogramPoints.length === 0) {
+    return {
+      width: HISTOGRAM_WIDTH,
+      height: HISTOGRAM_HEIGHT,
+      background: 'white',
+      data: { values: [{ message: 'Δt サンプルが不足しています' }] },
+      mark: { type: 'text', align: 'center', baseline: 'middle', fontSize: 18 },
+      encoding: {
+        text: { field: 'message', type: 'nominal' }
+      },
+      title: `ユーザ ${uid}: Δt 対数ヒストグラム`
+    } satisfies TopLevelSpec;
+  }
+
+  const annotationData = annotations.map((annotation) => ({
+    label: annotation.label,
+    threshold: annotation.threshold,
+    formatted: annotation.formatted,
+    color: annotation.color
+  }));
+
+  return {
+    width: HISTOGRAM_WIDTH,
+    height: HISTOGRAM_HEIGHT,
+    background: 'white',
+    title: `ユーザ ${uid}: Δt 対数ヒストグラム (サンプル数=${sampleCount})`,
+    layer: [
+      {
+        data: { values: histogramPoints },
+        mark: { type: 'bar', tooltip: true },
+        encoding: {
+          x: {
+            field: 'binStart',
+            type: 'quantitative',
+            scale: { type: 'log' },
+            axis: { title: 'Δt [秒] (対数軸)' }
+          },
+          x2: { field: 'binEnd' },
+          y: {
+            field: 'count',
+            type: 'quantitative',
+            axis: { title: '度数' }
+          }
+        }
+      },
+      {
+        data: { values: annotationData },
+        mark: { type: 'rule', strokeDash: [6, 4], size: 2 },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          color: {
+            field: 'label',
+            type: 'nominal',
+            legend: { title: '閾値' }
+          }
+        }
+      },
+      {
+        data: { values: annotationData },
+        mark: { type: 'text', angle: -90, dy: -12, fontSize: 11 },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          text: { field: 'formatted', type: 'nominal' },
+          color: { field: 'label', type: 'nominal', legend: null }
+        }
+      }
+    ]
+  } satisfies TopLevelSpec;
+}
+
+interface KneeSpecInput {
+  uid: string;
+  curve: KneeCurve;
+  annotations: ThresholdAnnotation[];
+  sampleCount: number;
+  kneeDisplayThreshold: number;
+  kneeLabel: string;
+}
+
+function findNearestPoint(points: KneeCurve['points'], target: number): { threshold: number; smoothed: number } {
+  if (points.length === 0) {
+    return { threshold: target, smoothed: 0 };
+  }
+  let bestIndex = 0;
+  let bestDiff = Math.abs(points[0]!.threshold - target);
+  for (let i = 1; i < points.length; i += 1) {
+    const diff = Math.abs(points[i]!.threshold - target);
+    if (diff < bestDiff) {
+      bestDiff = diff;
+      bestIndex = i;
+    }
+  }
+  return { threshold: points[bestIndex]!.threshold, smoothed: points[bestIndex]!.smoothed };
+}
+
+function createSessionCurveSpec(input: KneeSpecInput): TopLevelSpec {
+  const { uid, curve, annotations, sampleCount, kneeDisplayThreshold, kneeLabel } = input;
+  if (curve.points.length === 0) {
+    return {
+      width: CURVE_WIDTH,
+      height: CURVE_HEIGHT,
+      background: 'white',
+      data: { values: [{ message: 'Δt サンプルが不足しています' }] },
+      mark: { type: 'text', align: 'center', baseline: 'middle', fontSize: 18 },
+      encoding: {
+        text: { field: 'message', type: 'nominal' }
+      },
+      title: `ユーザ ${uid}: 膝点解析`
+    } satisfies TopLevelSpec;
+  }
+
+  const kneePoint = findNearestPoint(curve.points, kneeDisplayThreshold);
+  const annotationData = annotations.map((annotation) => ({
+    label: annotation.label,
+    threshold: annotation.threshold,
+    formatted: annotation.formatted,
+    color: annotation.color
+  }));
+
+  return {
+    width: CURVE_WIDTH,
+    height: CURVE_HEIGHT,
+    background: 'white',
+    title: `ユーザ ${uid}: セッション残数曲線 (サンプル数=${sampleCount})`,
+    layer: [
+      {
+        data: { values: curve.points },
+        mark: { type: 'line', strokeDash: [6, 4], color: '#9c9c9c' },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' }, axis: { title: 'Δt [秒] (対数軸)' } },
+          y: { field: 'count', type: 'quantitative', axis: { title: 'セッション残数' } }
+        }
+      },
+      {
+        data: { values: curve.points },
+        mark: { type: 'line', color: '#1f77b4' },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          y: { field: 'smoothed', type: 'quantitative' }
+        }
+      },
+      {
+        data: { values: [{
+          threshold: kneePoint.threshold,
+          smoothed: kneePoint.smoothed,
+          label: '膝点',
+          formatted: `膝点=${kneeLabel}`
+        }] },
+        mark: { type: 'point', filled: true, size: 90, color: THRESHOLD_STYLES.tau_knee.color },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          y: { field: 'smoothed', type: 'quantitative' },
+          tooltip: { field: 'formatted', type: 'nominal' }
+        }
+      },
+      {
+        data: { values: [{
+          threshold: kneePoint.threshold,
+          smoothed: kneePoint.smoothed,
+          text: `膝点=${kneeLabel}`
+        }] },
+        mark: { type: 'text', dy: -12, fontSize: 11, color: THRESHOLD_STYLES.tau_knee.color },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          y: { field: 'smoothed', type: 'quantitative' },
+          text: { field: 'text', type: 'nominal' }
+        }
+      },
+      {
+        data: { values: annotationData },
+        mark: { type: 'rule', strokeDash: [6, 4], size: 2 },
+        encoding: {
+          x: { field: 'threshold', type: 'quantitative', scale: { type: 'log' } },
+          color: { field: 'label', type: 'nominal', legend: { title: '閾値' } }
+        }
+      }
+    ]
+  } satisfies TopLevelSpec;
+}
+
+function encodeHtml(html: string): string {
+  return html.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;');
+}
+
+function createUserReportHtml(
+  uid: string,
+  sanitizedUid: string,
+  histogramSpec: TopLevelSpec,
+  sessionSpec: TopLevelSpec,
+  detail: ThresholdDetail,
+  sampleCount: number,
+  idleTimeout: number,
+  epsilon: number
+): string {
+  const histogramSpecJson = JSON.stringify(histogramSpec);
+  const sessionSpecJson = JSON.stringify(sessionSpec);
+  const tableRows = [
+    { label: 'サンプル数', value: String(sampleCount) },
+    { label: 'idle_timeout_seconds', value: formatNumber(idleTimeout) },
+    { label: 'epsilon', value: formatNumber(epsilon) },
+    { label: 'Δt 最終閾値', value: formatNumber(detail.DeltaT) },
+    { label: 'τ_final (log)', value: formatNumber(detail.tau_final) },
+    { label: 'τ_otsu (log)', value: formatNumber(detail.tau_otsu) },
+    { label: 'τ_knee (log)', value: formatNumber(detail.tau_knee) },
+    { label: 'bimodality_test', value: formatNumber(detail.bimodality_test) },
+    { label: 'backoff_level', value: encodeHtml(detail.backoff_level) }
+  ];
+
+  const tableHtml = tableRows
+    .map((row) => `<tr><th>${row.label}</th><td>${row.value}</td></tr>`)
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>ユーザ ${encodeHtml(uid)} しきい値レポート</title>
+    <script src="https://cdn.jsdelivr.net/npm/vega@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-lite@5"></script>
+    <script src="https://cdn.jsdelivr.net/npm/vega-embed@6"></script>
+    <style>
+      body { font-family: 'Segoe UI', 'Hiragino Sans', sans-serif; margin: 24px; }
+      h1 { margin-bottom: 0.2em; }
+      .chart { margin-bottom: 32px; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid #aaa; padding: 6px 12px; text-align: left; }
+      th { background: #f3f3f3; }
+      .meta { margin-bottom: 24px; }
+    </style>
+  </head>
+  <body>
+    <h1>ユーザ ${encodeHtml(uid)} レポート</h1>
+    <div class="meta">
+      <h2>しきい値まとめ</h2>
+      <table>
+        <tbody>
+          ${tableHtml}
+        </tbody>
+      </table>
+    </div>
+    <div class="chart" id="histogram-${encodeHtml(sanitizedUid)}"></div>
+    <div class="chart" id="curve-${encodeHtml(sanitizedUid)}"></div>
+    <script type="text/javascript">
+      const histogramSpec = ${histogramSpecJson};
+      const sessionSpec = ${sessionSpecJson};
+      vegaEmbed('#histogram-${encodeHtml(sanitizedUid)}', histogramSpec, { actions: false });
+      vegaEmbed('#curve-${encodeHtml(sanitizedUid)}', sessionSpec, { actions: false });
+    </script>
+  </body>
+</html>`;
+}
+
+interface RootSummaryRow {
+  uid: string;
+  sanitizedUid: string;
+  detail: ThresholdDetail;
+  sampleCount: number;
+}
+
+function createRootIndexHtml(rows: RootSummaryRow[]): string {
+  const header = `<tr><th>UID</th><th>サンプル数</th><th>Δt 最終閾値</th><th>τ_final</th><th>τ_otsu</th><th>τ_knee</th><th>backoff_level</th><th>レポート</th></tr>`;
+  const body = rows
+    .map((row) => {
+      const detail = row.detail;
+      return `<tr>
+        <td>${encodeHtml(row.uid)}</td>
+        <td>${row.sampleCount}</td>
+        <td>${formatNumber(detail.DeltaT)}</td>
+        <td>${formatNumber(detail.tau_final)}</td>
+        <td>${formatNumber(detail.tau_otsu)}</td>
+        <td>${formatNumber(detail.tau_knee)}</td>
+        <td>${encodeHtml(detail.backoff_level)}</td>
+        <td><a href="${encodeHtml(row.sanitizedUid)}/index.html">リンク</a></td>
+      </tr>`;
+    })
+    .join('');
+
+  return `<!DOCTYPE html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>split-sessions 監査レポート</title>
+    <style>
+      body { font-family: 'Segoe UI', 'Hiragino Sans', sans-serif; margin: 24px; }
+      h1 { margin-bottom: 0.5em; }
+      table { border-collapse: collapse; }
+      th, td { border: 1px solid #aaa; padding: 6px 12px; text-align: left; }
+      th { background: #f3f3f3; }
+    </style>
+  </head>
+  <body>
+    <h1>split-sessions 監査レポート</h1>
+    <table>
+      <thead>${header}</thead>
+      <tbody>${body}</tbody>
+    </table>
+  </body>
+</html>`;
+}
+
+async function renderVegaLiteToPng(spec: TopLevelSpec): Promise<Buffer> {
+  const compiled = compile(spec).spec;
+  const runtime = vega.parse(compiled);
+  const view = new vega.View(runtime, { renderer: 'none', logLevel: vega.Warn });
+  const svg = await view.toSVG();
+  const resvg = new Resvg(svg, { fitTo: { mode: 'original' } });
+  const pngData = resvg.render();
+  return Buffer.from(pngData.asPng());
+}
+
+async function generateReportArtifacts(
+  uid: string,
+  deltas: number[],
+  detail: ThresholdDetail,
+  kneeSigma: number,
+  scanStep: number,
+  minEvents: number,
+  idleTimeout: number,
+  epsilon: number
+): Promise<UserReportArtifacts> {
+  const sanitizedUid = sanitizeForFilename(uid);
+  const sampleCount = deltas.length;
+  const histogram = makeLogHistogram(deltas);
+  const histogramPoints = buildHistogramData(histogram);
+
+  const metaTauOtsu = typeof detail.tau_otsu === 'number' && Number.isFinite(detail.tau_otsu)
+    ? detail.tau_otsu
+    : null;
+  const metaTauKnee = typeof detail.tau_knee === 'number' && Number.isFinite(detail.tau_knee)
+    ? detail.tau_knee
+    : null;
+
+  const tolerance = 5e-3;
+  let tauLogForCurve = metaTauOtsu;
+  let computedTauLog: number | null = null;
+  if (sampleCount >= minEvents && histogramPoints.length > 0) {
+    const otsu = otsuThreshold(histogram);
+    if (Number.isFinite(otsu.tauLog)) {
+      computedTauLog = otsu.tauLog;
+      if (tauLogForCurve === null) {
+        tauLogForCurve = otsu.tauLog;
+      }
+    }
+  }
+
+  if (metaTauOtsu !== null && computedTauLog !== null) {
+    const diff = Math.abs(metaTauOtsu - computedTauLog);
+    if (diff > tolerance) {
+      throw new SessionSplitterError(
+        `Mismatch between meta τ_otsu=${metaTauOtsu} and computed τ_otsu=${computedTauLog} for uid=${uid}`
+      );
+    }
+  }
+
+  const sigmaLog = computeLogStandardDeviation(deltas);
+  const curve = computeKneeCurve(deltas, tauLogForCurve ?? Number.NaN, sigmaLog, {
+    kSigma: kneeSigma,
+    logStep: scanStep
+  });
+
+  const kneeLogComputed = Number.isFinite(curve.knee.logThreshold) ? curve.knee.logThreshold : null;
+  if (metaTauKnee !== null && kneeLogComputed !== null) {
+    const diff = Math.abs(metaTauKnee - kneeLogComputed);
+    if (diff > tolerance) {
+      throw new SessionSplitterError(
+        `Mismatch between meta τ_knee=${metaTauKnee} and computed τ_knee=${kneeLogComputed} for uid=${uid}`
+      );
+    }
+  }
+
+  const kneeDisplayThreshold = metaTauKnee !== null
+    ? Math.exp(metaTauKnee)
+    : kneeLogComputed !== null
+    ? Math.exp(kneeLogComputed)
+    : curve.points.length > 0
+    ? curve.points[curve.points.length - 1]!.threshold
+    : 0;
+  const kneeLabel = formatNumber(
+    metaTauKnee !== null
+      ? Math.exp(metaTauKnee)
+      : kneeLogComputed !== null
+      ? Math.exp(kneeLogComputed)
+      : null
+  );
+
+  const annotations = buildThresholdAnnotations(detail);
+  const histogramSpec = createHistogramSpec(uid, histogramPoints, annotations, sampleCount);
+  const sessionSpec = createSessionCurveSpec({
+    uid,
+    curve,
+    annotations,
+    sampleCount,
+    kneeDisplayThreshold,
+    kneeLabel
+  });
+
+  const histogramPng = await renderVegaLiteToPng(histogramSpec);
+  const sessionPng = await renderVegaLiteToPng(sessionSpec);
+
+  const histogramSummary = `uid=${uid};tau_final=${formatNumber(detail.DeltaT)};tau_otsu=${formatNumber(
+    detail.tau_otsu !== null ? Math.exp(detail.tau_otsu) : null
+  )};tau_knee=${formatNumber(detail.tau_knee !== null ? Math.exp(detail.tau_knee) : null)}`;
+  const sessionSummary = `uid=${uid};knee=${kneeLabel};samples=${sampleCount}`;
+
+  const histogramWithText = addPngTextChunk(histogramPng, 'AuditSummary', histogramSummary);
+  const sessionWithText = addPngTextChunk(sessionPng, 'AuditSummary', sessionSummary);
+
+  const summaryHtml = createUserReportHtml(
+    uid,
+    sanitizedUid,
+    histogramSpec,
+    sessionSpec,
+    detail,
+    sampleCount,
+    idleTimeout,
+    epsilon
+  );
+
+  return {
+    uid,
+    sanitizedUid,
+    histogramSpec,
+    sessionSpec,
+    summaryHtml,
+    histogramPng: histogramWithText,
+    sessionPng: sessionWithText
+  };
+}
+
+async function generateReports(
+  reportDir: string,
+  deltaMap: Map<string, number[]>,
+  perUserDetails: Array<[string, ThresholdDetail]>,
+  kneeSigma: number,
+  scanStep: number,
+  minEvents: number,
+  idleTimeout: number,
+  epsilon: number
+): Promise<void> {
+  if (perUserDetails.length === 0) {
+    return;
+  }
+  await fsPromises.mkdir(reportDir, { recursive: true });
+
+  const summaryRows: RootSummaryRow[] = [];
+  for (const [uid, detail] of perUserDetails) {
+    const deltas = deltaMap.get(uid) ?? [];
+    const artifacts = await generateReportArtifacts(
+      uid,
+      deltas,
+      detail,
+      kneeSigma,
+      scanStep,
+      Math.floor(minEvents),
+      idleTimeout,
+      epsilon
+    );
+    const userDir = path.join(reportDir, artifacts.sanitizedUid);
+    await fsPromises.mkdir(userDir, { recursive: true });
+    await fsPromises.writeFile(path.join(userDir, 'histogram.png'), artifacts.histogramPng);
+    await fsPromises.writeFile(path.join(userDir, 'session_curve.png'), artifacts.sessionPng);
+    await fsPromises.writeFile(path.join(userDir, 'index.html'), artifacts.summaryHtml, 'utf8');
+    summaryRows.push({
+      uid: artifacts.uid,
+      sanitizedUid: artifacts.sanitizedUid,
+      detail,
+      sampleCount: deltas.length
+    });
+  }
+
+  const indexHtml = createRootIndexHtml(summaryRows.sort((a, b) => a.uid.localeCompare(b.uid)));
+  await fsPromises.writeFile(path.join(reportDir, 'index.html'), indexHtml, 'utf8');
 }
 
 function createThresholdIterable(
@@ -286,6 +951,8 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
     createThresholdIterable(deltaMap, idleTimeoutSeconds),
     {
       minimumSamples: Math.floor(minEvents),
+      minEvents: Math.floor(minEvents),
+      min_events: Math.floor(minEvents),
       knee: { kSigma: kneeSigma, logStep: scanStep },
       concurrency: cliOptions.concurrency,
       shard_dir: cliOptions.shardDir
@@ -333,6 +1000,20 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
   };
   await writeMeta(cliOptions.meta, metaPayload);
 
+  if (cliOptions.report) {
+    const reportDir = path.resolve(cliOptions.report);
+    await generateReports(
+      reportDir,
+      deltaMap,
+      perUserEntries,
+      kneeSigma!,
+      scanStep!,
+      Math.floor(minEvents),
+      idleTimeoutSeconds,
+      epsilon!
+    );
+  }
+
   const summary = {
     event: 'split_sessions_complete',
     rows_processed: processed,
@@ -363,6 +1044,7 @@ program
   .option('--session-column <name>', 'Original session identifier column override')
   .option('--concurrency <count>', 'Worker threads for threshold estimation', (value) => Number(value))
   .option('--shard-dir <path>', 'Directory for temporary threshold shards')
+  .option('--report <path>', 'Directory to write audit report artifacts')
   .action(async (cliOptions: BulkCliOptions) => {
     try {
       await run(cliOptions);

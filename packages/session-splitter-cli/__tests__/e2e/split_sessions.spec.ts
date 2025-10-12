@@ -60,6 +60,46 @@ async function runNodeScript(
   return { code: code ?? 0, stdout, stderr };
 }
 
+function sanitizeForFilename(value: string): string {
+  return value.replace(/[^a-zA-Z0-9._-]+/g, '_');
+}
+
+async function extractTextChunk(filePath: string, keyword: string): Promise<string | null> {
+  const buffer = await readFile(filePath);
+  if (buffer.length < 12) {
+    return null;
+  }
+  let offset = 8; // skip signature
+  while (offset + 12 <= buffer.length) {
+    const length = buffer.readUInt32BE(offset);
+    const type = buffer.subarray(offset + 4, offset + 8).toString('ascii');
+    const dataStart = offset + 8;
+    const dataEnd = dataStart + length;
+    if (dataEnd + 4 > buffer.length) {
+      break;
+    }
+    if (type === 'tEXt') {
+      const data = buffer.subarray(dataStart, dataEnd);
+      const separatorIndex = data.indexOf(0);
+      if (separatorIndex > 0) {
+        const key = data.subarray(0, separatorIndex).toString('latin1');
+        if (key === keyword) {
+          return data.subarray(separatorIndex + 1).toString('latin1');
+        }
+      }
+    }
+    offset = dataEnd + 4;
+  }
+  return null;
+}
+
+function formatNumber(value: number | null | undefined): string {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 'N/A';
+  }
+  return value.toFixed(6);
+}
+
 for (const scenario of SPLIT_SCENARIOS) {
   test(`split-sessions golden parity (${scenario.name})`, { concurrency: false }, async () => {
     const scenarioRoot = path.join(FIXTURES_ROOT, scenario.name);
@@ -71,6 +111,7 @@ for (const scenario of SPLIT_SCENARIOS) {
     const inputPath = path.join(tempDir, 'input.csv');
     const outputPath = path.join(tempDir, 'output.csv');
     const metaPath = path.join(tempDir, 'meta.json');
+    const reportDir = path.join(tempDir, 'reports');
 
     try {
       await cp(inputSource, inputPath, { dereference: true });
@@ -85,6 +126,7 @@ for (const scenario of SPLIT_SCENARIOS) {
         '--min-events', scenario.minEvents,
         '--kid', scenario.kid,
         '--algo', 'otsu+kneedle-v1',
+        '--report', reportDir,
       ];
 
       const { code, stdout, stderr } = await runNodeScript(SPLIT_SESSIONS_BIN, args, {
@@ -104,6 +146,44 @@ for (const scenario of SPLIT_SCENARIOS) {
       const expectedMeta = JSON.parse(await readFile(expectedMetaPath, 'utf8'));
       assert.deepEqual(actualMeta, expectedMeta, 'meta.json payload differs from golden');
       ensureNoJwt('split-sessions meta', JSON.stringify(actualMeta));
+
+      const reportIndexHtml = await readFile(path.join(reportDir, 'index.html'), 'utf8');
+      assert.ok(reportIndexHtml.includes('split-sessions 監査レポート'));
+
+      const userIds = Object.keys(actualMeta.thresholds_by_uid).sort();
+      for (const uid of userIds) {
+        const sanitized = sanitizeForFilename(uid);
+        const userDir = path.join(reportDir, sanitized);
+        const histogramPngPath = path.join(userDir, 'histogram.png');
+        const sessionPngPath = path.join(userDir, 'session_curve.png');
+        const userHtmlPath = path.join(userDir, 'index.html');
+
+        const histogramSummary = await extractTextChunk(histogramPngPath, 'AuditSummary');
+        const sessionSummary = await extractTextChunk(sessionPngPath, 'AuditSummary');
+        const userHtml = await readFile(userHtmlPath, 'utf8');
+
+        assert.ok(histogramSummary, `histogram summary missing for ${uid}`);
+        assert.ok(sessionSummary, `session summary missing for ${uid}`);
+
+        const deltaTValue = formatNumber(actualMeta.DeltaT[uid]);
+        const tauFinalLog = formatNumber(actualMeta.tau_final[uid]);
+        const tauOtsuValue = actualMeta.tau_otsu[uid] === null ? 'N/A' : formatNumber(Math.exp(actualMeta.tau_otsu[uid]));
+        const tauKneeValue = actualMeta.tau_knee[uid] === null ? 'N/A' : formatNumber(Math.exp(actualMeta.tau_knee[uid]));
+
+        assert.ok(histogramSummary!.includes(`tau_final=${deltaTValue}`), `histogram summary tau_final mismatch for ${uid}`);
+        assert.ok(histogramSummary!.includes(`tau_otsu=${tauOtsuValue}`), `histogram summary tau_otsu mismatch for ${uid}`);
+        assert.ok(histogramSummary!.includes(`tau_knee=${tauKneeValue}`), `histogram summary tau_knee mismatch for ${uid}`);
+        assert.ok(sessionSummary!.includes(`knee=${tauKneeValue}`), `session summary knee mismatch for ${uid}`);
+
+        assert.ok(userHtml.includes(deltaTValue), `user HTML missing Δt 最終閾値 for ${uid}`);
+        assert.ok(userHtml.includes(tauFinalLog), `user HTML missing τ_final log for ${uid}`);
+        if (tauOtsuValue !== 'N/A') {
+          assert.ok(userHtml.includes(tauOtsuValue), `user HTML missing τ_otsu value for ${uid}`);
+        }
+        if (tauKneeValue !== 'N/A') {
+          assert.ok(userHtml.includes(tauKneeValue), `user HTML missing τ_knee value for ${uid}`);
+        }
+      }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
     }

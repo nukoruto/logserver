@@ -99,6 +99,8 @@ program
 
       if (cliOptions.thresholds) {
         const result = await estimateThresholdsWithMeta(rows, {
+          minEvents: 1,
+          min_events: 1,
           concurrency: cliOptions.concurrency,
           shard_dir: cliOptions.shardDir
         });
