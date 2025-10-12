@@ -8,6 +8,9 @@
   },
   "packageManager": "pnpm@9.0.0",
   "scripts": {
+    "lint": "pnpm exec eslint . --max-warnings 0",
+    "build": "pnpm -r run build",
+    "test": "pnpm -r run test",
     "test:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli test",
     "build:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli build"
   }

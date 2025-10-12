@@ -4,9 +4,7 @@ import { createRequire } from 'node:module';
 import { generateScenario, normalizeAnomalyList } from '../collector/src/services/simulationService';
 
 const requireFromCollector = createRequire(path.resolve(__dirname, '../collector/package.json'));
-// eslint-disable-next-line @typescript-eslint/no-var-requires -- yargs is resolved via collector dependencies
 const yargs = requireFromCollector('yargs/yargs');
-// eslint-disable-next-line @typescript-eslint/no-var-requires -- helper is resolved together with yargs
 const { hideBin } = requireFromCollector('yargs/helpers');
 
 type CliOptions = {

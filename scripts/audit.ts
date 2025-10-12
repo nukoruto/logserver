@@ -321,7 +321,6 @@ const validateRow = (
   findings: AuditFinding[]
 ): void => {
   const method = row.method || '';
-  const timestamp = row.timestamp_utc || row.timestamp || '';
   const category = row.op_category || '';
 
   if (row.timestamp_utc && !RFC3339_PATTERN.test(row.timestamp_utc)) {
