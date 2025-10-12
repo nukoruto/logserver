@@ -154,8 +154,27 @@ const startServer = (port: number, logDir: string): { child: ReturnType<typeof s
   const child = spawn(process.execPath, ['server.js'], {
     cwd: collectorDir,
     env,
-    stdio: ['ignore', createWriteStream(path.join(logDir, 'server.stdout.log')), createWriteStream(path.join(logDir, 'server.stderr.log'))],
+    stdio: ['ignore', 'pipe', 'pipe'],
   });
+
+  const stdoutStream = createWriteStream(path.join(logDir, 'server.stdout.log'));
+  const stderrStream = createWriteStream(path.join(logDir, 'server.stderr.log'));
+
+  child.stdout?.pipe(stdoutStream);
+  child.stderr?.pipe(stderrStream);
+
+  let streamsClosed = false;
+  const closeStreams = (): void => {
+    if (streamsClosed) {
+      return;
+    }
+    streamsClosed = true;
+    stdoutStream.end();
+    stderrStream.end();
+  };
+
+  child.once('close', closeStreams);
+  child.once('exit', closeStreams);
 
   const terminate = async (): Promise<void> => {
     if (!child.killed) {
