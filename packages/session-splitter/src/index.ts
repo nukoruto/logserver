@@ -5,7 +5,7 @@ import { fileURLToPath } from 'node:url';
 import path from 'node:path';
 import { parse } from 'csv-parse';
 
-export const algoVersion = "otsu+bimodalknee-v2" as const;
+export const algoVersion = "otsu+kneedle-v1" as const;
 
 export type SplitReason =
   | "initial"
@@ -26,6 +26,7 @@ export interface SessionSplitOptions {
 export interface ThresholdEstimationOptions {
   minimumSamples?: number;
   fallbackPercentile?: number;
+  knee?: KneeDetectionOptions;
 }
 
 export interface KneeDetectionOptions {
@@ -484,7 +485,7 @@ function estimateThresholdsInternal(
   rows: Iterable<AugmentedRow>,
   options: ThresholdEstimationOptions = {}
 ): ThresholdComputationResult {
-  const { minimumSamples = 5, fallbackPercentile = 0.95 } = options;
+  const { minimumSamples = 5, fallbackPercentile = 0.95, knee } = options;
   const grouped = new Map<string, number[]>();
 
   for (const row of rows) {
@@ -508,7 +509,7 @@ function estimateThresholdsInternal(
   });
 
   const details = new Map<string, ThresholdDetail>();
-  const kneeOptions = normalizeKneeOptions();
+  const kneeOptions = normalizeKneeOptions(knee);
 
   for (const [uid, deltas] of grouped.entries()) {
     if (deltas.length === 0) {

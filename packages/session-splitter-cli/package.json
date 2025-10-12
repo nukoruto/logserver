@@ -3,10 +3,12 @@
   "version": "0.1.0",
   "description": "CLI for session splitter library",
   "bin": {
-    "session-splitter": "dist/index.js"
+    "session-splitter": "dist/index.js",
+    "split-sessions": "dist/bulk.js"
   },
   "scripts": {
-    "build": "tsc -p tsconfig.json"
+    "build": "tsc -p tsconfig.json",
+    "test": "pnpm run build && node --test"
   },
   "dependencies": {
     "@logserver/session-splitter": "workspace:*",

@@ -1,0 +1,12 @@
+#!/usr/bin/env node
+const { existsSync } = require('node:fs');
+const path = require('node:path');
+
+const distPath = path.resolve(__dirname, '../packages/session-splitter-cli/dist/bulk.js');
+if (!existsSync(distPath)) {
+  console.error('[split-sessions] missing build artifact:', distPath);
+  console.error('[split-sessions] run `pnpm --filter @logserver/session-splitter-cli build` to compile TypeScript.');
+  process.exit(1);
+}
+
+require(distPath);

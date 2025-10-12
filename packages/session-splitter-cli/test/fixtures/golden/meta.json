@@ -1,0 +1,39 @@
+{
+  "algo_ver": "otsu+kneedle-v1",
+  "epsilon": 0.001,
+  "ntp_p95_ms": 0,
+  "ingress_jitter_ms": 0,
+  "fd_bins": {
+    "user-1": 0,
+    "user-2": 0
+  },
+  "tau_otsu": {
+    "user-1": null,
+    "user-2": null
+  },
+  "tau_knee": {
+    "user-1": null,
+    "user-2": null
+  },
+  "tau_final": {
+    "user-1": 5.703782474656201,
+    "user-2": 6.396929655216146
+  },
+  "DeltaT": {
+    "user-1": 300,
+    "user-2": 600
+  },
+  "bimodality_test": {
+    "user-1": null,
+    "user-2": null
+  },
+  "k": 2,
+  "scan_step": 0.05,
+  "hkdf_info": "c2lk",
+  "kid": "DS-TEST-001",
+  "thresholds_by_uid": {
+    "user-1": 300,
+    "user-2": 600
+  },
+  "dataset_hash": "f94dbdcc35f9b331d4a106e43d4b76469befae0dada11c668107468d99069af0"
+}
