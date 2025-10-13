@@ -69,6 +69,34 @@ export interface FeatureOptions {
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
 
+export interface StatsUpdateRecord {
+  field: 'x_med' | 'x_smad';
+  previous: number;
+  next: number;
+  delta: number;
+}
+
+export interface StatsMeta {
+  updates: StatsUpdateRecord[];
+  lastInput?: number;
+  lastTrimmed?: number;
+}
+
+export interface RobustStats {
+  x_med: number;
+  x_smad: number;
+  meta?: StatsMeta;
+}
+
+export interface UpdateCfg {
+  alpha: number;
+  trim: {
+    low: number;
+    high: number;
+  };
+  maxDrift: number;
+}
+
 export interface FeatureStats {
   total: number;
   measured: number;
@@ -200,6 +228,119 @@ function computeRobustSummary(values: readonly number[]): RobustScaleStats | nul
 export function robustZ(x: number, stats: RobustScaleStats): number {
   const smad = Math.max(stats.x_smad, ROBUST_Z_FLOOR);
   return (x - stats.x_med) / smad;
+}
+
+function normalizeUpdateCfg(cfg: UpdateCfg): UpdateCfg {
+  const alpha = Number.isFinite(cfg.alpha) ? Math.min(Math.max(cfg.alpha, 0), 1) : 0;
+  const trimLow = Number.isFinite(cfg.trim?.low) ? Math.max(cfg.trim.low, 0) : 0;
+  const trimHigh = Number.isFinite(cfg.trim?.high) ? Math.max(cfg.trim.high, 0) : 0;
+  const maxDrift = Number.isFinite(cfg.maxDrift) && cfg.maxDrift > 0 ? cfg.maxDrift : 0;
+  return {
+    alpha,
+    trim: {
+      low: trimLow,
+      high: trimHigh
+    },
+    maxDrift
+  };
+}
+
+function clampValue(value: number, lower: number, upper: number): number {
+  if (Number.isNaN(value)) {
+    return Number.isFinite(lower) ? lower : value;
+  }
+  if (lower > upper) {
+    return value;
+  }
+  return Math.min(Math.max(value, lower), upper);
+}
+
+function limitDrift(candidate: number, previous: number, scale: number, maxDrift: number): number {
+  if (!Number.isFinite(candidate)) {
+    return previous;
+  }
+  if (maxDrift <= 0) {
+    return previous;
+  }
+  const baseScale = Math.max(Math.abs(previous), scale, ROBUST_Z_FLOOR);
+  const maxShift = baseScale * maxDrift;
+  const diff = candidate - previous;
+  if (!Number.isFinite(diff)) {
+    return previous;
+  }
+  if (Math.abs(diff) <= maxShift) {
+    return candidate;
+  }
+  return previous + Math.sign(diff) * maxShift;
+}
+
+function appendMetaUpdates(
+  prev: RobustStats,
+  records: StatsUpdateRecord[],
+  rawInput: number | undefined,
+  trimmed: number | undefined
+): StatsMeta {
+  const updates = [...(prev.meta?.updates ?? [])];
+  updates.push(...records.filter((record) => record.delta !== 0));
+  return {
+    updates,
+    lastInput: rawInput ?? prev.meta?.lastInput,
+    lastTrimmed: trimmed ?? prev.meta?.lastTrimmed
+  };
+}
+
+export function updateStatsStreaming(x: number, prev: RobustStats, cfg: UpdateCfg): RobustStats {
+  if (!Number.isFinite(x)) {
+    return {
+      ...prev,
+      meta: appendMetaUpdates(prev, [], undefined, undefined)
+    };
+  }
+
+  const normalizedCfg = normalizeUpdateCfg(cfg);
+  if (normalizedCfg.alpha === 0) {
+    return {
+      ...prev,
+      meta: appendMetaUpdates(prev, [], x, x)
+    };
+  }
+
+  const prevMed = prev.x_med;
+  const prevSmad = Math.max(prev.x_smad, ROBUST_Z_FLOOR);
+  const lowerBound = prevMed - normalizedCfg.trim.low * prevSmad;
+  const upperBound = prevMed + normalizedCfg.trim.high * prevSmad;
+  const trimmed = clampValue(x, lowerBound, upperBound);
+
+  const emaMed = (1 - normalizedCfg.alpha) * prevMed + normalizedCfg.alpha * trimmed;
+  const updatedMed = limitDrift(emaMed, prevMed, prevSmad, normalizedCfg.maxDrift);
+
+  const deviation = Math.abs(trimmed - updatedMed);
+  const emaSmad = (1 - normalizedCfg.alpha) * prevSmad + normalizedCfg.alpha * Math.max(deviation, ROBUST_Z_FLOOR);
+  const updatedSmad = Math.max(
+    ROBUST_Z_FLOOR,
+    limitDrift(emaSmad, prevSmad, prevSmad, normalizedCfg.maxDrift)
+  );
+
+  const records: StatsUpdateRecord[] = [
+    {
+      field: 'x_med',
+      previous: prevMed,
+      next: updatedMed,
+      delta: updatedMed - prevMed
+    },
+    {
+      field: 'x_smad',
+      previous: prevSmad,
+      next: updatedSmad,
+      delta: updatedSmad - prevSmad
+    }
+  ];
+
+  return {
+    x_med: updatedMed,
+    x_smad: updatedSmad,
+    meta: appendMetaUpdates(prev, records, x, trimmed)
+  };
 }
 
 export function clip(value: number, limit = 5): number {

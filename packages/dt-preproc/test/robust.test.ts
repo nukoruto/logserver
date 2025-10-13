@@ -131,7 +131,7 @@ test('robust z-score is approximately invariant under unit scaling', () => {
   }
 });
 
-test('thawFittedStats loads frozen per-uid robust log-delta statistics without recomputation', () => {
+2test('thawFittedStats loads frozen per-uid robust log-delta statistics without recomputation', () => {
   const frozen = loadFrozenStats('robust_uid');
   const fitted = thawFittedStats(frozen);
 
@@ -235,4 +235,39 @@ test('thawFittedStats supports uid+session grouping from frozen fixture', () => 
 
   const canonical = freezeFittedStats(fitted);
   assert.deepEqual(canonical, freezeFittedStats(thawFittedStats(canonical)));
+test('updateStatsStreaming keeps statistics frozen when alpha is zero', () => {
+  const prev: RobustStats = { x_med: 10, x_smad: 2 };
+  const cfg: UpdateCfg = { alpha: 0, trim: { low: 1, high: 1 }, maxDrift: 0.1 };
+  const next = updateStatsStreaming(100, prev, cfg);
+  assert.deepEqual(next.x_med, prev.x_med);
+  assert.deepEqual(next.x_smad, prev.x_smad);
+  assert.ok(next.meta);
+  assert.equal(next.meta?.updates.length, 0);
+  assert.equal(next.meta?.lastInput, 100);
+  assert.equal(next.meta?.lastTrimmed, 100);
+});
+
+test('updateStatsStreaming trims extremes and respects drift limit', () => {
+  const prev: RobustStats = { x_med: 10, x_smad: 5 };
+  const cfg: UpdateCfg = { alpha: 0.2, trim: { low: 1, high: 1 }, maxDrift: 0.1 };
+  const next = updateStatsStreaming(1000, prev, cfg);
+  assert.ok(next.meta);
+  assert.equal(next.meta?.lastInput, 1000);
+  assert.equal(next.meta?.lastTrimmed, 15);
+  assert.ok(next.x_med >= 10);
+  assert.ok(next.x_med <= 11); // 10% drift limit on base scale 10
+  assert.ok(next.x_smad <= 5.5);
+  assert.ok(next.meta?.updates.some((entry) => entry.field === 'x_med'));
+});
+
+test('updateStatsStreaming bounds per-step drift under repeated outliers', () => {
+  let stats: RobustStats = { x_med: 8, x_smad: 4 };
+  const cfg: UpdateCfg = { alpha: 0.3, trim: { low: 0.5, high: 0.5 }, maxDrift: 0.1 };
+  for (let i = 0; i < 50; i += 1) {
+    const next = updateStatsStreaming(1000, stats, cfg);
+    const diff = Math.abs(next.x_med - stats.x_med);
+    const baseScale = Math.max(Math.abs(stats.x_med), stats.x_smad, 1e-12);
+    assert.ok(diff <= baseScale * cfg.maxDrift + 1e-9);
+    stats = next;
+  }
 });
