@@ -10,7 +10,9 @@ from typing import Iterable, List, Optional
 import numpy as np
 import pandas as pd
 
-REQUIRED_COLUMNS = {"timestamp", "user_id", "event"}
+REQUIRED_COLUMNS = {"timestamp", "event", "uid"}
+ALTERNATE_TIMESTAMP_COLUMNS = ("timestamp_utc",)
+FORBIDDEN_COLUMNS = {"jwt", "authorization", "cookie", "cookies"}
 OPTIONAL_COLUMNS = {
     "session_id",
     "method",
@@ -66,7 +68,15 @@ def load_events(source: Path) -> pd.DataFrame:
     if not frames:
         raise SessionizeError(f"No frames produced from {source}")
     df = pd.concat(frames, ignore_index=True)
-    missing = REQUIRED_COLUMNS - set(df.columns)
+    if "timestamp" not in df.columns:
+        for alt in ALTERNATE_TIMESTAMP_COLUMNS:
+            if alt in df.columns:
+                df = df.rename(columns={alt: "timestamp"})
+                break
+    available_columns = set(df.columns)
+    missing = REQUIRED_COLUMNS - available_columns
+    if "uid" in missing and "user_id" in available_columns:
+        missing.remove("uid")
     if missing:
         raise SessionizeError(f"Missing required columns: {sorted(missing)}")
     return df
@@ -74,12 +84,24 @@ def load_events(source: Path) -> pd.DataFrame:
 
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
+    for column in df.columns:
+        if column.lower() in FORBIDDEN_COLUMNS:
+            raise SessionizeError(
+                f"Forbidden column '{column}' detected. Ensure tokens are removed prior to preprocessing."
+            )
+    for alt in ALTERNATE_TIMESTAMP_COLUMNS:
+        if alt in df.columns and "timestamp" not in df.columns:
+            df.rename(columns={alt: "timestamp"}, inplace=True)
     if "status_code" in df.columns and "status" not in df.columns:
         df.rename(columns={"status_code": "status"}, inplace=True)
     if "meta" in df.columns and "metadata" not in df.columns:
         df.rename(columns={"meta": "metadata"}, inplace=True)
     if "metadata" not in df.columns:
         df["metadata"] = [{} for _ in range(len(df))]
+    if "uid" not in df.columns and "user_id" in df.columns:
+        df.rename(columns={"user_id": "uid"}, inplace=True)
+    if "uid" not in df.columns:
+        raise SessionizeError("Column 'uid' is required for sessionization")
     for col in ["method", "path"]:
         if col not in df.columns:
             df[col] = None
@@ -92,7 +114,7 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     else:
         df["response_bytes"] = pd.to_numeric(df["response_bytes"], errors="coerce")
     df["event"] = df["event"].astype(str).str.strip()
-    df["user_id"] = df["user_id"].astype(str).str.strip()
+    df["uid"] = df["uid"].astype(str).str.strip()
     return df
 
 
@@ -110,15 +132,15 @@ def _ensure_timestamp(df: pd.DataFrame, tz: str) -> pd.DataFrame:
 def _assign_sessions(df: pd.DataFrame, idle_timeout: int) -> pd.DataFrame:
     df = df.copy()
     if "session_id" in df.columns and df["session_id"].notna().any():
-        df.sort_values(["user_id", "session_id", "timestamp"], inplace=True)
+        df.sort_values(["uid", "session_id", "timestamp"], inplace=True)
         return df
-    df.sort_values(["user_id", "timestamp"], inplace=True)
+    df.sort_values(["uid", "timestamp"], inplace=True)
     session_keys: List[str] = []
     current_session = None
     last_time = None
     last_user = None
     for _, row in df.iterrows():
-        user = row["user_id"]
+        user = row["uid"]
         ts = row["timestamp"]
         if last_user != user or last_time is None:
             current_session = f"{user}-{ts.value}"

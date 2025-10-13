@@ -35,7 +35,7 @@ def main(config_path: Path) -> None:
         raise FileNotFoundError("scores_with_labels.csv not found. Run threshold step first.")
     df = pd.read_csv(scores_path)
 
-    stats = compute_dt_statistics(df, GroupingConfig(by=explain_cfg.get("group_by", "user_id")))
+    stats = compute_dt_statistics(df, GroupingConfig(by=explain_cfg.get("group_by", "uid")))
     export_stats(stats, str(processed_dir / "dt_stats.json"))
 
     top_n = int(explain_cfg.get("top_n", 20))

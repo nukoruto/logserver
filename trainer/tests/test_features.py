@@ -58,13 +58,13 @@ def test_robust_z_quantiles_align_with_normal_distribution() -> None:
     for user in users:
         samples = np.exp(rng.normal(loc=0.0, scale=0.8, size=512))
         for value in samples:
-            rows.append({"user_id": user, "delta_t": float(value)})
+            rows.append({"uid": user, "delta_t": float(value)})
     df = pd.DataFrame(rows)
 
     result = robustZ(df)
 
     for user in users:
-        user_rows = result[result["user_id"] == user]
+        user_rows = result[result["uid"] == user]
         assert np.abs(user_rows["z"].median()) < 0.1
         q90 = user_rows["z"].quantile(0.9)
         assert np.isfinite(q90)
@@ -75,11 +75,11 @@ def test_robust_z_quantiles_align_with_normal_distribution() -> None:
 def test_robust_z_unit_invariance_between_seconds_and_milliseconds() -> None:
     rng = np.random.default_rng(17)
     seconds = rng.lognormal(mean=-4.5, sigma=0.6, size=1024)
-    df_seconds = pd.DataFrame({"user_id": ["u"] * len(seconds), "delta_t": seconds})
+    df_seconds = pd.DataFrame({"uid": ["u"] * len(seconds), "delta_t": seconds})
     z_seconds = robustZ(df_seconds, unit_scale=1.0)
 
     milliseconds = seconds * 1e3
-    df_ms = pd.DataFrame({"user_id": ["u"] * len(milliseconds), "delta_t": milliseconds})
+    df_ms = pd.DataFrame({"uid": ["u"] * len(milliseconds), "delta_t": milliseconds})
     z_ms = robustZ(df_ms, unit_scale=1e-3)
 
     np.testing.assert_allclose(z_seconds["z"].to_numpy(), z_ms["z"].to_numpy(), atol=1e-6)
