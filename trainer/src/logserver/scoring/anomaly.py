@@ -47,7 +47,7 @@ class AnomalyScorer:
         return cls(model, feature_pack, config)
 
     def score(self, encoded: Dict[str, np.ndarray], session_ids: List[str]) -> Dict[str, np.ndarray]:
-        sessions, keys = build_sessions(encoded, session_ids)
+        sessions, keys = build_sessions(encoded, session_ids, self.feature_pack.numeric_features)
         scores: Dict[str, np.ndarray] = {}
         for session, key in zip(sessions, keys):
             example = SessionExample(

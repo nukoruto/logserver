@@ -191,6 +191,9 @@ python -m trainer.scripts.preprocess --config trainer/configs/default.yaml
 # 2) LSTM 学習（Δt 併用）
 python -m trainer.scripts.train --config trainer/configs/default.yaml
 
+# Δt ロバスト特徴（z, z_deseas, lburst, m25, m50, m75）を有効化
+python -m trainer.scripts.train --config trainer/configs/default.yaml --features dt
+
 # 3) スコアリングと閾値設計（分位点 or EVT-POT）
 python -m trainer.scripts.score --config trainer/configs/default.yaml
 python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-error keep-partial \
@@ -198,6 +201,8 @@ python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-e
 
 # 4) 説明レポート（ケース単位）
 python -m trainer.scripts.explain --config trainer/configs/default.yaml
+
+`trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_q{25,50,75}` を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
 # 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
 cd collector && node scripts/check-ntp.js

@@ -41,6 +41,44 @@ def test_encode_dataframe_with_optional_response_bytes() -> None:
     assert encoded["response_bytes"].shape[0] == len(df)
 
 
+def test_build_feature_pack_enables_dt_features_when_present() -> None:
+    df = pd.DataFrame(
+        {
+            "event": ["login", "view", "logout", "view"],
+            "delta_t": [0.0, 1.0, 1.0, 2.0],
+            "latency_ms": [100, 110, 95, 105],
+            "status": [200, 200, 200, 200],
+            "delta_robust_z": [0.0, 0.5, -0.5, 1.0],
+            "delta_z_deseas_clipped": [0.0, 0.4, -0.3, 0.9],
+            "delta_log_burst": [0.0, 0.1, -0.2, 0.3],
+            "delta_q25": [0.1, 0.2, 0.2, 0.3],
+            "delta_q50": [0.2, 0.3, 0.3, 0.4],
+            "delta_q75": [0.4, 0.5, 0.5, 0.6],
+        }
+    )
+    pack = build_feature_pack(df, extra_features=["dt"])
+    expected = {"z", "z_deseas", "lburst", "m25", "m50", "m75"}
+    assert expected.issubset(set(pack.numeric_features))
+    encoded = encode_dataframe(df, pack)
+    for feature in expected:
+        assert feature in encoded
+        assert encoded[feature].shape[0] == len(df)
+
+
+def test_build_feature_pack_dt_missing_columns_falls_back() -> None:
+    df = pd.DataFrame(
+        {
+            "event": ["login", "logout"],
+            "delta_t": [0.0, 1.0],
+            "latency_ms": [100, 120],
+            "status": [200, 200],
+        }
+    )
+    pack = build_feature_pack(df, extra_features=["dt"])
+    dt_keys = {"z", "z_deseas", "lburst", "m25", "m50", "m75"}
+    assert dt_keys.isdisjoint(set(pack.numeric_features))
+
+
 def test_choose_epsilon_quantile_and_clipping() -> None:
     positives = [1e-5, 5e-5, 1e-4, 2e-4]
     eps = choose_epsilon(positives)
