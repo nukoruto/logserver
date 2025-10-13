@@ -14,7 +14,7 @@ import pandas as pd
 class RobustDeltaStats:
     """Container for per-user robust statistics in log space."""
 
-    user_id: str
+    uid: str
     median_log_delta: float
     mad_log_delta: float
     sigma_r: float
@@ -61,7 +61,7 @@ def choose_epsilon(
 def robustZ(
     user_deltas: pd.DataFrame,
     *,
-    user_col: str = "user_id",
+    user_col: str = "uid",
     delta_col: str = "delta_t",
     eps: Optional[float] = None,
     unit_scale: float = 1.0,
@@ -130,7 +130,7 @@ def robustZ(
     return df
 
 
-def summarize_stats(df: pd.DataFrame, user_col: str = "user_id") -> List[RobustDeltaStats]:
+def summarize_stats(df: pd.DataFrame, user_col: str = "uid") -> List[RobustDeltaStats]:
     """Summarize per-user robust statistics from the robustZ output."""
 
     required = {user_col, "median_log_delta", "mad_log_delta", "sigma_r"}
@@ -143,7 +143,7 @@ def summarize_stats(df: pd.DataFrame, user_col: str = "user_id") -> List[RobustD
     for user, group in df.groupby(user_col, sort=False):
         stats.append(
             RobustDeltaStats(
-                user_id=str(user),
+                uid=str(user),
                 median_log_delta=float(group["median_log_delta"].iloc[0]),
                 mad_log_delta=float(group["mad_log_delta"].iloc[0]),
                 sigma_r=float(group["sigma_r"].iloc[0]),

@@ -11,7 +11,7 @@ import pandas as pd
 
 @dataclass
 class GroupingConfig:
-    by: str = "user_id"
+    by: str = "uid"
 
 
 def compute_dt_statistics(df: pd.DataFrame, config: GroupingConfig) -> pd.DataFrame:
