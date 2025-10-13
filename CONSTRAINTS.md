@@ -24,10 +24,10 @@
 - docs/: ドキュメント（README, SRS, 本ファイル, ほか）
 
 ## 3. データ制約（列挙）
-- 入力ログの必須列: timestamp, session_id, user_id, event, message, level, module
+- 入力ログの必須列: timestamp, session_id, uid, event, message, level, module
 - オプション列: params（JSON 互換の辞書）, latency_ms, status_code, host, response_bytes
 - タイムゾーン: すべて UTC に正規化
-- Δt (delta t) の定義: セッション内で同一 user_id の連続イベント間の経過秒（float）
+- Δt (delta t) の定義: セッション内で同一 uid の連続イベント間の経過秒（float）
 - 欠損時刻: 前件欠落・逆順は除外またはセッション断絶として扱う（設定で選択）
 - セッション化: idle_timeout 秒で区切り（デフォルト 1800）
 
@@ -51,7 +51,7 @@
 ## 7. Simulink 連携制約
 - エクスポート形式: ONNX または重み .pt + 入出力仕様 .json
 - ブロック I/F: 入力（イベントID, Δt (delta t), 他特徴の連結ベクトル）, 出力（制御アクション or 正常確率）
-- ユーザ別ブロック: user_id ごとにハイパラ差分を吸収。切替ロジックは外部（Switch/Variant Subsystem）
+- ユーザ別ブロック: uid ごとにハイパラ差分を吸収。切替ロジックは外部（Switch/Variant Subsystem）
 - PID 比較: 同一テストシナリオで LSTM と PID の出力を比較。可視化は数表（画像出力は任意）
 
 ## 8. コーディング標準
@@ -66,7 +66,7 @@
 - 各 CLI は `--help` が通ること、終了コード 0
 
 ## 10. ライセンス/セキュリティ
-- 外部データ送信禁止、個人情報（user_id など）は疑似化
+- 外部データ送信禁止、個人情報（uid など）は疑似化
 - 依存は明示（requirements.txt, environment.yml）
 - OSS ライセンス遵守（Simulink 関連は社内/学内配布範囲で扱う）
 

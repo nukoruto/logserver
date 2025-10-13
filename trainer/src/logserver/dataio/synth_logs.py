@@ -39,7 +39,9 @@ def _random_metadata(rng: random.Random) -> Dict[str, str]:
     }
 
 
-def _generate_session(rng: random.Random, user_id: str, base_ts: datetime, length: int, anomalous: bool) -> List[Dict[str, object]]:
+def _generate_session(
+    rng: random.Random, uid: str, base_ts: datetime, length: int, anomalous: bool
+) -> List[Dict[str, object]]:
     events: List[Dict[str, object]] = []
     timestamp = base_ts
     for idx in range(length):
@@ -50,8 +52,8 @@ def _generate_session(rng: random.Random, user_id: str, base_ts: datetime, lengt
         status = rng.choice([200, 200, 200, 500]) if anomalous and idx == length - 1 else 200
         event_record = {
             "timestamp": timestamp.replace(tzinfo=timezone.utc).isoformat().replace("+00:00", "Z"),
-            "session_id": f"{user_id}-{base_ts.timestamp():.0f}",
-            "user_id": user_id,
+            "session_id": f"{uid}-{base_ts.timestamp():.0f}",
+            "uid": uid,
             "event": event,
             "latency_ms": latency,
             "status": status,
@@ -70,13 +72,13 @@ def generate_dataset(config: ScenarioConfig) -> List[Dict[str, object]]:
     events: List[Dict[str, object]] = []
     now = datetime.now(timezone.utc)
     for session_idx in range(config.normal_sessions):
-        user_id = f"user-{session_idx % 10}"
+        uid = f"user-{session_idx % 10}"
         base_ts = now + timedelta(minutes=session_idx)
-        events.extend(_generate_session(rng, user_id, base_ts, rng.randint(5, 8), anomalous=False))
+        events.extend(_generate_session(rng, uid, base_ts, rng.randint(5, 8), anomalous=False))
     for session_idx in range(config.anomalous_sessions):
-        user_id = f"user-anom-{session_idx % 5}"
+        uid = f"user-anom-{session_idx % 5}"
         base_ts = now + timedelta(minutes=10 + session_idx)
-        events.extend(_generate_session(rng, user_id, base_ts, rng.randint(5, 8), anomalous=True))
+        events.extend(_generate_session(rng, uid, base_ts, rng.randint(5, 8), anomalous=True))
     events.sort(key=lambda item: item["timestamp"])
     return events
 

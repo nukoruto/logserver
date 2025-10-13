@@ -47,7 +47,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 ### 6.2 スキーマ（列挙）
 - timestamp（ISO8601、UTC）  
 - session_id（文字列）  
-- user_id（文字列）  
+- uid（文字列、擬似匿名化済みユーザ ID）
 - event（有限語彙: login、view、edit、save、logout など）  
 - method（HTTP メソッド等、任意）  
 - path（リソース識別、任意）  
