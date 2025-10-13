@@ -203,6 +203,8 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 cd collector && node scripts/check-ntp.js
 ```
 
+- 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。
+
 - 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。
 - `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。
 - `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
