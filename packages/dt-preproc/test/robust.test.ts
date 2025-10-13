@@ -30,6 +30,26 @@ function createRow(uid: string, sessionId: string, epochSeconds: number, index: 
   };
 }
 
+function appendSession(
+  rows: LogRow[],
+  uid: string,
+  sessionId: string,
+  startEpoch: number,
+  deltas: readonly number[],
+  startIndex: number
+): number {
+  let index = startIndex;
+  let current = startEpoch;
+  rows.push(createRow(uid, sessionId, current, index));
+  index += 1;
+  for (const delta of deltas) {
+    current += delta;
+    rows.push(createRow(uid, sessionId, current, index));
+    index += 1;
+  }
+  return index;
+}
+
 function computeMedian(values: readonly number[]): number {
   const sorted = [...values].sort((a, b) => a - b);
   const mid = Math.floor(sorted.length / 2);
@@ -131,6 +151,87 @@ test('robust z-score is approximately invariant under unit scaling', () => {
   }
 });
 
+test('session-level stats back off to user aggregates when below minSamples', () => {
+  const denseSession = [10, 12, 11, 9, 10, 14, 13, 10];
+  const sparseSession = [100, 120, 80, 90, 110];
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'user-rich', 'dense', 0, denseSession, index);
+  appendSession(rows, 'user-rich', 'sparse', 2000, sparseSession, index);
+
+  const { rows: features } = computeFeatureRows(rows, {
+    clipMaxSeconds: 3600,
+    robustScaleEpsilon: 1e-9,
+    robustZClip: 5,
+    minSamples: 8
+  });
+
+  const measuredByUser = features
+    .filter(
+      (row) =>
+        row.uid === 'user-rich' && row.delta_robust_z !== null && row.delta_time_label === 'measured'
+    )
+    .map((row) => row.delta_clipped_seconds as number);
+  const expectedStats = summarize(measuredByUser);
+
+  const sparseRows = features.filter(
+    (row) =>
+      row.uid === 'user-rich' &&
+      row.session_id === 'sparse' &&
+      row.delta_robust_z !== null &&
+      row.delta_time_label === 'measured'
+  );
+  assert.ok(sparseRows.length > 0);
+
+  for (let i = 0; i < sparseRows.length; i += 1) {
+    const actualValue = sparseRows[i].delta_clipped_seconds as number;
+    const expectedZ = clip(robustZ(actualValue, expectedStats));
+    const actualZ = sparseRows[i].delta_robust_z as number;
+    const diff = Math.abs(actualZ - expectedZ);
+    assert.ok(diff <= 1e-6, `session fallback drift exceeds tolerance: ${diff}`);
+  }
+});
+
+test('user-level stats back off to global aggregates when user is sparse', () => {
+  const denseSession = [10, 12, 11, 9, 10, 14, 13, 10];
+  const sparseSession = [100, 120, 80, 90, 110];
+  const sparseUser = [45, 50, 55, 60, 65];
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'user-rich', 'dense', 0, denseSession, index);
+  index = appendSession(rows, 'user-rich', 'sparse', 2000, sparseSession, index);
+  appendSession(rows, 'user-scarce', 'solo', 4000, sparseUser, index);
+
+  const { rows: features, stats } = computeFeatureRows(rows, {
+    clipMaxSeconds: 3600,
+    robustScaleEpsilon: 1e-9,
+    robustZClip: 5,
+    minSamples: 8
+  });
+
+  assert.notEqual(stats.deltaMedian, null);
+
+  const globalMeasured = features
+    .filter(
+      (row) => row.delta_robust_z !== null && row.delta_time_label === 'measured'
+    )
+    .map((row) => row.delta_clipped_seconds as number);
+  const globalStats = summarize(globalMeasured);
+
+  const scarceRows = features.filter(
+    (row) =>
+      row.uid === 'user-scarce' &&
+      row.delta_robust_z !== null &&
+      row.delta_time_label === 'measured'
+  );
+  assert.ok(scarceRows.length > 0);
+
+  for (let i = 0; i < scarceRows.length; i += 1) {
+    const actualValue = scarceRows[i].delta_clipped_seconds as number;
+    const expectedZ = clip(robustZ(actualValue, globalStats));
+    const actualZ = scarceRows[i].delta_robust_z as number;
+    const diff = Math.abs(actualZ - expectedZ);
+    assert.ok(diff <= 1e-6, `global fallback drift exceeds tolerance: ${diff}`);
 2test('thawFittedStats loads frozen per-uid robust log-delta statistics without recomputation', () => {
   const frozen = loadFrozenStats('robust_uid');
   const fitted = thawFittedStats(frozen);
