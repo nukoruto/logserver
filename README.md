@@ -208,6 +208,34 @@ cd collector && node scripts/check-ntp.js
 - `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
 - `--dump-hist` を指定すると、異常スコアのヒストグラム（bin 辺・中心・密度・要約統計）を JSON 形式で保存し、二峰性の可視化にそのまま利用できます。`--hist-bins` でビン数を調整できます。
 
+### 5.1 Δt ロバスト統計フィッティング CLI
+
+学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。
+
+```bash
+# ビルド（初回のみ）
+pnpm --filter @logserver/dt-preproc run build
+
+# フィット：学習 CSV 群から統計を生成
+pnpm exec dt-preproc fit \
+  --in data/train/*.csv \
+  --grouping uid_session \
+  --epsilon 0.0005 \
+  --epsilon-t 0.05 \
+  --clip-max 300 \
+  --robust-z-clip 5 \
+  --out stats/preproc_stats.json \
+  --meta stats/preproc.yaml
+
+# 変換：保存済み統計を用いて特徴量を追記（RFC 4180 準拠のストリーミング処理）
+pnpm exec dt-preproc transform \
+  --in data/val/*.csv \
+  --stats stats/preproc_stats.json \
+  --out data/val_feat/*.csv
+```
+
+`fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパスに実行オプション・入力リスト・CSV パース統計を YAML/JSON 形式で出力します。`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z` など）を追記した CSV を生成します。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
+
 ### 5.6 シナリオ生成 CLI / API
 
 - シナリオ定義は `configs/scenario_default.json` に外部化されており、環境変数 `SIM_SCENARIO_FILE` を指定すれば任意ファイルを優先読み込みします。

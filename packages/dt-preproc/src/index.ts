@@ -54,6 +54,7 @@ export interface PreprocCfg {
   epsilon: number;
   epsilon_t: number;
   grouping?: 'uid' | 'uid_session';
+  min_samples?: number;
 }
 
 export interface FittedStats extends StatsLookup {
@@ -90,6 +91,30 @@ export interface FeatureOptions {
 }
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
+
+export interface SerializedPreprocOptions {
+  measurement_epsilon: number;
+  epsilon_t: number;
+  clip_max_seconds: number;
+  robust_z_clip: number;
+  min_samples: number;
+}
+
+export interface SerializedPreprocStats extends FrozenFittedStats {
+  version?: number;
+  grouping?: 'uid' | 'uid_session';
+  options?: SerializedPreprocOptions;
+}
+
+interface StreamingSessionState extends SessionState {
+  sessionId: string;
+  prevTimestamp: number | null;
+}
+
+export interface StreamingTransformerOptions extends Partial<FeatureOptions> {
+  fitted: FittedStats;
+  grouping?: 'uid' | 'uid_session';
+}
 
 function keyEntries(key: GroupKey): [string, string][] {
   const entries: [string, string][] = [];
@@ -961,6 +986,182 @@ function normalizeRobustStatsInput(stats: RobustStats | FrozenRobustStats | null
   };
 }
 
+export class StreamingFeatureTransformer {
+  private readonly normalized: NormalizedFeatureOptions;
+
+  private readonly fitted: FittedStats;
+
+  private readonly grouping: 'uid' | 'uid_session';
+
+  private readonly logEps: number;
+
+  private readonly stats: MutableFeatureStats = {
+    total: 0,
+    measured: 0,
+    unknown: 0,
+    initial: 0,
+    clipped: 0,
+    filteredOut: 0,
+    deltaMedian: null,
+    deltaMad: null,
+    deltaRobustScale: null
+  };
+
+  private readonly stateByUser = new Map<string, StreamingSessionState>();
+
+  constructor(options: StreamingTransformerOptions) {
+    if (!options?.fitted) {
+      throw new TypeError('StreamingFeatureTransformer requires fitted statistics');
+    }
+    this.normalized = normalizeFeatureOptions(options);
+    this.fitted = options.fitted;
+    this.grouping = normalizeGrouping(options.grouping);
+    this.logEps = Math.max(this.normalized.epsilon, this.fitted.epsilon, LOG_EPS_FLOOR);
+  }
+
+  private getState(uid: string, sessionId: string, timestamp: number | null): StreamingSessionState {
+    const existing = this.stateByUser.get(uid);
+    if (existing && existing.sessionId === sessionId) {
+      if (existing.startTime === null && isFiniteNumber(timestamp)) {
+        existing.startTime = timestamp;
+      }
+      return existing;
+    }
+
+    const state: StreamingSessionState = {
+      sessionId,
+      sequence: 0,
+      startTime: isFiniteNumber(timestamp) ? timestamp : null,
+      prevTimestamp: null,
+      prevMeasuredDelta: null
+    };
+    this.stateByUser.set(uid, state);
+    return state;
+  }
+
+  process(row: LogRow): LogRowWithFeats {
+    const timestamp = isFiniteNumber(row.timestamp_epoch_seconds) ? row.timestamp_epoch_seconds : null;
+    const state = this.getState(row.uid, row.session_id, timestamp);
+    const sequence = state.sequence;
+
+    let deltaSeconds: number | null = null;
+    let timeLabel: DeltaTimeLabel;
+
+    if (!isFiniteNumber(timestamp)) {
+      timeLabel = 'unknown';
+      state.prevTimestamp = null;
+    } else if (sequence === 0 || state.prevTimestamp === null) {
+      timeLabel = 'initial';
+      deltaSeconds = null;
+    } else {
+      const previous = state.prevTimestamp;
+      let delta = previous !== null ? timestamp - previous : null;
+      if (delta === null || !Number.isFinite(delta) || delta < 0) {
+        deltaSeconds = null;
+        timeLabel = 'unknown';
+      } else {
+        if (delta <= this.normalized.epsilon) {
+          delta = this.normalized.epsilon;
+        }
+        deltaSeconds = delta;
+        timeLabel = delta <= this.normalized.epsilonT ? 'unknown' : 'measured';
+      }
+    }
+
+    const sanitized = sanitizeDelta(deltaSeconds);
+    let clipped: number | null = null;
+    let logBurst: number | null = null;
+
+    if (sanitized !== null) {
+      const bounded = Math.min(sanitized, this.normalized.clipMaxSeconds);
+      clipped = bounded;
+      if (sanitized > this.normalized.clipMaxSeconds) {
+        this.stats.clipped += 1;
+      }
+      if (timeLabel === 'measured') {
+        const previousMeasured = state.prevMeasuredDelta;
+        if (previousMeasured !== null && sequence > 0) {
+          logBurst = lburst(previousMeasured, sanitized, this.normalized.epsilon);
+        }
+        state.prevMeasuredDelta = sequence > 0 ? sanitized : null;
+      } else {
+        state.prevMeasuredDelta = null;
+      }
+    } else {
+      state.prevMeasuredDelta = null;
+    }
+
+    let sessionElapsed: number | null = null;
+    if (timestamp !== null) {
+      sessionElapsed = computeSessionElapsed(state, timestamp);
+    }
+
+    if (timeLabel === 'measured') {
+      this.stats.measured += 1;
+    } else if (timeLabel === 'unknown') {
+      this.stats.unknown += 1;
+    } else {
+      this.stats.initial += 1;
+    }
+
+    let deltaRobustZ: number | null = null;
+    let deltaSeasonalZ: number | null = null;
+
+    if (clipped !== null) {
+      const key: GroupKey = this.grouping === 'uid_session'
+        ? { uid: row.uid, session_id: row.session_id }
+        : { uid: row.uid };
+      const statsForRow = chooseStats(key, this.fitted);
+      if (statsForRow) {
+        deltaRobustZ = clip(robustZ(clipped, statsForRow), this.normalized.robustZClip);
+        const fallback: RobustScaleStats = {
+          x_med: statsForRow.x_med,
+          x_mad: statsForRow.x_mad ?? 0,
+          x_smad: Math.max(statsForRow.x_smad, this.normalized.robustScaleEpsilon)
+        };
+        const hourlyStats = resolveHourlyStats(statsForRow, extractHour(row), fallback);
+        const scale = Math.max(hourlyStats.x_smad, this.normalized.robustScaleEpsilon);
+        if (scale > 0) {
+          const logDelta = Math.log(Math.max(clipped, 0) + this.logEps);
+          const zDeseas = (logDelta - hourlyStats.x_med) / scale;
+          deltaSeasonalZ = clip(zDeseas, this.normalized.robustZClip);
+        }
+      }
+    }
+
+    const featureRow: LogRowWithFeats = {
+      ...row,
+      delta_seconds: deltaSeconds,
+      delta_clipped_seconds: clipped,
+      delta_robust_z: deltaRobustZ,
+      delta_z_deseas_clipped: deltaSeasonalZ,
+      delta_log_burst: logBurst,
+      delta_time_label: timeLabel,
+      session_sequence: sequence,
+      session_elapsed_seconds: sessionElapsed,
+      is_session_start: sequence === 0
+    };
+
+    state.sequence += 1;
+    state.prevTimestamp = timestamp;
+    if (timestamp !== null && state.startTime === null) {
+      state.startTime = timestamp;
+    }
+
+    this.stats.total += 1;
+
+    return featureRow;
+  }
+
+  getStats(): FeatureStats {
+    return { ...this.stats };
+  }
+
+  getOptions(): NormalizedFeatureOptions {
+    return { ...this.normalized };
+  }
+}
+
 export function freezeFittedStats(stats: FittedStats): FrozenFittedStats {
   if (!stats || typeof stats !== 'object') {
     throw new TypeError('stats must be a FittedStats object');
@@ -1004,6 +1205,9 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
   const epsilon = Number.isFinite(cfg?.epsilon) && cfg.epsilon >= 0 ? cfg.epsilon : 0;
   const epsilonT = Number.isFinite(cfg?.epsilon_t) && cfg.epsilon_t >= 0 ? cfg.epsilon_t : 0;
   const grouping = normalizeGrouping(cfg?.grouping);
+  const minSamples = Number.isFinite(cfg?.min_samples) && cfg.min_samples !== undefined
+    ? Math.max(1, Math.floor(cfg.min_samples))
+    : 1;
   const logEps = Math.max(epsilon, LOG_EPS_FLOOR);
 
   const globalValues: number[] = [];
@@ -1064,6 +1268,9 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
 
   const groupStats = new Map<string, RobustStats>();
   for (const [serialized, acc] of perGroup.entries()) {
+    if (acc.values.length < minSamples) {
+      continue;
+    }
     const summary = computeRobustSummary(acc.values);
     const baseStats: RobustScaleStats = summary
       ? summary
