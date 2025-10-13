@@ -1,224 +1,559 @@
 #!/usr/bin/env node
 import { createWriteStream } from 'node:fs';
-import { readFile, writeFile } from 'node:fs/promises';
+import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
+import { basename, dirname, join, resolve as resolvePath } from 'node:path';
 import { pipeline } from 'node:stream/promises';
-import { stdin, stdout, stderr } from 'node:process';
+import { stderr } from 'node:process';
 import { format } from 'fast-csv';
-import { parse as parseCsvSync } from 'csv-parse/sync';
 import yargs from 'yargs';
 import { hideBin } from 'yargs/helpers';
 import { z } from 'zod';
 import {
   DEFAULT_FEATURE_OPTIONS,
-  loadLogRowsWithFeatures,
-  type LogRow
+  StreamingFeatureTransformer,
+  fitRobustStats,
+  freezeFittedStats,
+  thawFittedStats,
+  type LogRow,
+  type LogRowWithFeats,
+  type SerializedPreprocOptions,
+  type SerializedPreprocStats,
+  type StreamingTransformerOptions
 } from './index.js';
+import { parseCsv, type CsvParseStats } from '@logserver/csv-schema';
 
-const cliSchema = z.object({
-  input: z.string().min(1).optional(),
-  output: z.string().min(1).optional(),
+interface AggregateParseStats {
+  totalRows: number;
+  validRows: number;
+  invalidRows: number;
+  invalidReasons: Map<string, number>;
+  schemaValidated: boolean;
+}
+
+interface FitMeta {
+  version: number;
+  generated_at: string;
+  stats_file: string;
+  grouping: 'uid' | 'uid_session';
+  options: SerializedPreprocOptions;
+  input_files: string[];
+  parse: {
+    total_rows: number;
+    valid_rows: number;
+    invalid_rows: number;
+    invalid_reasons: Record<string, number>;
+    schema_validated: boolean;
+  };
+}
+
+const FIT_SCHEMA = z.object({
+  inputs: z.array(z.string().min(1)).nonempty(),
+  grouping: z.enum(['uid', 'uid_session']),
   epsilon: z.number().min(0),
   epsilonT: z.number().min(0),
   clipMaxSeconds: z.number().positive(),
   robustZClip: z.number().positive(),
+  minSamples: z.number().positive(),
+  out: z.string().min(1),
+  meta: z.string().min(1).optional(),
+  pretty: z.boolean()
+});
+
+const TRANSFORM_SCHEMA = z.object({
+  inputs: z.array(z.string().min(1)).nonempty(),
+  stats: z.string().min(1),
+  output: z.string().min(1),
+  epsilon: z.number().min(0).optional(),
+  epsilonT: z.number().min(0).optional(),
+  clipMaxSeconds: z.number().positive().optional(),
+  robustZClip: z.number().positive().optional(),
   validateSchema: z.boolean(),
-  stats: z.string().min(1).optional(),
-  pretty: z.boolean(),
-  ignoreUids: z.string().min(1).optional()
+  pretty: z.boolean()
 });
 
 function toNumber(value: unknown): number {
-  if (typeof value !== 'number' || Number.isNaN(value)) {
-    throw new TypeError('Invalid numeric argument');
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
   }
-  return value;
-}
-
-async function loadIgnoreUids(path?: string): Promise<Set<string>> {
-  if (!path) {
-    return new Set();
-  }
-  const content = await readFile(path, 'utf8');
-  const records = parseCsvSync(content, {
-    skip_empty_lines: true,
-    trim: true
-  }) as unknown[];
-  const values = new Set<string>();
-
-  for (const record of records) {
-    if (Array.isArray(record)) {
-      for (const cell of record) {
-        if (typeof cell === 'string' && cell.length > 0) {
-          values.add(cell);
-        }
-      }
-    } else if (typeof record === 'string' && record.length > 0) {
-      values.add(record);
+  if (typeof value === 'string') {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
     }
   }
-
-  return values;
+  throw new TypeError('Invalid numeric argument');
 }
 
-function buildFilter(ignoreSet: Set<string> | undefined): ((row: LogRow) => boolean) | undefined {
-  if (!ignoreSet || ignoreSet.size === 0) {
-    return undefined;
-  }
-  return (row: LogRow): boolean => !ignoreSet.has(row.uid);
+function createAggregateParseStats(): AggregateParseStats {
+  return {
+    totalRows: 0,
+    validRows: 0,
+    invalidRows: 0,
+    invalidReasons: new Map<string, number>(),
+    schemaValidated: false
+  };
 }
 
-async function writeCsv(
-  options: z.infer<typeof cliSchema>,
-  featurePayload: Awaited<ReturnType<typeof loadLogRowsWithFeatures>>
-): Promise<void> {
-  const outputStream = options.output
-    ? createWriteStream(options.output, { encoding: 'utf8' })
-    : stdout;
-  const csvStream = format({ headers: true });
-  const pipePromise = pipeline(csvStream, outputStream);
+function mergeParseStats(target: AggregateParseStats, source: CsvParseStats): void {
+  target.totalRows += source.totalRows;
+  target.validRows += source.validRows;
+  target.invalidRows += source.invalidRows;
+  target.schemaValidated = target.schemaValidated || source.schemaValidated;
+  for (const [reason, count] of Object.entries(source.invalidReasons)) {
+    const current = target.invalidReasons.get(reason) ?? 0;
+    target.invalidReasons.set(reason, current + count);
+  }
+}
 
-  for (const row of featurePayload.rows) {
-    csvStream.write({
-      timestamp_utc: row.timestamp_utc,
-      timestamp_epoch_seconds: row.timestamp_epoch_seconds,
-      uid: row.uid,
-      session_id: row.session_id,
-      method: row.method,
-      path: row.path,
-      referer: row.referer,
-      user_agent: row.user_agent,
-      ip: row.ip,
-      op_category: row.op_category,
-      row_index: row.row_index,
-      delta_seconds: row.delta_seconds ?? '',
-      delta_clipped_seconds: row.delta_clipped_seconds ?? '',
-      delta_robust_z: row.delta_robust_z ?? '',
-      delta_z_deseas_clipped: row.delta_z_deseas_clipped ?? '',
-      delta_log_burst: row.delta_log_burst ?? '',
-      delta_time_label: row.delta_time_label,
-      session_sequence: row.session_sequence,
-      session_elapsed_seconds: row.session_elapsed_seconds ?? '',
-      is_session_start: row.is_session_start ? 1 : 0
-    });
+function formatAggregate(stats: AggregateParseStats): FitMeta['parse'] {
+  return {
+    total_rows: stats.totalRows,
+    valid_rows: stats.validRows,
+    invalid_rows: stats.invalidRows,
+    invalid_reasons: Object.fromEntries(stats.invalidReasons.entries()),
+    schema_validated: stats.schemaValidated
+  };
+}
+
+function hasGlob(pattern: string): boolean {
+  return /[*?]/.test(pattern);
+}
+
+function globToRegExp(pattern: string): RegExp {
+  const escaped = pattern.replace(/[.+^${}()|\[\]\\]/g, '\\$&');
+  const replaced = escaped.replace(/\\\*/g, '.*').replace(/\\\?/g, '.');
+  return new RegExp(`^${replaced}$`);
+}
+
+async function expandInputPatterns(patterns: readonly string[]): Promise<string[]> {
+  const results: string[] = [];
+  for (const raw of patterns) {
+    const pattern = raw.trim();
+    if (!pattern) {
+      continue;
+    }
+    if (!hasGlob(pattern)) {
+      await stat(pattern);
+      results.push(pattern);
+      continue;
+    }
+    const directory = dirname(pattern) || '.';
+    const base = basename(pattern);
+    const regex = globToRegExp(base);
+    const entries = await readdir(directory, { withFileTypes: true });
+    const matches = entries
+      .filter((entry) => entry.isFile() && regex.test(entry.name))
+      .map((entry) => join(directory, entry.name))
+      .sort();
+    if (matches.length === 0) {
+      throw new Error(`Pattern '${pattern}' did not match any files`);
+    }
+    results.push(...matches);
+  }
+  return results;
+}
+
+async function ensureParent(path: string): Promise<void> {
+  const parent = dirname(path);
+  if (!parent || parent === '.' || parent === path) {
+    return;
+  }
+  await mkdir(parent, { recursive: true });
+}
+
+function toCsvRecord(row: LogRowWithFeats): Record<string, unknown> {
+  return {
+    timestamp_utc: row.timestamp_utc,
+    timestamp_epoch_seconds: row.timestamp_epoch_seconds,
+    uid: row.uid,
+    session_id: row.session_id,
+    method: row.method,
+    path: row.path,
+    referer: row.referer,
+    user_agent: row.user_agent,
+    ip: row.ip,
+    op_category: row.op_category,
+    row_index: row.row_index,
+    delta_seconds: row.delta_seconds ?? '',
+    delta_clipped_seconds: row.delta_clipped_seconds ?? '',
+    delta_robust_z: row.delta_robust_z ?? '',
+    delta_z_deseas_clipped: row.delta_z_deseas_clipped ?? '',
+    delta_log_burst: row.delta_log_burst ?? '',
+    delta_time_label: row.delta_time_label,
+    session_sequence: row.session_sequence,
+    session_elapsed_seconds: row.session_elapsed_seconds ?? '',
+    is_session_start: row.is_session_start ? 1 : 0
+  };
+}
+
+function detectYaml(path: string | undefined): boolean {
+  if (!path) {
+    return false;
+  }
+  return path.endsWith('.yaml') || path.endsWith('.yml');
+}
+
+function serializeYaml(value: unknown, indent = 0): string {
+  const indentation = '  '.repeat(indent);
+  if (Array.isArray(value)) {
+    if (value.length === 0) {
+      return `${indentation}[]`;
+    }
+    return value
+      .map((item) => {
+        const serialized = serializeYaml(item, indent + 1);
+        if (serialized.includes('\n')) {
+          return `${indentation}-\n${serialized}`;
+        }
+        return `${indentation}- ${serialized.trim()}`;
+      })
+      .join('\n');
+  }
+  if (value && typeof value === 'object') {
+    const entries = Object.entries(value as Record<string, unknown>);
+    if (entries.length === 0) {
+      return `${indentation}{}`;
+    }
+    return entries
+      .map(([key, val]) => {
+        const serialized = serializeYaml(val, indent + 1);
+        if (serialized.includes('\n')) {
+          return `${indentation}${key}:\n${serialized}`;
+        }
+        return `${indentation}${key}: ${serialized.trim()}`;
+      })
+      .join('\n');
+  }
+  if (typeof value === 'string') {
+    if (value === '') {
+      return `${indentation}''`;
+    }
+    if (/^[A-Za-z0-9_.-]+$/.test(value)) {
+      return `${indentation}${value}`;
+    }
+    return `${indentation}${JSON.stringify(value)}`;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return `${indentation}${String(value)}`;
+  }
+  return `${indentation}null`;
+}
+
+async function writeMeta(path: string | undefined, meta: FitMeta, pretty: boolean): Promise<void> {
+  if (!path) {
+    return;
+  }
+  await ensureParent(path);
+  const content = detectYaml(path)
+    ? `${serializeYaml(meta)}\n`
+    : `${JSON.stringify(meta, null, pretty ? 2 : 0)}\n`;
+  await writeFile(path, content, 'utf8');
+}
+
+function buildOptionsPayload(parsed: z.infer<typeof FIT_SCHEMA>): SerializedPreprocOptions {
+  return {
+    measurement_epsilon: parsed.epsilon,
+    epsilon_t: parsed.epsilonT,
+    clip_max_seconds: parsed.clipMaxSeconds,
+    robust_z_clip: parsed.robustZClip,
+    min_samples: Math.max(1, Math.floor(parsed.minSamples))
+  };
+}
+
+function deriveTransformOptions(
+  parsed: z.infer<typeof TRANSFORM_SCHEMA>,
+  stats: SerializedPreprocStats
+): StreamingTransformerOptions {
+  const stored = stats.options;
+  const grouping = stats.grouping ?? 'uid';
+  return {
+    fitted: thawFittedStats(stats),
+    grouping,
+    epsilon: parsed.epsilon ?? stored?.measurement_epsilon ?? DEFAULT_FEATURE_OPTIONS.epsilon,
+    epsilonT: parsed.epsilonT ?? stored?.epsilon_t ?? DEFAULT_FEATURE_OPTIONS.epsilonT,
+    clipMaxSeconds: parsed.clipMaxSeconds ?? stored?.clip_max_seconds ?? DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
+    robustZClip: parsed.robustZClip ?? stored?.robust_z_clip ?? DEFAULT_FEATURE_OPTIONS.robustZClip,
+    minSamples: stored?.min_samples ?? DEFAULT_FEATURE_OPTIONS.minSamples
+  };
+}
+
+function buildStatsPayload(
+  frozen: SerializedPreprocStats,
+  options: SerializedPreprocOptions,
+  grouping: 'uid' | 'uid_session'
+): SerializedPreprocStats {
+  return {
+    ...frozen,
+    version: 1,
+    grouping,
+    options
+  };
+}
+
+async function resolveOutputPaths(inputs: readonly string[], spec: string): Promise<string[]> {
+  if (inputs.length === 0) {
+    throw new Error('No input files provided');
+  }
+  const patternIndex = spec.indexOf('*');
+  if (patternIndex !== -1) {
+    if (spec.indexOf('*', patternIndex + 1) !== -1) {
+      throw new Error('Output pattern supports at most one "*" character');
+    }
+    const prefix = spec.slice(0, patternIndex);
+    const suffix = spec.slice(patternIndex + 1);
+    return inputs.map((input) => prefix + basename(input) + suffix);
+  }
+  try {
+    const info = await stat(spec);
+    if (info.isDirectory()) {
+      return inputs.map((input) => join(spec, basename(input)));
+    }
+    if (inputs.length === 1) {
+      return [spec];
+    }
+    throw new Error('Output path must be a directory or pattern when multiple inputs are provided');
+  } catch {
+    if (inputs.length === 1) {
+      return [spec];
+    }
+    await mkdir(spec, { recursive: true });
+    return inputs.map((input) => join(spec, basename(input)));
+  }
+}
+
+async function runFit(argv: unknown): Promise<void> {
+  const parsed = FIT_SCHEMA.parse(argv);
+  const inputPaths = await expandInputPatterns(parsed.inputs);
+  if (inputPaths.length === 0) {
+    throw new Error('No input files matched');
   }
 
-  csvStream.end();
-  await pipePromise;
+  const aggregate = createAggregateParseStats();
+  const allRows: LogRow[] = [];
 
-  if (options.stats) {
-    const { parseStats, featureStats, options: normalized } = featurePayload;
-    const summary = {
-      options: {
-        epsilon: normalized.epsilon,
-        epsilon_t: normalized.epsilonT,
-        clip_max_seconds: normalized.clipMaxSeconds,
-        robust_scale_epsilon: normalized.robustScaleEpsilon,
-        robust_z_clip: normalized.robustZClip,
-        min_samples: normalized.minSamples,
-        validate_schema: options.validateSchema,
-        ignored_uid_count: featureStats.filteredOut,
-        ignore_source: options.ignoreUids ?? null
-      },
-      parse: parseStats,
-      features: featureStats
-    };
-    const json = JSON.stringify(summary, null, options.pretty ? 2 : 0);
-    await writeFile(options.stats, json, 'utf8');
+  for (const path of inputPaths) {
+    const parser = parseCsv(path, { validateSchema: true });
+    for await (const row of parser) {
+      allRows.push(row);
+    }
+    mergeParseStats(aggregate, parser.getStats());
+  }
+
+  const options = buildOptionsPayload(parsed);
+  const fitted = fitRobustStats(allRows, {
+    epsilon: options.measurement_epsilon,
+    epsilon_t: options.epsilon_t,
+    grouping: parsed.grouping,
+    min_samples: options.min_samples
+  });
+
+  const frozen = freezeFittedStats(fitted) as SerializedPreprocStats;
+  const payload = buildStatsPayload(frozen, options, parsed.grouping);
+
+  await ensureParent(parsed.out);
+  const statsJson = `${JSON.stringify(payload, null, parsed.pretty ? 2 : 0)}\n`;
+  await writeFile(parsed.out, statsJson, 'utf8');
+
+  const meta: FitMeta = {
+    version: 1,
+    generated_at: new Date().toISOString(),
+    stats_file: resolvePath(parsed.out),
+    grouping: parsed.grouping,
+    options,
+    input_files: inputPaths.map((path) => resolvePath(path)),
+    parse: formatAggregate(aggregate)
+  };
+
+  await writeMeta(parsed.meta, meta, parsed.pretty);
+}
+
+async function runTransform(argv: unknown): Promise<void> {
+  const parsed = TRANSFORM_SCHEMA.parse(argv);
+  const inputPaths = await expandInputPatterns(parsed.inputs);
+  if (inputPaths.length === 0) {
+    throw new Error('No input files matched');
+  }
+
+  const statsText = await readFile(parsed.stats, 'utf8');
+  const statsPayload = JSON.parse(statsText) as SerializedPreprocStats;
+  const transformerOptions = deriveTransformOptions(parsed, statsPayload);
+  const transformer = new StreamingFeatureTransformer(transformerOptions);
+
+  const outputPaths = await resolveOutputPaths(inputPaths, parsed.output);
+  if (outputPaths.length !== inputPaths.length) {
+    throw new Error('Mismatch between inputs and resolved outputs');
+  }
+
+  for (let index = 0; index < inputPaths.length; index += 1) {
+    const input = inputPaths[index];
+    const output = outputPaths[index];
+
+    await ensureParent(output);
+
+    const parser = parseCsv(input, { validateSchema: parsed.validateSchema });
+    const csvStream = format({ headers: true });
+    const outputStream = createWriteStream(output, { encoding: 'utf8' });
+    const pipePromise = pipeline(csvStream, outputStream);
+
+    for await (const row of parser) {
+      const featureRow = transformer.process(row);
+      csvStream.write(toCsvRecord(featureRow));
+    }
+
+    csvStream.end();
+    await pipePromise;
   }
 }
 
 async function main(): Promise<void> {
-  const argv = yargs(hideBin(process.argv))
+  const cli = yargs(hideBin(process.argv))
     .scriptName('dt-preproc')
-    .usage('Usage: $0 [options]')
-    .option('input', {
-      alias: 'i',
-      type: 'string',
-      describe: 'Path to the input CSV file. If omitted, read from STDIN.'
-    })
-    .option('output', {
-      alias: 'o',
-      type: 'string',
-      describe: 'Path to the output CSV file. If omitted, write to STDOUT.'
-    })
-    .option('epsilon', {
-      alias: 'e',
-      type: 'number',
-      default: DEFAULT_FEATURE_OPTIONS.epsilon,
-      describe: 'Measurement resolution epsilon (seconds). Values below are snapped to zero.'
-    })
-    .option('epsilon-t', {
-      alias: 't',
-      type: 'number',
-      default: DEFAULT_FEATURE_OPTIONS.epsilonT,
-      describe: 'Timing uncertainty epsilon_t (seconds). Values below are marked as unknown.'
-    })
-    .option('clip-max', {
-      alias: 'c',
-      type: 'number',
-      default: DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
-      describe: 'Upper bound for Δt clipping (seconds).'
-    })
-    .option('robust-z-clip', {
-      type: 'number',
-      default: DEFAULT_FEATURE_OPTIONS.robustZClip,
-      describe: 'Symmetric clipping limit for robust z-scores.'
-    })
-    .option('stats', {
-      type: 'string',
-      describe: 'Optional path to write feature statistics JSON.'
-    })
-    .option('pretty', {
-      type: 'boolean',
-      default: false,
-      describe: 'Pretty-print the statistics JSON.'
-    })
-    .option('ignore-uids', {
-      type: 'string',
-      describe: 'CSV file listing uid values to exclude from feature computation.'
-    })
-    .option('validate-schema', {
-      type: 'boolean',
-      default: true,
-      describe: 'Enable CSV schema validation using @logserver/csv-schema.'
-    })
-    .help()
+    .command(
+      'fit',
+      'Fit Δt robust statistics from training CSV files',
+      (cmd) =>
+        cmd
+          .option('in', {
+            type: 'array',
+            demandOption: true,
+            describe: 'Input CSV files (supports shell glob expansion)',
+            alias: ['input']
+          })
+          .option('grouping', {
+            type: 'string',
+            choices: ['uid', 'uid_session'] as const,
+            default: 'uid',
+            describe: 'Grouping strategy for robust statistics'
+          })
+          .option('epsilon', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.epsilon,
+            describe: 'Measurement resolution epsilon (seconds)'
+          })
+          .option('epsilon-t', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.epsilonT,
+            describe: 'Timing uncertainty epsilon_t (seconds)'
+          })
+          .option('clip-max', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
+            describe: 'Upper bound for Δt clipping (seconds)'
+          })
+          .option('robust-z-clip', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.robustZClip,
+            describe: 'Symmetric clipping limit for robust z-scores'
+          })
+          .option('min-samples', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.minSamples,
+            describe: 'Minimum samples required for per-group robust stats'
+          })
+          .option('out', {
+            type: 'string',
+            demandOption: true,
+            describe: 'Output path for serialized statistics JSON'
+          })
+          .option('meta', {
+            type: 'string',
+            describe: 'Optional metadata path (supports JSON or YAML)'
+          })
+          .option('pretty', {
+            type: 'boolean',
+            default: false,
+            describe: 'Pretty-print JSON outputs'
+          }),
+      async (argv) => {
+        const args = {
+          inputs: (argv.in as unknown[]).map(String),
+          grouping: argv.grouping as 'uid' | 'uid_session',
+          epsilon: toNumber(argv.epsilon),
+          epsilonT: toNumber(argv.epsilonT ?? argv['epsilon-t']),
+          clipMaxSeconds: toNumber(argv.clipMax ?? argv['clip-max']),
+          robustZClip: toNumber(argv.robustZClip ?? argv['robust-z-clip']),
+          minSamples: toNumber(argv.minSamples ?? argv['min-samples']),
+          out: String(argv.out),
+          meta: typeof argv.meta === 'string' ? argv.meta : undefined,
+          pretty: Boolean(argv.pretty)
+        };
+        await runFit(args);
+      }
+    )
+    .command(
+      'transform',
+      'Apply fitted statistics to CSV files and append Δt features',
+      (cmd) =>
+        cmd
+          .option('in', {
+            type: 'array',
+            demandOption: true,
+            describe: 'Input CSV files (supports shell glob expansion)',
+            alias: ['input']
+          })
+          .option('stats', {
+            type: 'string',
+            demandOption: true,
+            describe: 'Path to serialized statistics JSON produced by the fit command'
+          })
+          .option('out', {
+            type: 'string',
+            demandOption: true,
+            describe: 'Output file, directory, or pattern (use * to substitute file names)'
+          })
+          .option('epsilon', {
+            type: 'number',
+            describe: 'Override measurement resolution epsilon (seconds)'
+          })
+          .option('epsilon-t', {
+            type: 'number',
+            describe: 'Override timing uncertainty epsilon_t (seconds)'
+          })
+          .option('clip-max', {
+            type: 'number',
+            describe: 'Override Δt clipping upper bound (seconds)'
+          })
+          .option('robust-z-clip', {
+            type: 'number',
+            describe: 'Override robust z-score clipping limit'
+          })
+          .option('validate-schema', {
+            type: 'boolean',
+            default: true,
+            describe: 'Enable CSV schema validation'
+          })
+          .option('pretty', {
+            type: 'boolean',
+            default: false,
+            describe: 'Unused placeholder for interface consistency'
+          }),
+      async (argv) => {
+        const args = {
+          inputs: (argv.in as unknown[]).map(String),
+          stats: String(argv.stats),
+          output: String(argv.out),
+          epsilon: argv.epsilon !== undefined ? toNumber(argv.epsilon) : undefined,
+          epsilonT: argv.epsilonT !== undefined ? toNumber(argv.epsilonT) : argv['epsilon-t'] !== undefined ? toNumber(argv['epsilon-t']) : undefined,
+          clipMaxSeconds: argv.clipMax !== undefined ? toNumber(argv.clipMax) : argv['clip-max'] !== undefined ? toNumber(argv['clip-max']) : undefined,
+          robustZClip: argv.robustZClip !== undefined ? toNumber(argv.robustZClip) : argv['robust-z-clip'] !== undefined ? toNumber(argv['robust-z-clip']) : undefined,
+          validateSchema: argv.validateSchema !== undefined ? Boolean(argv.validateSchema) : true,
+          pretty: Boolean(argv.pretty)
+        };
+        await runTransform(args);
+      }
+    )
+    .demandCommand(1)
     .strict()
-    .parseSync();
+    .help();
 
-  const parsed = cliSchema.parse({
-    input: argv.input,
-    output: argv.output,
-    epsilon: toNumber(argv.epsilon),
-    epsilonT: toNumber(argv.epsilonT),
-    clipMaxSeconds: toNumber(argv.clipMax),
-    robustZClip: toNumber(argv.robustZClip),
-    validateSchema: argv.validateSchema,
-    stats: argv.stats,
-    pretty: argv.pretty,
-    ignoreUids: argv.ignoreUids
-  });
-
-  const ignoreSet = await loadIgnoreUids(parsed.ignoreUids);
-  const source = parsed.input ? parsed.input : stdin;
-  if (!parsed.input) {
-    stdin.setEncoding('utf8');
-  }
-
-  const featurePayload = await loadLogRowsWithFeatures(source, {
-    epsilon: parsed.epsilon,
-    epsilonT: parsed.epsilonT,
-    clipMaxSeconds: parsed.clipMaxSeconds,
-    robustZClip: parsed.robustZClip,
-    validateSchema: parsed.validateSchema,
-    filter: buildFilter(ignoreSet)
-  });
-
-  await writeCsv(parsed, featurePayload);
+  await cli.parseAsync();
 }
 
 main().catch((error) => {
   const message = error instanceof Error ? error.message : String(error);
   stderr.write(`dt-preproc: ${message}\n`);
+  if (error instanceof Error && error.stack) {
+    stderr.write(`${error.stack}\n`);
+  }
   process.exitCode = 1;
 });

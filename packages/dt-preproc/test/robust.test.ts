@@ -6,8 +6,10 @@ import test from 'node:test';
 import {
   clip,
   computeFeatureRows,
+  fitRobustStats,
   freezeFittedStats,
   robustZ,
+  StreamingFeatureTransformer,
   thawFittedStats,
   updateStatsStreaming,
   type FrozenFittedStats,
@@ -482,4 +484,88 @@ test('updateStatsStreaming bounds per-step drift under repeated outliers', () =>
     assert.ok(diff <= baseScale * cfg.maxDrift + 1e-9);
     stats = next;
   }
+});
+
+test('StreamingFeatureTransformer matches thawed statistics replay', () => {
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'userA', 's1', 1_000, [1, 5, 2, 6, 2], index);
+  index = appendSession(rows, 'userB', 's2', 2_000, [3, 4, 7, 1, 2, 5], index);
+  index = appendSession(rows, 'userA', 's3', 3_500, [2, 2, 9, 3, 4], index);
+
+  const options = {
+    epsilon: 0.5,
+    epsilonT: 1.0,
+    clipMaxSeconds: 120,
+    robustZClip: 4,
+    minSamples: 1
+  };
+
+  const fitted = fitRobustStats(rows, {
+    epsilon: options.epsilon,
+    epsilon_t: options.epsilonT,
+    grouping: 'uid_session',
+    min_samples: options.minSamples
+  });
+
+  const transformerA = new StreamingFeatureTransformer({
+    fitted,
+    grouping: 'uid_session',
+    epsilon: options.epsilon,
+    epsilonT: options.epsilonT,
+    clipMaxSeconds: options.clipMaxSeconds,
+    robustZClip: options.robustZClip,
+    minSamples: options.minSamples
+  });
+
+  const firstPass = rows.map((row) => transformerA.process(row));
+  const statsA = transformerA.getStats();
+
+  const frozen = freezeFittedStats(fitted);
+  const thawed = thawFittedStats(frozen);
+
+  const transformerB = new StreamingFeatureTransformer({
+    fitted: thawed,
+    grouping: 'uid_session',
+    epsilon: options.epsilon,
+    epsilonT: options.epsilonT,
+    clipMaxSeconds: options.clipMaxSeconds,
+    robustZClip: options.robustZClip,
+    minSamples: options.minSamples
+  });
+
+  const secondPass = rows.map((row) => transformerB.process(row));
+  const statsB = transformerB.getStats();
+
+  assert.equal(secondPass.length, firstPass.length);
+  for (let i = 0; i < firstPass.length; i += 1) {
+    const a = firstPass[i];
+    const b = secondPass[i];
+    assert.deepEqual(
+      {
+        delta_seconds: a.delta_seconds,
+        delta_clipped_seconds: a.delta_clipped_seconds,
+        delta_robust_z: a.delta_robust_z,
+        delta_z_deseas_clipped: a.delta_z_deseas_clipped,
+        delta_log_burst: a.delta_log_burst,
+        delta_time_label: a.delta_time_label,
+        session_sequence: a.session_sequence,
+        session_elapsed_seconds: a.session_elapsed_seconds,
+        is_session_start: a.is_session_start
+      },
+      {
+        delta_seconds: b.delta_seconds,
+        delta_clipped_seconds: b.delta_clipped_seconds,
+        delta_robust_z: b.delta_robust_z,
+        delta_z_deseas_clipped: b.delta_z_deseas_clipped,
+        delta_log_burst: b.delta_log_burst,
+        delta_time_label: b.delta_time_label,
+        session_sequence: b.session_sequence,
+        session_elapsed_seconds: b.session_elapsed_seconds,
+        is_session_start: b.is_session_start
+      }
+    );
+  }
+
+  assert.deepEqual(statsA, statsB);
 });
