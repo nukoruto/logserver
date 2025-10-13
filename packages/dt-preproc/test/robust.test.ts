@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
-import test from 'node:test';
+import { expect, test } from 'vitest';
 
 import {
   clip,
@@ -14,6 +14,7 @@ import {
   updateStatsStreaming,
   type FrozenFittedStats,
   type LogRow,
+  type LogRowWithFeats,
   type RobustScaleStats,
   type RobustStats,
   type UpdateCfg
@@ -53,6 +54,23 @@ function appendSession(
     index += 1;
   }
   return index;
+}
+
+function projectRows(rows: readonly LogRowWithFeats[]): Array<Record<string, unknown>> {
+  return rows.map((row) => ({
+    uid: row.uid,
+    session_id: row.session_id,
+    row_index: row.row_index,
+    delta_seconds: row.delta_seconds,
+    delta_clipped_seconds: row.delta_clipped_seconds,
+    delta_robust_z: row.delta_robust_z,
+    delta_z_deseas_clipped: row.delta_z_deseas_clipped,
+    delta_log_burst: row.delta_log_burst,
+    delta_time_label: row.delta_time_label,
+    session_sequence: row.session_sequence,
+    session_elapsed_seconds: row.session_elapsed_seconds,
+    is_session_start: row.is_session_start
+  }));
 }
 
 function computeMedian(values: readonly number[]): number {
@@ -130,6 +148,17 @@ test('clip clamps values symmetrically with default limit', () => {
 test('clip supports custom limit', () => {
   assert.equal(clip(10, 2), 2);
   assert.equal(clip(-10, 2), -2);
+});
+
+test('computeFeatureRows normalizes epsilon inputs', () => {
+  const baseline = computeFeatureRows([], {});
+  expect(baseline.options.epsilon).toBeCloseTo(0.0005, 6);
+  expect(baseline.options.epsilonT).toBeCloseTo(0.05, 6);
+
+  const { options } = computeFeatureRows([], { epsilon: -5, epsilonT: -1, clipMaxSeconds: -10 });
+  expect(options.epsilon).toBe(0);
+  expect(options.epsilonT).toBe(0);
+  expect(options.clipMaxSeconds).toBe(300);
 });
 
 test('robust z-score falls back to global statistics when user variance is zero', () => {
@@ -483,6 +512,40 @@ test('updateStatsStreaming bounds per-step drift under repeated outliers', () =>
     const baseScale = Math.max(Math.abs(stats.x_med), stats.x_smad, 1e-12);
     assert.ok(diff <= baseScale * cfg.maxDrift + 1e-9);
     stats = next;
+  }
+});
+
+test('computeFeatureRows is deterministic for identical inputs', () => {
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'userDet', 'sess1', 1_000, [1, 5, 2, 60], index);
+  appendSession(rows, 'userDet', 'sess2', 5_000, [2, 2, 180, 5, 1], index);
+
+  const first = computeFeatureRows(rows, { clipMaxSeconds: 300, robustZClip: 4 });
+  const second = computeFeatureRows([...rows], { clipMaxSeconds: 300, robustZClip: 4 });
+
+  expect(projectRows(first.rows)).toEqual(projectRows(second.rows));
+  expect(first.options).toEqual(second.options);
+  expect(first.stats).toEqual(second.stats);
+});
+
+test('StreamingFeatureTransformer maintains prefix stability (causality)', () => {
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'userA', 'sessA', 10_000, [30, 40, 50], index);
+  index = appendSession(rows, 'userB', 'sessB', 20_000, [5, 60, 5, 600], index);
+  appendSession(rows, 'userC', 'sessC', 30_000, [1, 1, 1], index);
+
+  const fitted = fitRobustStats(rows, { epsilon: 0.5, epsilon_t: 0.05, grouping: 'uid_session', min_samples: 1 });
+  const options = { epsilon: 0.5, epsilonT: 0.05, clipMaxSeconds: 300, robustZClip: 4, minSamples: 1 };
+
+  const fullTransformer = new StreamingFeatureTransformer({ fitted, grouping: 'uid_session', ...options });
+  const fullRows = rows.map((row) => fullTransformer.process({ ...row }));
+
+  for (let prefix = 1; prefix <= rows.length; prefix += 1) {
+    const transformer = new StreamingFeatureTransformer({ fitted, grouping: 'uid_session', ...options });
+    const subsetRows = rows.slice(0, prefix).map((row) => transformer.process({ ...row }));
+    expect(projectRows(subsetRows)).toEqual(projectRows(fullRows.slice(0, prefix)));
   }
 });
 
