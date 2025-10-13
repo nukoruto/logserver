@@ -7,7 +7,8 @@ from pathlib import Path
 
 import yaml
 
-from trainer.logserver.dataio.sessionize import SessionConfig, sessionize
+from trainer.logserver.dataio.sessionize import SessionConfig, load_events, sessionize
+from trainer.logserver.eval.preproc_report import generate_preproc_report
 
 
 def _load_config(path: Path) -> dict:
@@ -21,14 +22,20 @@ def main(config_path: Path) -> None:
     session_cfg = config.get("session", {})
     source = Path(data_cfg.get("raw_dir", "data/raw"))
     output = Path(data_cfg.get("processed_dir", "data/processed"))
-    sessionize(
+    raw_df = load_events(source)
+    processed = sessionize(
         source,
         output,
         SessionConfig(
             idle_timeout=int(session_cfg.get("idle_timeout", 1800)),
             tz=session_cfg.get("tz", "UTC"),
         ),
+        raw_df=raw_df,
     )
+    report_cfg = config.get("report", {})
+    sample_size = int(report_cfg.get("sample_size", 5))
+    report_path = output / "preproc_report.json"
+    generate_preproc_report(raw_df, processed, report_path, sample_size=sample_size)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -165,11 +165,17 @@ def _compute_delta(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def sessionize(source: Path, output_dir: Path, config: Optional[SessionConfig] = None) -> pd.DataFrame:
+def sessionize(
+    source: Path,
+    output_dir: Path,
+    config: Optional[SessionConfig] = None,
+    *,
+    raw_df: Optional[pd.DataFrame] = None,
+) -> pd.DataFrame:
     """End-to-end sessionization pipeline returning the processed DataFrame."""
 
     config = config or SessionConfig()
-    df = load_events(source)
+    df = raw_df.copy() if raw_df is not None else load_events(source)
     df = _normalise_columns(df)
     df = _ensure_timestamp(df, config.tz)
     df = _assign_sessions(df, config.idle_timeout)
