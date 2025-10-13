@@ -89,7 +89,9 @@ describe('CsvSink', () => {
 
     const lines = await readLines('2024-01-01.csv');
     expect(lines).toHaveLength(3);
-    expect(lines[0]).toBe('timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category,status_code,latency_ms');
+    expect(lines[0]).toBe(
+      'timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category,status_code,latency_ms,response_bytes'
+    );
 
     const firstRow = parseCsvLine(lines[1]);
     const secondRow = parseCsvLine(lines[2]);

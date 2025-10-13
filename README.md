@@ -127,7 +127,8 @@
    ```
 
 ### 4.2 データ配置
-- `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。
+- `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, user_id, action, meta...）。応答ボディのサイズを表す `response_bytes`
+  列を末尾に追加しても旧スキーマはそのまま動作し、新列がある場合のみ下流の LSTM 前処理で特徴量として利用される。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
 

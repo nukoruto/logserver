@@ -8,7 +8,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Tuple
+from typing import Dict, List, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -73,8 +73,13 @@ def _split_sessions(sessions: List[Dict[str, np.ndarray]], config: TrainerConfig
     return _to_examples(train_sessions), _to_examples(val_sessions)
 
 
-def _prepare_dataloaders(encoded: Dict[str, np.ndarray], session_ids: List[str], config: TrainerConfig) -> Tuple[DataLoader, DataLoader]:
-    sessions, _ = build_sessions(encoded, session_ids)
+def _prepare_dataloaders(
+    encoded: Dict[str, np.ndarray],
+    session_ids: List[str],
+    config: TrainerConfig,
+    numeric_keys: Sequence[str],
+) -> Tuple[DataLoader, DataLoader]:
+    sessions, _ = build_sessions(encoded, session_ids, numeric_keys)
     train_examples, val_examples = _split_sessions(sessions, config)
     train_loader = DataLoader(SessionDataset(train_examples), batch_size=config.batch_size, shuffle=True, collate_fn=collate_examples)
     if val_examples:
@@ -84,7 +89,11 @@ def _prepare_dataloaders(encoded: Dict[str, np.ndarray], session_ids: List[str],
     return train_loader, val_loader
 
 
-def _compute_losses(outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
+def _compute_losses(
+    outputs: Dict[str, torch.Tensor],
+    batch: Dict[str, torch.Tensor],
+    delta_index: int,
+) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     mask = batch["mask"].float()
     vocab_size = outputs["event_logits"].size(-1)
     event_loss = F.cross_entropy(
@@ -95,7 +104,7 @@ def _compute_losses(outputs: Dict[str, torch.Tensor], batch: Dict[str, torch.Ten
     ).view_as(batch["targets"])
     event_loss = (event_loss * mask).sum() / mask.sum().clamp_min(1.0)
 
-    delta_target = batch["numeric"][:, :, 0]
+    delta_target = batch["numeric"][:, :, delta_index]
     delta_loss = torch.abs(outputs["delta_pred"] - delta_target) * mask
     delta_loss = delta_loss.sum() / mask.sum().clamp_min(1.0)
 
@@ -111,7 +120,12 @@ def train_model(
     config: TrainerConfig,
 ) -> Dict[str, List[float]]:
     _set_seed(config.seed)
-    train_loader, val_loader = _prepare_dataloaders(encoded, session_ids, config)
+    numeric_keys = feature_pack.numeric_features
+    train_loader, val_loader = _prepare_dataloaders(encoded, session_ids, config, numeric_keys)
+    try:
+        delta_index = numeric_keys.index("delta_t")
+    except ValueError as error:
+        raise RuntimeError("Feature pack must include delta_t in numeric features") from error
 
     model = DeltaAwareLSTM(
         LSTMConfig(
@@ -120,7 +134,7 @@ def train_model(
             hidden_size=config.hidden_size,
             num_layers=config.num_layers,
             dropout=config.dropout,
-            numeric_dim=3,
+            numeric_dim=len(numeric_keys),
         )
     ).to(config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
@@ -137,7 +151,7 @@ def train_model(
                 batch[key] = batch[key].to(config.device)
             optimizer.zero_grad()
             outputs = model(batch["events"], batch["numeric"])
-            loss, event_loss, delta_loss = _compute_losses(outputs, batch)
+            loss, event_loss, delta_loss = _compute_losses(outputs, batch, delta_index)
             loss.backward()
             optimizer.step()
             train_totals["loss"] += float(loss.item())
@@ -152,7 +166,7 @@ def train_model(
                 for key in batch:
                     batch[key] = batch[key].to(config.device)
                 outputs = model(batch["events"], batch["numeric"])
-                loss, event_loss, delta_loss = _compute_losses(outputs, batch)
+                loss, event_loss, delta_loss = _compute_losses(outputs, batch, delta_index)
                 val_totals["loss"] += float(loss.item())
                 val_totals["event"] += float(event_loss.item())
                 val_totals["delta"] += float(delta_loss.item())

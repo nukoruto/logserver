@@ -25,7 +25,7 @@
 
 ## 3. データ制約（列挙）
 - 入力ログの必須列: timestamp, session_id, user_id, event, message, level, module
-- オプション列: params（JSON 互換の辞書）, latency_ms, status_code, host
+- オプション列: params（JSON 互換の辞書）, latency_ms, status_code, host, response_bytes
 - タイムゾーン: すべて UTC に正規化
 - Δt (delta t) の定義: セッション内で同一 user_id の連続イベント間の経過秒（float）
 - 欠損時刻: 前件欠落・逆順は除外またはセッション断絶として扱う（設定で選択）

@@ -31,6 +31,11 @@ const latencySchema = z
   .finite('latency_ms must be finite')
   .min(0, 'latency_ms must be greater than or equal to 0');
 
+const responseBytesSchema = z
+  .number()
+  .int('response_bytes must be an integer')
+  .min(0, 'response_bytes must be greater than or equal to 0');
+
 export const logRecordSchema = z.object({
   timestamp_utc: z.string().datetime({ offset: true, message: 'timestamp_utc must be RFC 3339' }),
   method: HttpMethod,
@@ -43,6 +48,7 @@ export const logRecordSchema = z.object({
   op_category: OperationCategory,
   status_code: statusCodeSchema.optional(),
   latency_ms: latencySchema.optional(),
+  response_bytes: responseBytesSchema.optional(),
 });
 
 export type LogRecord = z.infer<typeof logRecordSchema>;

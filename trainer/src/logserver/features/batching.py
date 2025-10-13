@@ -63,7 +63,11 @@ def collate_examples(batch: Iterable[SessionExample]) -> Dict[str, torch.Tensor]
     }
 
 
-def build_sessions(encoded: Dict[str, np.ndarray], session_ids: Sequence[str]) -> Tuple[List[Dict[str, np.ndarray]], List[str]]:
+def build_sessions(
+    encoded: Dict[str, np.ndarray],
+    session_ids: Sequence[str],
+    numeric_keys: Sequence[str] | None = None,
+) -> Tuple[List[Dict[str, np.ndarray]], List[str]]:
     sessions: List[Dict[str, np.ndarray]] = []
     session_keys: List[str] = []
     current_session = None
@@ -72,6 +76,12 @@ def build_sessions(encoded: Dict[str, np.ndarray], session_ids: Sequence[str]) -
         "numeric": [],
         "target_event": [],
     }
+    base_keys = ["delta_t", "latency", "status"]
+    ordered_numeric = [key for key in (numeric_keys or base_keys) if key in encoded]
+    if not ordered_numeric:
+        ordered_numeric = [key for key in base_keys if key in encoded]
+    if "delta_t" not in ordered_numeric:
+        raise ValueError("delta_t must be present in numeric feature set")
     for index, session_id in enumerate(session_ids):
         if current_session is None:
             current_session = session_id
@@ -85,11 +95,7 @@ def build_sessions(encoded: Dict[str, np.ndarray], session_ids: Sequence[str]) -
             buffer = {"event_ids": [], "numeric": [], "target_event": []}
             current_session = session_id
         buffer["event_ids"].append(int(encoded["event_id"][index]))
-        buffer["numeric"].append([
-            float(encoded["delta_t"][index]),
-            float(encoded["latency"][index]),
-            float(encoded["status"][index]),
-        ])
+        buffer["numeric"].append([float(encoded[key][index]) for key in ordered_numeric])
         buffer["target_event"].append(int(encoded["event_id"][index]))
     if buffer["event_ids"]:
         sessions.append({
