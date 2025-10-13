@@ -51,10 +51,11 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - event（有限語彙: login、view、edit、save、logout など）  
 - method（HTTP メソッド等、任意）  
 - path（リソース識別、任意）  
-- status（整数、任意）  
-- latency_ms（整数、応答遅延）  
-- meta.user_agent（文字列、任意）  
+- status（整数、任意）
+- latency_ms（整数、応答遅延）
+- meta.user_agent（文字列、任意）
 - meta.referrer（文字列、任意）
+- response_bytes（整数、応答ボディのバイト長、任意）
 
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  

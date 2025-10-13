@@ -121,6 +121,11 @@ const sanitizeLogframe = (input: RawLogframe): CsvRecord => {
     sanitized.latency_ms = latency;
   }
 
+  const responseBytes = sanitizeInteger(input.response_bytes);
+  if (responseBytes !== undefined && responseBytes >= 0) {
+    sanitized.response_bytes = responseBytes;
+  }
+
   return sanitized as CsvRecord;
 };
 

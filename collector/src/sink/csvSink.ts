@@ -29,6 +29,7 @@ export interface CsvRecord {
   op_category: string;
   status_code?: number;
   latency_ms?: number;
+  response_bytes?: number;
 }
 
 export interface CsvSinkOptions {
@@ -70,6 +71,7 @@ const DEFAULT_HEADERS: readonly string[] = [
   'op_category',
   'status_code',
   'latency_ms',
+  'response_bytes',
 ];
 
 const DEFAULT_MAX_IN_MEMORY_QUEUE = 2048;

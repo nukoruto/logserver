@@ -21,6 +21,24 @@ def test_encode_dataframe_returns_arrays() -> None:
     assert encoded["event_id"].shape[0] == len(df)
     assert encoded["delta_t"].shape[0] == len(df)
     assert 1e-6 <= pack.delta_epsilon <= 1e-2
+    assert "response_bytes" not in pack.numeric_features
+
+
+def test_encode_dataframe_with_optional_response_bytes() -> None:
+    df = pd.DataFrame(
+        {
+            "event": ["login", "view", "logout"],
+            "delta_t": [0.0, 1.5, 0.5],
+            "latency_ms": [100, 95, 90],
+            "status": [200, 200, 200],
+            "response_bytes": [512, 1024, 256],
+        }
+    )
+    pack = build_feature_pack(df)
+    encoded = encode_dataframe(df, pack)
+    assert "response_bytes" in pack.numeric_features
+    assert "response_bytes" in encoded
+    assert encoded["response_bytes"].shape[0] == len(df)
 
 
 def test_choose_epsilon_quantile_and_clipping() -> None:

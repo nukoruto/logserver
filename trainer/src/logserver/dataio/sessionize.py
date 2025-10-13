@@ -11,7 +11,17 @@ import numpy as np
 import pandas as pd
 
 REQUIRED_COLUMNS = {"timestamp", "user_id", "event"}
-OPTIONAL_COLUMNS = {"session_id", "method", "path", "status", "status_code", "latency_ms", "meta", "metadata"}
+OPTIONAL_COLUMNS = {
+    "session_id",
+    "method",
+    "path",
+    "status",
+    "status_code",
+    "latency_ms",
+    "response_bytes",
+    "meta",
+    "metadata",
+}
 
 
 @dataclass
@@ -75,6 +85,12 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
             df[col] = None
     if "latency_ms" not in df.columns:
         df["latency_ms"] = np.nan
+    else:
+        df["latency_ms"] = pd.to_numeric(df["latency_ms"], errors="coerce")
+    if "response_bytes" not in df.columns:
+        df["response_bytes"] = np.nan
+    else:
+        df["response_bytes"] = pd.to_numeric(df["response_bytes"], errors="coerce")
     df["event"] = df["event"].astype(str).str.strip()
     df["user_id"] = df["user_id"].astype(str).str.strip()
     return df

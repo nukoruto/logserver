@@ -4,7 +4,7 @@
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Dict, Iterable, List, Sequence
+from typing import Dict, Iterable, List, Optional, Sequence
 
 import numpy as np
 import pandas as pd
@@ -80,6 +80,8 @@ class FeaturePack:
     delta_normalizer: ContinuousNormalizer
     latency_normalizer: ContinuousNormalizer
     delta_epsilon: float
+    numeric_features: List[str]
+    response_normalizer: Optional[ContinuousNormalizer] = None
 
     def save(self, path: str) -> None:
         import json
@@ -89,7 +91,13 @@ class FeaturePack:
             "delta_normalizer": {"mean": self.delta_normalizer.mean, "std": self.delta_normalizer.std},
             "latency_normalizer": {"mean": self.latency_normalizer.mean, "std": self.latency_normalizer.std},
             "delta_epsilon": self.delta_epsilon,
+            "numeric_features": self.numeric_features,
         }
+        if self.response_normalizer is not None:
+            data["response_normalizer"] = {
+                "mean": self.response_normalizer.mean,
+                "std": self.response_normalizer.std,
+            }
         with open(path, "w", encoding="utf-8") as handle:
             json.dump(data, handle, ensure_ascii=False, indent=2)
 
@@ -105,7 +113,21 @@ class FeaturePack:
         delta = ContinuousNormalizer(mean=data["delta_normalizer"]["mean"], std=data["delta_normalizer"]["std"])
         latency = ContinuousNormalizer(mean=data["latency_normalizer"]["mean"], std=data["latency_normalizer"]["std"])
         epsilon = float(data.get("delta_epsilon", 1e-6))
-        return cls(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency, delta_epsilon=epsilon)
+        numeric_features = list(data.get("numeric_features", ["delta_t", "latency", "status"]))
+        response_norm = data.get("response_normalizer")
+        response = (
+            ContinuousNormalizer(mean=response_norm["mean"], std=response_norm["std"])
+            if response_norm is not None
+            else None
+        )
+        return cls(
+            event_vocab=vocab,
+            delta_normalizer=delta,
+            latency_normalizer=latency,
+            delta_epsilon=epsilon,
+            numeric_features=numeric_features,
+            response_normalizer=response,
+        )
 
 
 def build_feature_pack(df: pd.DataFrame) -> FeaturePack:
@@ -114,7 +136,24 @@ def build_feature_pack(df: pd.DataFrame) -> FeaturePack:
     delta = ContinuousNormalizer.fit(delta_values.tolist())
     latency = ContinuousNormalizer.fit(df["latency_ms"].fillna(0.0).astype(float).tolist())
     epsilon = choose_epsilon(delta_values[delta_values > 0.0])
-    return FeaturePack(event_vocab=vocab, delta_normalizer=delta, latency_normalizer=latency, delta_epsilon=epsilon)
+
+    numeric_features: List[str] = ["delta_t", "latency", "status"]
+    response_normalizer: Optional[ContinuousNormalizer] = None
+    if "response_bytes" in df.columns:
+        response_values = df["response_bytes"].fillna(0.0).astype(float).to_numpy()
+        if np.isfinite(response_values).any():
+            response_normalizer = ContinuousNormalizer.fit(response_values.tolist())
+            if "response_bytes" not in numeric_features:
+                numeric_features.append("response_bytes")
+
+    return FeaturePack(
+        event_vocab=vocab,
+        delta_normalizer=delta,
+        latency_normalizer=latency,
+        delta_epsilon=epsilon,
+        numeric_features=numeric_features,
+        response_normalizer=response_normalizer,
+    )
 
 
 def encode_dataframe(df: pd.DataFrame, pack: FeaturePack) -> Dict[str, np.ndarray]:
@@ -122,9 +161,21 @@ def encode_dataframe(df: pd.DataFrame, pack: FeaturePack) -> Dict[str, np.ndarra
     delta = pack.delta_normalizer.transform(df["delta_t"].fillna(0.0).astype(float).tolist())
     latency = pack.latency_normalizer.transform(df["latency_ms"].fillna(0.0).astype(float).tolist())
     status = df.get("status", pd.Series([0] * len(df))).fillna(0).to_numpy(dtype=np.float32)
-    return {
+    encoded: Dict[str, np.ndarray] = {
         "event_id": event_ids,
         "delta_t": delta.astype(np.float32),
         "latency": latency.astype(np.float32),
         "status": status,
     }
+    if "response_bytes" in pack.numeric_features:
+        values = df.get("response_bytes")
+        if values is None:
+            response = np.zeros(len(df), dtype=np.float32)
+        else:
+            filled = values.fillna(0.0).astype(float).tolist()
+            if pack.response_normalizer is not None:
+                response = pack.response_normalizer.transform(filled).astype(np.float32)
+            else:
+                response = np.asarray(filled, dtype=np.float32)
+        encoded["response_bytes"] = response
+    return encoded

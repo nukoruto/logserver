@@ -24,3 +24,23 @@ def test_train_model_produces_artifacts(tmp_path: Path) -> None:
     train_model(encoded, session_ids, pack, tmp_path, config)
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
+
+
+def test_train_model_with_response_bytes(tmp_path: Path) -> None:
+    df = pd.DataFrame(
+        {
+            "event": ["login", "view", "logout", "login", "edit", "logout"],
+            "delta_t": [0.0, 2.0, 3.0, 0.0, 1.0, 1.0],
+            "latency_ms": [100, 150, 120, 90, 95, 110],
+            "status": [200, 200, 200, 200, 200, 200],
+            "response_bytes": [256, 512, 128, 256, 1024, 512],
+            "session_id": ["s1", "s1", "s1", "s2", "s2", "s2"],
+        }
+    )
+    pack = build_feature_pack(df)
+    encoded = encode_dataframe(df, pack)
+    session_ids = df["session_id"].tolist()
+    config = TrainerConfig(max_epochs=1, batch_size=2, validation_split=0.5, early_stopping_patience=1)
+    train_model(encoded, session_ids, pack, tmp_path, config)
+    artifacts = list(tmp_path.glob("*/model.pt"))
+    assert artifacts, "model.pt not found in run directory"

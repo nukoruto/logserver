@@ -29,6 +29,23 @@ describe('logRecord schema', () => {
     expect(record.ip).toBe('203.0.113.10');
   });
 
+  it('accepts optional response_bytes when present', () => {
+    const record = validateLogRecord({
+      timestamp_utc: '2024-08-01T12:34:56.789Z',
+      method: 'POST',
+      path: '/submit',
+      referer: '',
+      user_agent: 'agent',
+      uid: 'user',
+      session_id: 'session',
+      ip: '198.51.100.42',
+      op_category: 'UPDATE',
+      response_bytes: 1024,
+    });
+
+    expect(record.response_bytes).toBe(1024);
+  });
+
   it('rejects timestamps that are not RFC 3339', () => {
     expect(() =>
       validateLogRecord({
