@@ -215,7 +215,49 @@ cd collector && node scripts/check-ntp.js
 - `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
 - `--dump-hist` を指定すると、異常スコアのヒストグラム（bin 辺・中心・密度・要約統計）を JSON 形式で保存し、二峰性の可視化にそのまま利用できます。`--hist-bins` でビン数を調整できます。
 
-### 5.1 Δt ロバスト統計フィッティング CLI
+### 5.1 Δt ロバスト統計フィッティング CLI（Fit / Transform ランブック）
+
+以下は、新規参加者が**そのままコピー&ペーストできる一連のコマンド**です。`GPU_MODE` で RTX 6000 Ada（`ada6000`）と RTX 4060（`4060`）を切替できます。
+
+```bash
+# 0) GPU を選択（例: RTX6000 Ada）
+export GPU_MODE=ada6000
+
+# 1) TypeScript Δt CLI のビルド（初回のみ）
+pnpm --filter @logserver/dt-preproc run build
+
+# 2) 学習用 CSV から統計をフィット（Fit）
+pnpm exec dt-preproc fit \
+  --in data/train/*.csv \
+  --grouping uid_session \
+  --epsilon 0.0005 \
+  --epsilon-t 0.05 \
+  --clip-max 300 \
+  --robust-z-clip 5 \
+  --out stats/preproc_stats.json \
+  --meta stats/preproc.yaml
+
+# 3) 保存済み統計を使って検証データを変換（Transform）
+pnpm exec dt-preproc transform \
+  --in data/val/*.csv \
+  --stats stats/preproc_stats.json \
+  --out data/val_feat/*.csv
+
+# 4) 監査レポートと単位不変性テストを含む前処理ジョブ
+python -m trainer.scripts.preprocess --config trainer/configs/default.yaml
+
+# 5) 学習→検証→レポート生成（監査ログ含む）
+python -m trainer.scripts.train --config trainer/configs/default.yaml \
+  --save-report reports/train_eval_report.json
+python -m trainer.scripts.score --config trainer/configs/default.yaml
+python -m trainer.scripts.threshold --config trainer/configs/default.yaml \
+  --dump-eval data/processed/boundary_eval.json \
+  --dump-hist data/processed/anomaly_hist.json
+python -m trainer.scripts.explain --config trainer/configs/default.yaml \
+  --cases 10 --out reports/explain_latest.json
+```
+
+各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc.yaml`）を再利用して追加検証を実施します。
 
 学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。
 
@@ -242,6 +284,31 @@ pnpm exec dt-preproc transform \
 ```
 
 `fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパスに実行オプション・入力リスト・CSV パース統計を YAML/JSON 形式で出力します。`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z` など）を追記した CSV を生成します。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
+
+#### `preproc.yaml` のフィールド
+
+`stats/preproc.yaml` は `dt-preproc fit` の**監査メタデータ**で、以下のキーを含みます。
+
+| キー | 説明 |
+| --- | --- |
+| `command` | 実行されたサブコマンド。例: `fit` |
+| `inputs` | フィットに利用した CSV 一覧。再現時のチェックに利用 |
+| `options` | `--epsilon` など CLI オプションのスナップショット |
+| `stats_sha256` | `preproc_stats.json` のハッシュ。改ざん検知 |
+| `generated_at` | UTC タイムスタンプ（ISO 8601） |
+| `environment` | Node.js / pnpm / Git commit などのバージョン情報 |
+
+この YAML を `git lfs` 管理する必要はありませんが、実験ごとに保存しておくと再現性を担保できます。
+
+#### 単位不変性テスト（Unit Invariance Test）の読み解き方
+
+`python -m trainer.scripts.preprocess` 実行後に生成される `data/processed/preproc_report.json` の `unit_invariance` セクションで、入力列の単位（秒・ミリ秒など）が想定と一致しているかを検証します。
+
+- `status: "pass"` … フィット時と同じ単位であることを確認。
+- `status: "warn"` … 平均や分散が基準から 3σ 以内だが僅かな差異あり。再サンプル推奨。
+- `status: "fail"` … 大きな単位差（例：ミリ秒→秒）が検知される。`preproc.yaml` で `scale_hint` を確認し、変換前に正規化を適用してください。
+
+`unit_invariance.test_cases` には検証に用いた代表列（`delta_seconds`, `latency_ms` など）とテスト内容が記録され、閾値は `configs/default.yaml` の `preprocess.unit_invariance` セクションで調整できます。
 
 ### 5.6 シナリオ生成 CLI / API
 
@@ -305,10 +372,30 @@ pnpm --filter @logserver/splitter-gui build
 JWT_HMAC_KEY=... pnpm --filter @logserver/splitter-gui exec electron dist/main.js
 ```
 
-- GUI 上で CSV を選択 → ユーザを切り替えてヒストグラム（Otsu 線付き）、セッション数曲線（膝点表示）、ΔT スライダ/数値入力が利用可能。
+- GUI 操作ランブック：
+  1. 起動後に「Open CSV」をクリックし、`artifacts/` 直下のログファイルを選択。
+  2. 左上の UID セレクタで対象ユーザを切替（MIMO 分離の観点）。
+  3. ヒストグラムタブでは Δt 分布と Otsu 閾値を確認し、`ΔT Override` スライダで値を調整。
+  4. `Preview Sessions` タブで変更後のセッション分割とラベルを確認。
+  5. 「Export」を押下すると、`dist/export/<timestamp>/` に NDJSON + `thresholds.json` + `meta.json`（`preproc.yaml` と同等の実行メタ付き）が生成されます。
+  6. エクスポート後は `pnpm --filter @logserver/splitter-gui exec playwright test` で GUI の単体・統合テストを再確認してください。
 - ΔT を変更するとプレビューが即時更新され、閾値一覧とセッション抜粋が再描画されます。
 - 「エクスポート」は CLI (`@logserver/session-splitter-cli`) と同一構成（NDJSON + thresholds JSON + meta.json）で出力します。
 - E2E テストは Playwright によりレンダラの主要要素を検証し、静的ビルドの品質を担保します。
+
+#### 監査レポート（`preproc_report.json`）の読み方
+
+`preproc_report.json` は以下の構造で前処理の品質を可視化します。
+
+| フィールド | 内容 | 行動指針 |
+| --- | --- | --- |
+| `summary.total_rows` | 入力レコード総数 | 想定より少ない場合はセッション抽出の設定を確認 |
+| `missing_counts` | 列ごとの欠損件数 | `event` など必須列に欠損があれば収集ロジックを修正 |
+| `delta_t.stats` | Δt の平均/分位点/クリップ件数 | クリップ比率 >5% の場合は `--clip-max` を見直す |
+| `unit_invariance` | 前述の単位検証 | `fail` の場合はログ生成/変換処理を再実行 |
+| `sample_traces` | 代表セッションの before/after | GUI での確認対象として参照 |
+
+報告書は `reports/` にコピーして監査ログとして保存することが推奨です。
 
 ```bash
 pnpm --filter @logserver/splitter-gui exec playwright test
