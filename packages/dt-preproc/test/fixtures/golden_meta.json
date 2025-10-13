@@ -1,0 +1,30 @@
+{
+  "parseStats": {
+    "totalRows": 13,
+    "validRows": 12,
+    "invalidRows": 1,
+    "invalidReasons": {
+      "invalid_timestamp_format": 1
+    },
+    "schemaValidated": true
+  },
+  "featureStats": {
+    "total": 12,
+    "measured": 7,
+    "unknown": 1,
+    "initial": 4,
+    "clipped": 2,
+    "filteredOut": 0,
+    "deltaMedian": 60,
+    "deltaMad": 59.870000005,
+    "deltaRobustScale": 88.763262007
+  },
+  "options": {
+    "epsilon": 0.0005,
+    "epsilonT": 0.05,
+    "clipMaxSeconds": 300,
+    "robustScaleEpsilon": 1e-9,
+    "robustZClip": 5,
+    "minSamples": 2
+  }
+}

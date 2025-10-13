@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { expect, test } from 'vitest';
 
 import { computeFeatureRows, type LogRow } from '../src/index.js';
 
@@ -46,23 +45,23 @@ test('computeFeatureRows annotates symmetric log burst for consecutive measured 
     clipMaxSeconds: 300
   });
 
-  assert.equal(featureRows.length, rows.length);
+  expect(featureRows).toHaveLength(rows.length);
 
-  assert.equal(featureRows[0].delta_log_burst, null);
-  assert.equal(featureRows[1].delta_log_burst, null);
+  expect(featureRows[0].delta_log_burst).toBeNull();
+  expect(featureRows[1].delta_log_burst).toBeNull();
 
   const expected = Math.log((10 + 0.0005) / (5 + 0.0005));
-  assert.ok(featureRows[2].delta_log_burst !== null);
-  assert.ok(Math.abs(featureRows[2].delta_log_burst! - expected) < 1e-6);
+  expect(featureRows[2].delta_log_burst).not.toBeNull();
+  expect(Math.abs(featureRows[2].delta_log_burst! - expected)).toBeLessThan(1e-6);
 
-  assert.equal(featureRows[3].delta_time_label, 'unknown');
-  assert.equal(featureRows[3].delta_log_burst, null);
+  expect(featureRows[3].delta_time_label).toBe('unknown');
+  expect(featureRows[3].delta_log_burst).toBeNull();
 
-  assert.equal(featureRows[4].delta_time_label, 'measured');
-  assert.equal(featureRows[4].delta_log_burst, null);
+  expect(featureRows[4].delta_time_label).toBe('measured');
+  expect(featureRows[4].delta_log_burst).toBeNull();
 
-  assert.equal(featureRows[5].session_id, 'session-b');
-  assert.equal(featureRows[5].delta_log_burst, null);
-  assert.equal(featureRows[6].session_id, 'session-b');
-  assert.equal(featureRows[6].delta_log_burst, null);
+  expect(featureRows[5].session_id).toBe('session-b');
+  expect(featureRows[5].delta_log_burst).toBeNull();
+  expect(featureRows[6].session_id).toBe('session-b');
+  expect(featureRows[6].delta_log_burst).toBeNull();
 });
