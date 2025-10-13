@@ -8,7 +8,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Sequence, Tuple
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -40,6 +40,12 @@ class TrainerConfig:
     device: str = "cpu"
 
 
+@dataclass
+class SessionSplit:
+    train_ids: List[str]
+    val_ids: List[str]
+
+
 def _set_seed(seed: int) -> None:
     random.seed(seed)
     np.random.seed(seed)
@@ -59,17 +65,41 @@ def _to_examples(sessions: List[Dict[str, np.ndarray]]) -> List[SessionExample]:
     return examples
 
 
-def _split_sessions(sessions: List[Dict[str, np.ndarray]], config: TrainerConfig) -> Tuple[List[SessionExample], List[SessionExample]]:
-    indices = list(range(len(sessions)))
-    random.shuffle(indices)
+def create_session_split(session_order: Sequence[str], config: TrainerConfig) -> SessionSplit:
+    unique_sessions = list(dict.fromkeys(str(session) for session in session_order))
+    if not unique_sessions:
+        return SessionSplit(train_ids=[], val_ids=[])
+    rng = random.Random(config.seed)
+    indices = list(range(len(unique_sessions)))
+    rng.shuffle(indices)
     val_count = int(len(indices) * config.validation_split)
     if val_count >= len(indices):
         val_count = max(0, len(indices) - 1)
     val_indices = set(indices[:val_count])
-    train_sessions = [sessions[idx] for idx in indices if idx not in val_indices]
-    val_sessions = [sessions[idx] for idx in indices if idx in val_indices]
+    train_ids = [unique_sessions[idx] for idx in indices if idx not in val_indices]
+    val_ids = [unique_sessions[idx] for idx in indices if idx in val_indices]
+    if not train_ids and val_ids:
+        train_ids, val_ids = val_ids, []
+    if not train_ids:
+        train_ids = unique_sessions
+        val_ids = []
+    return SessionSplit(train_ids=train_ids, val_ids=val_ids)
+
+
+def _split_sessions(
+    sessions: List[Dict[str, np.ndarray]],
+    session_keys: List[str],
+    config: TrainerConfig,
+    split: Optional[SessionSplit] = None,
+) -> Tuple[List[SessionExample], List[SessionExample]]:
+    effective_split = split or create_session_split(session_keys, config)
+    mapping = {key: session for key, session in zip(session_keys, sessions)}
+    train_sessions = [mapping[key] for key in effective_split.train_ids if key in mapping]
+    val_sessions = [mapping[key] for key in effective_split.val_ids if key in mapping]
+    if not train_sessions and val_sessions:
+        train_sessions, val_sessions = val_sessions, []
     if not train_sessions:
-        train_sessions, val_sessions = val_sessions, train_sessions
+        train_sessions = list(mapping.values())
     return _to_examples(train_sessions), _to_examples(val_sessions)
 
 
@@ -78,9 +108,10 @@ def _prepare_dataloaders(
     session_ids: List[str],
     config: TrainerConfig,
     numeric_keys: Sequence[str],
+    split: Optional[SessionSplit] = None,
 ) -> Tuple[DataLoader, DataLoader]:
-    sessions, _ = build_sessions(encoded, session_ids, numeric_keys)
-    train_examples, val_examples = _split_sessions(sessions, config)
+    sessions, session_keys = build_sessions(encoded, session_ids, numeric_keys)
+    train_examples, val_examples = _split_sessions(sessions, session_keys, config, split)
     train_loader = DataLoader(SessionDataset(train_examples), batch_size=config.batch_size, shuffle=True, collate_fn=collate_examples)
     if val_examples:
         val_loader = DataLoader(SessionDataset(val_examples), batch_size=config.batch_size, shuffle=False, collate_fn=collate_examples)
@@ -118,10 +149,11 @@ def train_model(
     feature_pack: FeaturePack,
     output_dir: Path,
     config: TrainerConfig,
+    split: Optional[SessionSplit] = None,
 ) -> Dict[str, List[float]]:
     _set_seed(config.seed)
     numeric_keys = feature_pack.numeric_features
-    train_loader, val_loader = _prepare_dataloaders(encoded, session_ids, config, numeric_keys)
+    train_loader, val_loader = _prepare_dataloaders(encoded, session_ids, config, numeric_keys, split)
     try:
         delta_index = numeric_keys.index("delta_t")
     except ValueError as error:

@@ -4,7 +4,7 @@ from pathlib import Path
 import pandas as pd
 
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
-from trainer.logserver.training.trainer import TrainerConfig, train_model
+from trainer.logserver.training.trainer import TrainerConfig, create_session_split, train_model
 
 
 def test_train_model_produces_artifacts(tmp_path: Path) -> None:
@@ -17,11 +17,13 @@ def test_train_model_produces_artifacts(tmp_path: Path) -> None:
             "session_id": ["s1", "s1", "s1", "s2", "s2", "s2"],
         }
     )
-    pack = build_feature_pack(df)
-    encoded = encode_dataframe(df, pack)
-    session_ids = df["session_id"].tolist()
+    session_ids = df["session_id"].astype(str).tolist()
     config = TrainerConfig(max_epochs=1, batch_size=2, validation_split=0.5, early_stopping_patience=1)
-    train_model(encoded, session_ids, pack, tmp_path, config)
+    split = create_session_split(session_ids, config)
+    train_df = df[df["session_id"].isin(split.train_ids)]
+    pack = build_feature_pack(train_df, extra_features=None)
+    encoded = encode_dataframe(df, pack)
+    train_model(encoded, session_ids, pack, tmp_path, config, split=split)
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
 
@@ -37,10 +39,12 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
             "session_id": ["s1", "s1", "s1", "s2", "s2", "s2"],
         }
     )
-    pack = build_feature_pack(df)
-    encoded = encode_dataframe(df, pack)
-    session_ids = df["session_id"].tolist()
+    session_ids = df["session_id"].astype(str).tolist()
     config = TrainerConfig(max_epochs=1, batch_size=2, validation_split=0.5, early_stopping_patience=1)
-    train_model(encoded, session_ids, pack, tmp_path, config)
+    split = create_session_split(session_ids, config)
+    train_df = df[df["session_id"].isin(split.train_ids)]
+    pack = build_feature_pack(train_df, extra_features=None)
+    encoded = encode_dataframe(df, pack)
+    train_model(encoded, session_ids, pack, tmp_path, config, split=split)
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
