@@ -9,9 +9,12 @@ import {
   freezeFittedStats,
   robustZ,
   thawFittedStats,
+  updateStatsStreaming,
   type FrozenFittedStats,
   type LogRow,
-  type RobustScaleStats
+  type RobustScaleStats,
+  type RobustStats,
+  type UpdateCfg
 } from '../src/index.js';
 
 function createRow(uid: string, sessionId: string, epochSeconds: number, index: number): LogRow {
@@ -81,6 +84,35 @@ function expectClose(actual: number, expected: number, label: string, tolerance 
   }
 }
 
+function pearsonCorrelation(xs: readonly number[], ys: readonly number[]): number {
+  if (xs.length !== ys.length || xs.length === 0) {
+    throw new Error('correlation requires non-empty arrays of equal length');
+  }
+  const n = xs.length;
+  let sumX = 0;
+  let sumY = 0;
+  for (let i = 0; i < n; i += 1) {
+    sumX += xs[i];
+    sumY += ys[i];
+  }
+  const meanX = sumX / n;
+  const meanY = sumY / n;
+  let num = 0;
+  let denomX = 0;
+  let denomY = 0;
+  for (let i = 0; i < n; i += 1) {
+    const dx = xs[i] - meanX;
+    const dy = ys[i] - meanY;
+    num += dx * dy;
+    denomX += dx * dx;
+    denomY += dy * dy;
+  }
+  if (denomX === 0 || denomY === 0) {
+    return 0;
+  }
+  return num / Math.sqrt(denomX * denomY);
+}
+
 function loadFrozenStats(name: string): FrozenFittedStats {
   const url = new URL(`./fixtures/${name}.json`, import.meta.url);
   const text = readFileSync(fileURLToPath(url), 'utf-8');
@@ -124,6 +156,14 @@ test('robust z-score falls back to global statistics when user variance is zero'
     const numeric = value as number;
     assert.ok(Number.isFinite(numeric));
     assert.ok(Math.abs(numeric) <= 5 + 1e-9);
+  }
+
+  const deseasValues = features
+    .filter((row) => row.delta_z_deseas_clipped !== null)
+    .map((row) => row.delta_z_deseas_clipped as number);
+  for (const value of deseasValues) {
+    assert.ok(Number.isFinite(value));
+    assert.ok(Math.abs(value) <= 5 + 1e-9);
   }
 
   const constantUser = features.filter((row) => row.uid === 'userA' && row.delta_robust_z !== null);
@@ -232,7 +272,53 @@ test('user-level stats back off to global aggregates when user is sparse', () =>
     const actualZ = scarceRows[i].delta_robust_z as number;
     const diff = Math.abs(actualZ - expectedZ);
     assert.ok(diff <= 1e-6, `global fallback drift exceeds tolerance: ${diff}`);
-2test('thawFittedStats loads frozen per-uid robust log-delta statistics without recomputation', () => {
+  }
+});
+
+test('seasonal residual reduces correlation with global z', () => {
+  const base = 3600;
+  const amplitude = 900;
+  const rows: LogRow[] = [];
+  let index = 0;
+  let current = 0;
+  rows.push(createRow('seasonal-user', 'seasonal-session', current, index));
+  index += 1;
+
+  const totalCycles = 3;
+  for (let cycle = 0; cycle < totalCycles; cycle += 1) {
+    for (let hour = 0; hour < 24; hour += 1) {
+      const seasonal = amplitude * Math.sin((2 * Math.PI * hour) / 24);
+      const noise = ((hour % 3) - 1) * 15;
+      const deltaSeconds = Math.max(60, Math.round(base + seasonal + noise));
+      current += deltaSeconds;
+      rows.push(createRow('seasonal-user', 'seasonal-session', current, index));
+      index += 1;
+    }
+  }
+
+  const { rows: features } = computeFeatureRows(rows, {
+    clipMaxSeconds: 7200,
+    robustScaleEpsilon: 1e-9,
+    robustZClip: 5,
+    minSamples: 8
+  });
+
+  const measured = features.filter(
+    (row) =>
+      row.delta_time_label === 'measured' &&
+      row.delta_robust_z !== null &&
+      row.delta_z_deseas_clipped !== null
+  );
+
+  const globalZ = measured.map((row) => row.delta_robust_z as number);
+  const seasonalZ = measured.map((row) => row.delta_z_deseas_clipped as number);
+
+  assert.ok(globalZ.length > 0);
+  const correlation = Math.abs(pearsonCorrelation(globalZ, seasonalZ));
+  assert.ok(correlation < 0.9, `correlation too high: ${correlation}`);
+});
+
+test('thawFittedStats loads frozen per-uid robust log-delta statistics without recomputation', () => {
   const frozen = loadFrozenStats('robust_uid');
   const fitted = thawFittedStats(frozen);
 
@@ -241,19 +327,22 @@ test('user-level stats back off to global aggregates when user is sparse', () =>
   const expectedGlobal = summarize(expectedGlobalLogs);
 
   expectClose(fitted.epsilon, epsilon, 'epsilon');
-  expectClose(fitted.global.x_med, expectedGlobal.x_med, 'global x_med');
-  expectClose(fitted.global.x_mad, expectedGlobal.x_mad, 'global x_mad');
-  expectClose(fitted.global.x_smad, expectedGlobal.x_smad, 'global x_smad');
+  assert.ok(fitted.global, 'global stats should be present');
+  const globalStats = fitted.global as RobustStats;
+  expectClose(globalStats.x_med, expectedGlobal.x_med, 'global x_med');
+  expectClose(globalStats.x_mad, expectedGlobal.x_mad, 'global x_mad');
+  expectClose(globalStats.x_smad, expectedGlobal.x_smad, 'global x_smad');
 
-  const byHourKeys = Object.keys(fitted.global.byHour);
+  const byHour = globalStats.byHour ?? {};
+  const byHourKeys = Object.keys(byHour);
   if (byHourKeys.length !== 24) {
     throw new Error(`global byHour count mismatch: ${byHourKeys.length}`);
   }
 
-  const hour0 = fitted.global.byHour[0];
-  const hour1 = fitted.global.byHour[1];
-  const hour2 = fitted.global.byHour[2];
-  const hour3 = fitted.global.byHour[3];
+  const hour0 = byHour[0];
+  const hour1 = byHour[1];
+  const hour2 = byHour[2];
+  const hour3 = byHour[3];
   expectClose(hour0.x_med, Math.log(600 + epsilon), 'hour0 x_med');
   expectClose(hour0.x_mad, 0, 'hour0 x_mad');
   expectClose(hour1.x_med, Math.log(3000 + epsilon), 'hour1 x_med');
@@ -265,7 +354,7 @@ test('user-level stats back off to global aggregates when user is sparse', () =>
     if (hour === 0 || hour === 1 || hour === 2 || hour === 3) {
       continue;
     }
-    const stats = fitted.global.byHour[hour];
+    const stats = byHour[hour];
     expectClose(stats.x_med, expectedGlobal.x_med, `hour${hour} x_med fallback`, 1e-3);
     expectClose(stats.x_mad, expectedGlobal.x_mad, `hour${hour} x_mad fallback`, 1e-3);
     expectClose(stats.x_smad, expectedGlobal.x_smad, `hour${hour} x_smad fallback`, 1e-3);
@@ -284,15 +373,23 @@ test('user-level stats back off to global aggregates when user is sparse', () =>
   const expectedUserA = summarize([Math.log(600 + epsilon), Math.log(3000 + epsilon)]);
   expectClose(userAStats!.x_med, expectedUserA.x_med, 'userA x_med');
   expectClose(userAStats!.x_mad, expectedUserA.x_mad, 'userA x_mad');
-  expectClose(userAStats!.byHour[0].x_med, Math.log(600 + epsilon), 'userA hour0 x_med');
-  expectClose(userAStats!.byHour[1].x_med, Math.log(3000 + epsilon), 'userA hour1 x_med');
+  const userAByHour = userAStats!.byHour;
+  if (!userAByHour) {
+    throw new Error('userA byHour missing');
+  }
+  expectClose(userAByHour[0].x_med, Math.log(600 + epsilon), 'userA hour0 x_med');
+  expectClose(userAByHour[1].x_med, Math.log(3000 + epsilon), 'userA hour1 x_med');
 
   const expectedUserBLogs = [60, 60, 1680, 1800, 200].map((value) => Math.log(value + epsilon));
   const expectedUserB = summarize(expectedUserBLogs);
   expectClose(userBStats!.x_med, expectedUserB.x_med, 'userB x_med');
   expectClose(userBStats!.x_mad, expectedUserB.x_mad, 'userB x_mad');
-  expectClose(userBStats!.byHour[2].x_med, Math.log(60 + epsilon), 'userB hour2 x_med');
-  expectClose(userBStats!.byHour[3].x_med, expectedHour3.x_med, 'userB hour3 x_med');
+  const userBByHour = userBStats!.byHour;
+  if (!userBByHour) {
+    throw new Error('userB byHour missing');
+  }
+  expectClose(userBByHour[2].x_med, Math.log(60 + epsilon), 'userB hour2 x_med');
+  expectClose(userBByHour[3].x_med, expectedHour3.x_med, 'userB hour3 x_med');
 
   const canonical = freezeFittedStats(fitted);
   assert.deepEqual(canonical, freezeFittedStats(thawFittedStats(canonical)));
@@ -320,24 +417,37 @@ test('thawFittedStats supports uid+session grouping from frozen fixture', () => 
 
   const expectedASession = summarize([Math.log(600 + epsilon), Math.log(3000 + epsilon)]);
   expectClose(userASession!.x_med, expectedASession.x_med, 'userA sess x_med');
-  expectClose(userASession!.byHour[0].x_med, Math.log(600 + epsilon), 'userA sess hour0');
-  expectClose(userASession!.byHour[1].x_med, Math.log(3000 + epsilon), 'userA sess hour1');
+  const userASessionByHour = userASession!.byHour;
+  if (!userASessionByHour) {
+    throw new Error('userA session byHour missing');
+  }
+  expectClose(userASessionByHour[0].x_med, Math.log(600 + epsilon), 'userA sess hour0');
+  expectClose(userASessionByHour[1].x_med, Math.log(3000 + epsilon), 'userA sess hour1');
 
   const expectedBSessBLogs = [60, 60, 1680].map((value) => Math.log(value + epsilon));
   const expectedBSessB = summarize(expectedBSessBLogs);
   expectClose(userBSessB!.x_med, expectedBSessB.x_med, 'userB sessB x_med');
-  expectClose(userBSessB!.byHour[2].x_med, Math.log(60 + epsilon), 'userB sessB hour2');
+  const userBSessBByHour = userBSessB!.byHour;
+  if (!userBSessBByHour) {
+    throw new Error('userB sessB byHour missing');
+  }
+  expectClose(userBSessBByHour[2].x_med, Math.log(60 + epsilon), 'userB sessB hour2');
 
   const expectedBSessCLogs = [Math.log(1800 + epsilon), Math.log(200 + epsilon)];
   const expectedBSessC = summarize(expectedBSessCLogs);
   expectClose(userBSessC!.x_med, expectedBSessC.x_med, 'userB sessC x_med');
-  expectClose(userBSessC!.byHour[3].x_med, expectedBSessC.x_med, 'userB sessC hour3');
-  expectClose(userBSessC!.byHour[5].x_med, expectedBSessC.x_med, 'userB sessC hour5 fallback', 1e-3);
+  const userBSessCByHour = userBSessC!.byHour;
+  if (!userBSessCByHour) {
+    throw new Error('userB sessC byHour missing');
+  }
+  expectClose(userBSessCByHour[3].x_med, expectedBSessC.x_med, 'userB sessC hour3');
+  expectClose(userBSessCByHour[5].x_med, expectedBSessC.x_med, 'userB sessC hour5 fallback', 1e-3);
 
   const canonical = freezeFittedStats(fitted);
   assert.deepEqual(canonical, freezeFittedStats(thawFittedStats(canonical)));
+});
 test('updateStatsStreaming keeps statistics frozen when alpha is zero', () => {
-  const prev: RobustStats = { x_med: 10, x_smad: 2 };
+  const prev: RobustStats = { x_med: 10, x_mad: 0, x_smad: 2 };
   const cfg: UpdateCfg = { alpha: 0, trim: { low: 1, high: 1 }, maxDrift: 0.1 };
   const next = updateStatsStreaming(100, prev, cfg);
   assert.deepEqual(next.x_med, prev.x_med);
@@ -349,7 +459,7 @@ test('updateStatsStreaming keeps statistics frozen when alpha is zero', () => {
 });
 
 test('updateStatsStreaming trims extremes and respects drift limit', () => {
-  const prev: RobustStats = { x_med: 10, x_smad: 5 };
+  const prev: RobustStats = { x_med: 10, x_mad: 0, x_smad: 5 };
   const cfg: UpdateCfg = { alpha: 0.2, trim: { low: 1, high: 1 }, maxDrift: 0.1 };
   const next = updateStatsStreaming(1000, prev, cfg);
   assert.ok(next.meta);
@@ -358,11 +468,12 @@ test('updateStatsStreaming trims extremes and respects drift limit', () => {
   assert.ok(next.x_med >= 10);
   assert.ok(next.x_med <= 11); // 10% drift limit on base scale 10
   assert.ok(next.x_smad <= 5.5);
-  assert.ok(next.meta?.updates.some((entry) => entry.field === 'x_med'));
+  const updates = next.meta?.updates ?? [];
+  assert.ok(updates.some((entry) => entry.field === 'x_med'));
 });
 
 test('updateStatsStreaming bounds per-step drift under repeated outliers', () => {
-  let stats: RobustStats = { x_med: 8, x_smad: 4 };
+  let stats: RobustStats = { x_med: 8, x_mad: 0, x_smad: 4 };
   const cfg: UpdateCfg = { alpha: 0.3, trim: { low: 0.5, high: 0.5 }, maxDrift: 0.1 };
   for (let i = 0; i < 50; i += 1) {
     const next = updateStatsStreaming(1000, stats, cfg);

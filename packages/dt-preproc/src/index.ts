@@ -22,11 +22,33 @@ export interface RobustScaleStats {
   x_smad: number;
 }
 
-export interface RobustStats extends RobustScaleStats {
-  byHour: Record<number, RobustScaleStats>;
+export interface StatsUpdateRecord {
+  field: 'x_med' | 'x_smad';
+  previous: number;
+  next: number;
+  delta: number;
 }
 
-export type GroupKey = { uid: string; session_id?: string };
+export interface StatsMeta {
+  updates: StatsUpdateRecord[];
+  lastInput?: number;
+  lastTrimmed?: number;
+}
+
+export interface RobustStats extends RobustScaleStats {
+  byHour?: Record<number, RobustScaleStats>;
+  meta?: StatsMeta;
+}
+
+export interface GroupKey {
+  uid: string;
+  [dimension: string]: string | null | undefined;
+}
+
+interface StatsLookup {
+  global: RobustStats | null;
+  groups: Map<string, RobustStats>;
+}
 
 export interface PreprocCfg {
   epsilon: number;
@@ -34,10 +56,8 @@ export interface PreprocCfg {
   grouping?: 'uid' | 'uid_session';
 }
 
-export interface FittedStats {
+export interface FittedStats extends StatsLookup {
   epsilon: number;
-  groups: Map<string, RobustStats>;
-  global: RobustStats;
 }
 
 export interface FrozenRobustStats extends RobustStats {}
@@ -52,6 +72,7 @@ export interface LogRowWithFeats extends LogRow {
   delta_seconds: number | null;
   delta_clipped_seconds: number | null;
   delta_robust_z: number | null;
+  delta_z_deseas_clipped: number | null;
   delta_log_burst: number | null;
   delta_time_label: DeltaTimeLabel;
   session_sequence: number;
@@ -69,16 +90,6 @@ export interface FeatureOptions {
 }
 
 export interface NormalizedFeatureOptions extends FeatureOptions {}
-
-export interface GroupKey {
-  uid: string;
-  [dimension: string]: string | null | undefined;
-}
-
-export interface FittedStats {
-  global: RobustStats | null;
-  groups: Map<string, RobustStats>;
-}
 
 function keyEntries(key: GroupKey): [string, string][] {
   const entries: [string, string][] = [];
@@ -122,7 +133,7 @@ export function keyStr(key: GroupKey): string {
     .join('&');
 }
 
-export function chooseStats(key: GroupKey, fitted: FittedStats): RobustStats | null {
+export function chooseStats(key: GroupKey, fitted: StatsLookup): RobustStats | null {
   const direct = fitted.groups.get(keyStr(key));
   if (direct) {
     return direct;
@@ -132,23 +143,14 @@ export function chooseStats(key: GroupKey, fitted: FittedStats): RobustStats | n
     return perUser;
   }
   return fitted.global;
-export interface StatsUpdateRecord {
-  field: 'x_med' | 'x_smad';
-  previous: number;
-  next: number;
-  delta: number;
 }
 
-export interface StatsMeta {
-  updates: StatsUpdateRecord[];
-  lastInput?: number;
-  lastTrimmed?: number;
-}
-
-export interface RobustStats {
-  x_med: number;
-  x_smad: number;
-  meta?: StatsMeta;
+function chooseStatsFromGroups(
+  key: GroupKey,
+  groups: Map<string, RobustStats>,
+  global: RobustStats | null
+): RobustStats | null {
+  return chooseStats(key, { global, groups });
 }
 
 export interface UpdateCfg {
@@ -362,6 +364,7 @@ export function updateStatsStreaming(x: number, prev: RobustStats, cfg: UpdateCf
   if (!Number.isFinite(x)) {
     return {
       ...prev,
+      x_mad: Number.isFinite(prev.x_mad) ? prev.x_mad : prev.x_smad / ROBUST_SCALE_FACTOR,
       meta: appendMetaUpdates(prev, [], undefined, undefined)
     };
   }
@@ -370,6 +373,7 @@ export function updateStatsStreaming(x: number, prev: RobustStats, cfg: UpdateCf
   if (normalizedCfg.alpha === 0) {
     return {
       ...prev,
+      x_mad: Number.isFinite(prev.x_mad) ? prev.x_mad : prev.x_smad / ROBUST_SCALE_FACTOR,
       meta: appendMetaUpdates(prev, [], x, x)
     };
   }
@@ -405,8 +409,10 @@ export function updateStatsStreaming(x: number, prev: RobustStats, cfg: UpdateCf
     }
   ];
 
+  const updatedMad = updatedSmad / ROBUST_SCALE_FACTOR;
   return {
     x_med: updatedMed,
+    x_mad: updatedMad,
     x_smad: updatedSmad,
     meta: appendMetaUpdates(prev, records, x, trimmed)
   };
@@ -453,10 +459,17 @@ export function computeFeatureRows(
   options: Partial<FeatureOptions> = {}
 ): { rows: LogRowWithFeats[]; stats: FeatureStats; options: NormalizedFeatureOptions } {
   const normalized = normalizeFeatureOptions(options);
+  const logEps = Math.max(normalized.epsilon, LOG_EPS_FLOOR);
 
   const measuredValues: number[] = [];
   const measuredValuesByUser = new Map<string, number[]>();
   const measuredValuesByGroup = new Map<string, number[]>();
+  const measuredLogValues: number[] = [];
+  const measuredLogValuesByUser = new Map<string, number[]>();
+  const measuredLogValuesByGroup = new Map<string, number[]>();
+  const hourlyLogValuesGlobal = new Map<number, number[]>();
+  const hourlyLogValuesByUser = new Map<string, Map<number, number[]>>();
+  const hourlyLogValuesByGroup = new Map<string, Map<number, number[]>>();
   const featureRows: LogRowWithFeats[] = [];
   const stats: MutableFeatureStats = {
     total: 0,
@@ -481,6 +494,7 @@ export function computeFeatureRows(
     for (const { row, deltaSeconds, timeLabel } of deltaResult.rows) {
       const baseRow = row;
       const sessionId = baseRow.session_id;
+      const eventHour = extractHour(baseRow);
       let state = sessionState.get(sessionId);
       if (!state) {
         state = {
@@ -524,6 +538,35 @@ export function computeFeatureRows(
         } else {
           measuredValuesByGroup.set(groupKey, [clipped]);
         }
+        if (timeLabel === 'measured') {
+          const logValue = Math.log(Math.max(clipped, 0) + logEps);
+          measuredLogValues.push(logValue);
+          const perUserLog = measuredLogValuesByUser.get(baseRow.uid);
+          if (perUserLog) {
+            perUserLog.push(logValue);
+          } else {
+            measuredLogValuesByUser.set(baseRow.uid, [logValue]);
+          }
+          const perGroupLog = measuredLogValuesByGroup.get(groupKey);
+          if (perGroupLog) {
+            perGroupLog.push(logValue);
+          } else {
+            measuredLogValuesByGroup.set(groupKey, [logValue]);
+          }
+          appendHourly(hourlyLogValuesGlobal, eventHour, logValue);
+          let userHourly = hourlyLogValuesByUser.get(baseRow.uid);
+          if (!userHourly) {
+            userHourly = new Map<number, number[]>();
+            hourlyLogValuesByUser.set(baseRow.uid, userHourly);
+          }
+          appendHourly(userHourly, eventHour, logValue);
+          let groupHourly = hourlyLogValuesByGroup.get(groupKey);
+          if (!groupHourly) {
+            groupHourly = new Map<number, number[]>();
+            hourlyLogValuesByGroup.set(groupKey, groupHourly);
+          }
+          appendHourly(groupHourly, eventHour, logValue);
+        }
       }
 
       if (timeLabel === 'measured') {
@@ -549,6 +592,7 @@ export function computeFeatureRows(
         delta_seconds: deltaSeconds,
         delta_clipped_seconds: clipped,
         delta_robust_z: null,
+        delta_z_deseas_clipped: null,
         delta_log_burst: logBurst,
         delta_time_label: timeLabel,
         session_sequence: sequence,
@@ -579,19 +623,30 @@ export function computeFeatureRows(
     const fittedGroups = new Map<string, RobustStats>();
     const minSamples = normalized.minSamples;
 
-    const perUserStats = new Map<string, RobustScaleStats>();
+    const fallbackRobust: RobustStats | null = fallbackStats
+      ? {
+          x_med: fallbackStats.x_med,
+          x_mad: fallbackStats.x_mad,
+          x_smad: fallbackStats.x_smad
+        }
+      : null;
     for (const [uid, values] of measuredValuesByUser.entries()) {
       if (values.length < minSamples) {
         continue;
       }
       const summary = computeRobustSummary(values);
       if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
-        fittedGroups.set(keyStr({ uid }), { x_med: summary.x_med, x_smad: summary.x_smad });
-      } else if (fallbackStats) {
-        fittedGroups.set(keyStr({ uid }), fallbackStats);
+        fittedGroups.set(keyStr({ uid }), {
+          x_med: summary.x_med,
+          x_mad: summary.x_mad,
+          x_smad: summary.x_smad
+        });
+      } else if (fallbackRobust) {
+        fittedGroups.set(keyStr({ uid }), { ...fallbackRobust });
       } else if (summary) {
         fittedGroups.set(keyStr({ uid }), {
           x_med: summary.x_med,
+          x_mad: summary.x_mad,
           x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
         });
       }
@@ -603,14 +658,13 @@ export function computeFeatureRows(
       }
       const summary = computeRobustSummary(values);
       if (summary && summary.x_smad >= normalized.robustScaleEpsilon) {
-        fittedGroups.set(groupKey, { x_med: summary.x_med, x_smad: summary.x_smad });
-        perUserStats.set(uid, {
+        fittedGroups.set(groupKey, {
           x_med: summary.x_med,
           x_mad: summary.x_mad,
           x_smad: summary.x_smad
         });
-      } else if (fallbackStats) {
-        fittedGroups.set(groupKey, fallbackStats);
+      } else if (fallbackRobust) {
+        fittedGroups.set(groupKey, { ...fallbackRobust });
       } else if (summary) {
         fittedGroups.set(groupKey, {
           x_med: summary.x_med,
@@ -620,7 +674,76 @@ export function computeFeatureRows(
       }
     }
 
-    const fitted: FittedStats = { global: fallbackStats, groups: fittedGroups };
+    const fitted: StatsLookup = { global: fallbackRobust, groups: fittedGroups };
+
+    let seasonalGlobal: RobustStats | null = null;
+    const seasonalGroups = new Map<string, RobustStats>();
+    if (measuredLogValues.length > 0) {
+      const logSummary = computeRobustSummary(measuredLogValues);
+      if (logSummary) {
+        const globalLogStats: RobustScaleStats = {
+          x_med: logSummary.x_med,
+          x_mad: logSummary.x_mad,
+          x_smad: Math.max(logSummary.x_smad, normalized.robustScaleEpsilon)
+        };
+        const globalHourly = buildHourlyStats(hourlyLogValuesGlobal, globalLogStats);
+        seasonalGlobal = {
+          x_med: globalLogStats.x_med,
+          x_mad: globalLogStats.x_mad,
+          x_smad: globalLogStats.x_smad,
+          byHour: globalHourly
+        };
+        for (const [uid, values] of measuredLogValuesByUser.entries()) {
+          if (values.length < minSamples) {
+            continue;
+          }
+          const summary = computeRobustSummary(values);
+          if (!summary) {
+            continue;
+          }
+          const userStats: RobustScaleStats = {
+            x_med: summary.x_med,
+            x_mad: summary.x_mad,
+            x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
+          };
+          const hourly = buildHourlyStats(
+            hourlyLogValuesByUser.get(uid) ?? new Map<number, number[]>(),
+            userStats,
+            seasonalGlobal.byHour
+          );
+          seasonalGroups.set(keyStr({ uid }), {
+            x_med: userStats.x_med,
+            x_mad: userStats.x_mad,
+            x_smad: userStats.x_smad,
+            byHour: hourly
+          });
+        }
+        for (const [groupKey, values] of measuredLogValuesByGroup.entries()) {
+          if (values.length < minSamples) {
+            continue;
+          }
+          const summary = computeRobustSummary(values);
+          const baseStats: RobustScaleStats = summary
+            ? {
+                x_med: summary.x_med,
+                x_mad: summary.x_mad,
+                x_smad: Math.max(summary.x_smad, normalized.robustScaleEpsilon)
+              }
+            : globalLogStats;
+          const hourly = buildHourlyStats(
+            hourlyLogValuesByGroup.get(groupKey) ?? new Map<number, number[]>(),
+            baseStats,
+            seasonalGlobal.byHour
+          );
+          seasonalGroups.set(groupKey, {
+            x_med: baseStats.x_med,
+            x_mad: baseStats.x_mad,
+            x_smad: baseStats.x_smad,
+            byHour: hourly
+          });
+        }
+      }
+    }
 
     for (const row of featureRows) {
       if (row.delta_clipped_seconds === null) {
@@ -632,6 +755,35 @@ export function computeFeatureRows(
       }
       const z = robustZ(row.delta_clipped_seconds, statsForUser);
       row.delta_robust_z = clip(z, normalized.robustZClip);
+    }
+
+    if (seasonalGlobal) {
+      for (const row of featureRows) {
+        if (row.delta_clipped_seconds === null) {
+          continue;
+        }
+        const statsForRow = chooseStatsFromGroups(
+          { uid: row.uid, session_id: row.session_id },
+          seasonalGroups,
+          seasonalGlobal
+        );
+        if (!statsForRow) {
+          continue;
+        }
+        const fallbackScale: RobustScaleStats = {
+          x_med: statsForRow.x_med,
+          x_mad: statsForRow.x_mad ?? 0,
+          x_smad: Math.max(statsForRow.x_smad, normalized.robustScaleEpsilon)
+        };
+        const hourlyStats = resolveHourlyStats(statsForRow, extractHour(row), fallbackScale);
+        const scale = Math.max(hourlyStats.x_smad, normalized.robustScaleEpsilon);
+        if (!(scale > 0)) {
+          continue;
+        }
+        const logDelta = Math.log(Math.max(row.delta_clipped_seconds, 0) + logEps);
+        const zDeseas = (logDelta - hourlyStats.x_med) / scale;
+        row.delta_z_deseas_clipped = clip(zDeseas, normalized.robustZClip);
+      }
     }
   }
 
@@ -687,12 +839,25 @@ function serializeGroupKey(key: GroupKey): string {
   return JSON.stringify({ uid: key.uid });
 }
 
+export function hourOfUTC(ts: number): number {
+  if (!Number.isFinite(ts)) {
+    throw new TypeError('timestamp must be a finite number');
+  }
+  const epochMilliseconds = Math.trunc(ts * 1000);
+  const date = new Date(epochMilliseconds);
+  const timeValue = date.getTime();
+  if (Number.isNaN(timeValue)) {
+    throw new RangeError('invalid epoch timestamp');
+  }
+  return date.getUTCHours();
+}
+
 function extractHour(row: LogRow): number | null {
   if (Number.isFinite(row.timestamp_epoch_seconds)) {
-    const epochMs = Number(row.timestamp_epoch_seconds) * 1000;
-    const date = new Date(epochMs);
-    if (!Number.isNaN(date.getTime())) {
-      return date.getUTCHours();
+    try {
+      return hourOfUTC(Number(row.timestamp_epoch_seconds));
+    } catch {
+      // fall through to string parsing
     }
   }
   if (typeof row.timestamp_utc === 'string') {
@@ -768,7 +933,24 @@ function cloneHourlyRecord(
   return record;
 }
 
-function normalizeRobustStatsInput(stats: RobustStats | FrozenRobustStats | undefined): RobustStats {
+function resolveHourlyStats(
+  stats: RobustStats,
+  hour: number | null,
+  fallback: RobustScaleStats
+): RobustScaleStats {
+  if (!Number.isInteger(hour)) {
+    return sanitizeRobustScaleStats(null, fallback);
+  }
+  const normalizedHour = ((Number(hour) % 24) + 24) % 24;
+  const source = stats.byHour as Record<number | string, RobustScaleStats> | undefined;
+  const entry = source ? source[normalizedHour] ?? source[String(normalizedHour)] : undefined;
+  if (!entry) {
+    return sanitizeRobustScaleStats(null, fallback);
+  }
+  return sanitizeRobustScaleStats(entry, fallback);
+}
+
+function normalizeRobustStatsInput(stats: RobustStats | FrozenRobustStats | null | undefined): RobustStats {
   const base = sanitizeRobustScaleStats(stats ?? null);
   const byHour = cloneHourlyRecord(stats?.byHour, base);
   return {
