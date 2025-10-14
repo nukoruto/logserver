@@ -1,10 +1,106 @@
 #!/usr/bin/env node
-import { Command } from 'commander';
+import { Command, InvalidArgumentError, Option } from 'commander';
 import { fitAnomalyModel } from './fit.js';
 import { scoreStream } from './score.js';
 import { parseQuantileLevels } from './utils.js';
 
 const program = new Command();
+
+const parseFloatArg = (value: string): number => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new InvalidArgumentError('Expected a finite number but received an empty string');
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isFinite(parsed)) {
+    throw new InvalidArgumentError(`Expected a finite number but received "${value}"`);
+  }
+  return parsed;
+};
+
+const parseIntArg = (value: string): number => {
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    throw new InvalidArgumentError('Expected an integer but received an empty string');
+  }
+  const parsed = Number(trimmed);
+  if (!Number.isInteger(parsed)) {
+    throw new InvalidArgumentError(`Expected an integer but received "${value}"`);
+  }
+  return parsed;
+};
+
+const collectFloats = (value: string, previous: number[] = []): number[] => {
+  previous.push(parseFloatArg(value));
+  return previous;
+};
+
+const collectIntegers = (value: string, previous: number[] = []): number[] => {
+  previous.push(parseIntArg(value));
+  return previous;
+};
+
+interface KOfNParams {
+  readonly k: number;
+  readonly n: number;
+}
+
+interface FitCommandOptions {
+  readonly input: string[];
+  readonly statsOut: string;
+  readonly metaOut: string;
+  readonly column: string;
+  readonly quantile?: number[];
+  readonly quantileLower: number;
+  readonly quantileUpper: number;
+  readonly minQuantileSamples: number;
+  readonly budgetTotal: number;
+  readonly budgetWeightMode?: 'count' | 'uniform';
+  readonly spotDomain: 'log_dt' | 'z_deseas';
+  readonly spotCalibCount?: number;
+  readonly spotCalibStart?: string;
+  readonly spotCalibEnd?: string;
+  readonly spotP0: number[];
+  readonly minTail: number;
+  readonly flagTailProb: number;
+  readonly algoVer: string;
+  readonly alpha: number;
+  readonly q: number;
+  readonly calibWindow: number;
+  readonly declusterR: number;
+  readonly kofn: KOfNParams;
+  readonly hysteresisGamma: number;
+  readonly reestimateEvery: number;
+  readonly minExceed: number;
+  readonly poolStrategy: string;
+  readonly xiEps: number;
+  readonly upperCapPerDay: number;
+  readonly lowerClip: number;
+  readonly seed: number[];
+  readonly preprocHash: string;
+}
+
+interface ScoreCommandOptions {
+  readonly input: string;
+  readonly output: string;
+  readonly stats: string;
+  readonly meta: string;
+  readonly audit: string;
+  readonly flagTailProb?: number;
+}
+
+const parseKOfN = (value: string): KOfNParams => {
+  const parts = value.split('/');
+  if (parts.length !== 2) {
+    throw new InvalidArgumentError('Expected format <k>/<n> for --kofn');
+  }
+  const k = parseIntArg(parts[0]);
+  const n = parseIntArg(parts[1]);
+  if (!(k >= 1 && n >= 1 && k <= n)) {
+    throw new InvalidArgumentError('--kofn requires integers with 1 <= k <= n');
+  }
+  return { k, n };
+};
 program
   .name('dt-anom')
   .description('Δt anomaly scoring pipeline with SPOT initialization');
@@ -15,84 +111,117 @@ program
   .requiredOption('-s, --stats-out <path>', 'Output anomaly stats JSON')
   .requiredOption('-m, --meta-out <path>', 'Output anomaly meta JSON')
   .option('-c, --column <name>', 'Base column to score', 'dt_sec')
-  .option('--quantile <values...>', 'Quantile levels (0-1)', (values: string[]) => values.map(Number))
-  .option('--quantile-lower <value>', 'Lower quantile for tau_lo', (value) => Number(value), 0.01)
-  .option('--quantile-upper <value>', 'Upper quantile for tau_hi', (value) => Number(value), 0.99)
-  .option(
-    '--min-quantile-samples <count>',
-    'Minimum samples required for (uid, op_category) quantile without fallback',
-    (value) => Number(value),
-    30
+  .addOption(
+    new Option('--quantile <values...>', 'Quantile levels (0-1)').argParser(collectFloats)
   )
-  .option('--budget-total <value>', 'Global probability budget Q_total', (value) => Number(value), 1e-2)
-  .option(
-    '--budget-weight-mode <mode>',
-    'Weight mode for budget allocation (count|uniform)',
-    (value) => String(value),
-    'count'
+  .addOption(
+    new Option('--quantile-lower <value>', 'Lower quantile for tau_lo')
+      .default(0.01)
+      .argParser(parseFloatArg)
   )
-  .option('--spot-domain <value>', 'SPOT calibration domain (log_dt|z_deseas)', 'log_dt')
-  .option('--spot-calib-count <value>', 'Initial record count for SPOT calibration', (value) => Number(value))
+  .addOption(
+    new Option('--quantile-upper <value>', 'Upper quantile for tau_hi')
+      .default(0.99)
+      .argParser(parseFloatArg)
+  )
+  .addOption(
+    new Option(
+      '--min-quantile-samples <count>',
+      'Minimum samples required for (uid, op_category) quantile without fallback'
+    )
+      .default(30)
+      .argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--budget-total <value>', 'Global probability budget Q_total')
+      .default(1e-2)
+      .argParser(parseFloatArg)
+  )
+  .addOption(
+    new Option('--budget-weight-mode <mode>', 'Weight mode for budget allocation (count|uniform)')
+      .choices(['count', 'uniform'])
+      .default('count')
+  )
+  .addOption(
+    new Option('--spot-domain <value>', 'SPOT calibration domain (log_dt|z_deseas)')
+      .choices(['log_dt', 'z_deseas'])
+      .default('log_dt')
+  )
+  .addOption(
+    new Option('--spot-calib-count <value>', 'Initial record count for SPOT calibration').argParser(parseIntArg)
+  )
   .option('--spot-calib-start <value>', 'Inclusive ISO8601 start timestamp for SPOT calibration range')
   .option('--spot-calib-end <value>', 'Inclusive ISO8601 end timestamp for SPOT calibration range')
-  .option(
-    '--spot-p0 <values...>',
-    'Candidate quantiles for SPOT baseline threshold',
-    (values: string[]) => values.map((entry) => Number(entry)),
-    ['0.90', '0.93', '0.95', '0.975', '0.99']
+  .addOption(
+    new Option('--spot-p0 <values...>', 'Candidate quantiles for SPOT baseline threshold')
+      .default([0.9, 0.93, 0.95, 0.975, 0.99])
+      .argParser(collectFloats)
   )
-  .option('--min-tail <count>', 'Minimum tail sample count', (value) => Number(value), 50)
-  .option('--flag-tail-prob <value>', 'Tail probability threshold for flagging', (value) => Number(value), 1e-3)
+  .addOption(
+    new Option('--min-tail <count>', 'Minimum tail sample count').default(50).argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--flag-tail-prob <value>', 'Tail probability threshold for flagging')
+      .default(1e-3)
+      .argParser(parseFloatArg)
+  )
   .option('--algo-ver <value>', 'Algorithm version identifier', '1.0.0')
-  .option('--alpha <value>', 'Score combination coefficient', (value) => Number(value), 0.5)
-  .option('--q <value>', 'Quantile target for control rules', (value) => Number(value), 0.99)
-  .option('--calib-window <value>', 'Calibration window length', (value) => Number(value), 1000)
-  .option('--decluster-r <value>', 'Declustering separation parameter', (value) => Number(value), 5)
-  .option(
-    '--kofn <values...>',
-    'k-of-n voting parameters',
-    (values: string[]) => values.map((entry) => Number(entry)),
-    ['3', '5']
+  .addOption(
+    new Option('--alpha <value>', 'Score combination coefficient').default(0.5).argParser(parseFloatArg)
   )
-  .option('--hysteresis-gamma <value>', 'Hysteresis gain (>1)', (value) => Number(value), 1.5)
-  .option('--reestimate-every <value>', 'Re-estimation interval (events)', (value) => Number(value), 10000)
-  .option('--min-exceed <value>', 'Minimum exceedances before alarm', (value) => Number(value), 5)
+  .addOption(new Option('--q <value>', 'Quantile target for control rules').default(0.99).argParser(parseFloatArg))
+  .addOption(
+    new Option('--calib-window <value>', 'Calibration window length').default(1000).argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--decluster-r <value>', 'Declustering separation parameter').default(5).argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--kofn <k>/<n>', 'k-of-n voting parameters')
+      .default('3/5')
+      .argParser(parseKOfN)
+  )
+  .addOption(
+    new Option('--hysteresis-gamma <value>', 'Hysteresis gain (>1)')
+      .default(1.5)
+      .argParser(parseFloatArg)
+  )
+  .addOption(
+    new Option('--reestimate-every <value>', 'Re-estimation interval (events)')
+      .default(10000)
+      .argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--min-exceed <value>', 'Minimum exceedances before alarm').default(5).argParser(parseIntArg)
+  )
   .option('--pool-strategy <value>', 'Pooling strategy for group tail statistics', 'per-user')
-  .option('--xi-eps <value>', 'Xi epsilon for stability', (value) => Number(value), 1e-3)
-  .option('--upper-cap-per-day <value>', 'Upper cap per day', (value) => Number(value), 50)
-  .option('--lower-clip <value>', 'Lower clip value', (value) => Number(value), -5)
-  .option(
-    '--seed <values...>',
-    'Random seeds used in upstream stages',
-    (values: string[]) => values.map((entry) => Number(entry)),
-    ['0']
+  .addOption(new Option('--xi-eps <value>', 'Xi epsilon for stability').default(1e-3).argParser(parseFloatArg))
+  .addOption(
+    new Option('--upper-cap-per-day <value>', 'Upper cap per day').default(50).argParser(parseIntArg)
+  )
+  .addOption(
+    new Option('--lower-clip <value>', 'Lower clip value').default(-5).argParser(parseFloatArg)
+  )
+  .addOption(
+    new Option('--seed <values...>', 'Random seeds used in upstream stages')
+      .default([0])
+      .argParser(collectIntegers)
   )
   .requiredOption('--preproc-hash <value>', 'Preprocessing pipeline hash (SHA-256)')
-    .action(async (cmdOpts) => {
+    .action(async (rawOptions: unknown) => {
+      const cmdOpts = rawOptions as FitCommandOptions;
       const quantiles = cmdOpts.quantile ? parseQuantileLevels(cmdOpts.quantile) : [0.9, 0.95, 0.99, 0.995];
-      const seeds = (cmdOpts.seed as unknown[])
-        .map((value) => Math.trunc(Number(value)))
-        .filter((value) => Number.isFinite(value));
+      const seeds = cmdOpts.seed ?? [];
       if (seeds.length === 0) {
         throw new Error('At least one seed must be provided');
       }
-      if (!Array.isArray(cmdOpts.kofn) || cmdOpts.kofn.length !== 2) {
-        throw new Error('--kofn requires exactly two numeric values');
-      }
-      const kofnValues: [number, number] = [Math.trunc(Number(cmdOpts.kofn[0])), Math.trunc(Number(cmdOpts.kofn[1]))];
-      if (kofnValues.some((value) => !Number.isFinite(value) || value <= 0)) {
-        throw new Error('--kofn values must be positive integers');
-      }
-      const budgetWeightMode = String(cmdOpts.budgetWeightMode ?? 'count');
-      if (budgetWeightMode !== 'count' && budgetWeightMode !== 'uniform') {
-        throw new Error('--budget-weight-mode must be either count or uniform');
-      }
+      const kofnOption = cmdOpts.kofn;
+      const kofnValues: [number, number] = [kofnOption.k, kofnOption.n];
+      const budgetWeightMode = cmdOpts.budgetWeightMode ?? 'count';
       if (!(Number.isFinite(cmdOpts.hysteresisGamma) && cmdOpts.hysteresisGamma > 1)) {
         throw new Error('--hysteresis-gamma must be greater than 1');
       }
-      const spotCandidates = Array.isArray(cmdOpts.spotP0)
-        ? (cmdOpts.spotP0 as unknown[]).map((entry) => Number(entry))
-        : [Number(cmdOpts.spotP0)];
+      const spotCandidates = cmdOpts.spotP0;
       const result = await fitAnomalyModel({
         inputs: cmdOpts.input,
         statsOut: cmdOpts.statsOut,
@@ -102,7 +231,7 @@ program
         quantileLower: cmdOpts.quantileLower,
         quantileUpper: cmdOpts.quantileUpper,
         minQuantileSamples: cmdOpts.minQuantileSamples,
-        budgetTotal: Number(cmdOpts.budgetTotal ?? 1e-2),
+        budgetTotal: cmdOpts.budgetTotal ?? 1e-2,
         budgetWeightMode,
         spotDomain: cmdOpts.spotDomain,
         spotCalibCount: cmdOpts.spotCalibCount,
@@ -146,8 +275,11 @@ program
   .requiredOption('--stats <path>', 'Fitted anomaly stats JSON')
   .requiredOption('--meta <path>', 'Fitted anomaly meta JSON')
   .requiredOption('--audit <path>', 'Audit JSONL output for SPOT decisions')
-  .option('--flag-tail-prob <value>', 'Override tail probability threshold', (value) => Number(value))
-  .action(async (cmdOpts) => {
+  .addOption(
+    new Option('--flag-tail-prob <value>', 'Override tail probability threshold').argParser(parseFloatArg)
+  )
+  .action(async (rawOptions: unknown) => {
+    const cmdOpts = rawOptions as ScoreCommandOptions;
     const summary = await scoreStream({
       input: cmdOpts.input,
       output: cmdOpts.output,
