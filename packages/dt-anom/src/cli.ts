@@ -30,14 +30,16 @@ const parseIntArg = (value: string): number => {
   return parsed;
 };
 
-const collectFloats = (value: string, previous: number[] = []): number[] => {
-  previous.push(parseFloatArg(value));
-  return previous;
+const collectFloats = (value: string, previous: number[] | undefined): number[] => {
+  const acc = previous ?? [];
+  acc.push(parseFloatArg(value));
+  return acc;
 };
 
-const collectIntegers = (value: string, previous: number[] = []): number[] => {
-  previous.push(parseIntArg(value));
-  return previous;
+const collectIntegers = (value: string, previous: number[] | undefined): number[] => {
+  const acc = previous ?? [];
+  acc.push(parseIntArg(value));
+  return acc;
 };
 
 interface KOfNParams {
@@ -178,7 +180,7 @@ program
   )
   .addOption(
     new Option('--kofn <k>/<n>', 'k-of-n voting parameters')
-      .default('3/5')
+      .default(parseKOfN('3/5'))
       .argParser(parseKOfN)
   )
   .addOption(
