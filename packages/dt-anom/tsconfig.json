@@ -1,0 +1,18 @@
+{
+  "extends": "../../tsconfig.base.json",
+  "compilerOptions": {
+    "rootDir": "..",
+    "outDir": "dist",
+    "module": "ESNext",
+    "declaration": true,
+    "declarationMap": true,
+    "composite": false,
+    "noEmit": false,
+    "paths": {
+      "@logserver/csv-schema": ["../csv-schema/src/index"],
+      "@logserver/csv-schema/*": ["../csv-schema/src/*"]
+    }
+  },
+  "include": ["src/**/*"],
+  "exclude": ["dist", "node_modules"]
+}

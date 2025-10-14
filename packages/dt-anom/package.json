@@ -1,0 +1,45 @@
+{
+  "name": "@logserver/dt-anom",
+  "version": "0.1.0",
+  "description": "Anomaly scoring pipeline with SPOT initialization for Δt-aware logs",
+  "type": "module",
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "dt-anom": "dist/cli.js"
+  },
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./cli": {
+      "import": "./dist/cli.js",
+      "types": "./dist/cli.d.ts"
+    }
+  },
+  "files": [
+    "dist"
+  ],
+  "scripts": {
+    "build": "pnpm run typecheck && tsup src/index.ts src/cli.ts --format esm --dts --sourcemap --clean --out-dir dist",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run --config vitest.config.ts"
+  },
+  "dependencies": {
+    "@logserver/csv-schema": "workspace:*",
+    "commander": "^12.0.0",
+    "fast-csv": "^5.0.1",
+    "mathjs": "^12.4.2",
+    "simple-statistics": "^7.8.3",
+    "zod": "^3.23.8"
+  },
+  "devDependencies": {
+    "@types/node": "^20.12.7",
+    "ts-node": "^10.9.2",
+    "tsup": "^8.0.1",
+    "tsx": "^4.7.1",
+    "typescript": "^5.4.5",
+    "vitest": "^1.6.0"
+  }
+}
