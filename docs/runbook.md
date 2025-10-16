@@ -167,6 +167,19 @@ tree -L 1 data/processed
   ```
 - コンテナ内はホスト時間に追従するため、ホストの NTP 安定化が必須。安定後にシードをやり直すことで Δt の再現性を担保。
 
+### 8.4 `dt-anom` CLI で `recalibrate` が失敗する
+- 症状: `pnpm exec dt-anom recalibrate` など `recalibrate` サブコマンドを実行すると、毎回
+  `Hierarchical SPOT recalibration is not supported. Please rerun dt-anom fit.` が出力され処理が停止する。
+- 原因: `packages/dt-anom/src/cli.ts` にて `recalibrate` コマンドは意図的に未実装であり、例外を送出して
+  `fit` の再実行を促す仕様。SPOT の再推定は学習済み統計を破壊するため、現在の運用フローでは
+  `fit` の再計算のみを許可している。
+- 対処:
+  1. `pnpm --filter @logserver/dt-anom run build` を最新にしてから、`pnpm exec dt-anom fit ...` を再実行し統計と
+     メタデータを再生成する。
+  2. 新しい統計 (`anom_stats.json`) とメタ (`anom_meta.json`) を `score` や Python パイプラインに再投入する。
+  3. 差分検証が必要な場合は、旧成果物を `reports/` 等に退避してから再試行する。
+- 備考: 将来的に再推定をサポートする場合は `docs/` 配下の runbook と CLI ヘルプを同時更新すること。
+
 ---
 
 ## 9. 完了条件チェックリスト
