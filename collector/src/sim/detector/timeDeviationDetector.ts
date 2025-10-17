@@ -3,17 +3,25 @@ import type { SimulationEvent } from '../../services/simulationService';
 export interface TimeDeviationOptions extends Record<string, unknown> {
   method?: 'quantile' | 'fixed' | 'spot' | 'otsu' | 'knee' | string;
   quantile?: number;
+  quantileUpper?: number;
+  quantileLower?: number;
   minSamples?: number;
   fallbackThresholdSeconds?: number | string | null;
+  fallbackLowerThresholdSeconds?: number | string | null;
   thresholdSeconds?: number | string | null;
+  lowerThresholdSeconds?: number | string | null;
   baselineSequence?: readonly SimulationEvent[];
 }
 
 export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationObservedDeltaSeconds?: number;
   timeDeviationThresholdSeconds?: number;
+  timeDeviationThresholdLowerSeconds?: number;
   timeDeviationScore?: number;
   timeDeviationFlag?: boolean;
+  tau_hi?: number;
+  tau_lo?: number;
+  s_Q?: number;
 }
 
 export interface TimeDeviationHistogramDiagnostics {
@@ -32,6 +40,7 @@ export interface TimeDeviationDiagnostics {
   baselineMinSeconds: number | null;
   baselineMaxSeconds: number | null;
   thresholdSeconds: number;
+  thresholdLowerSeconds: number;
   fallbackApplied: boolean;
   quantile?: number | null;
   otsu?: {
@@ -47,19 +56,40 @@ export interface TimeDeviationDiagnostics {
     normalizedIndex: number | null;
     distance: number | null;
   } | null;
+  groupThresholds?: Record<string, {
+    tauHiSeconds: number;
+    tauLoSeconds: number;
+    sampleCount: number;
+    fallbackToGlobal: boolean;
+  }>;
 }
 
 export interface TimeDeviationDetectionResult {
   events: TimeDeviationEvent[];
   thresholdSeconds: number;
+  thresholdLowerSeconds: number;
   diagnostics: TimeDeviationDiagnostics;
 }
 
-const DEFAULT_OPTIONS: Required<Pick<TimeDeviationOptions, 'method' | 'quantile' | 'minSamples' | 'fallbackThresholdSeconds'>> = {
+const DEFAULT_OPTIONS: Required<
+  Pick<
+    TimeDeviationOptions,
+    | 'method'
+    | 'quantile'
+    | 'quantileUpper'
+    | 'quantileLower'
+    | 'minSamples'
+    | 'fallbackThresholdSeconds'
+    | 'fallbackLowerThresholdSeconds'
+  >
+> = {
   method: 'quantile',
   quantile: 0.99,
+  quantileUpper: 0.99,
+  quantileLower: 0.01,
   minSamples: 5,
   fallbackThresholdSeconds: null,
+  fallbackLowerThresholdSeconds: null,
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -110,6 +140,106 @@ export const extractDeltaSeries = (sequence: readonly SimulationEvent[]): number
     }
   }
   return deltas;
+};
+
+const readString = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length > 0) {
+      return trimmed;
+    }
+  }
+  return null;
+};
+
+const extractUid = (event: SimulationEvent | null | undefined): string | null => {
+  if (!event) {
+    return null;
+  }
+  const direct = readString((event as Record<string, unknown>).uid)
+    ?? readString((event as Record<string, unknown>).user_id)
+    ?? readString((event as Record<string, unknown>).session_id);
+  if (direct) {
+    return direct;
+  }
+  const metadataRaw = (event as Record<string, unknown>).metadata;
+  if (metadataRaw && typeof metadataRaw === 'object') {
+    const metadata = metadataRaw as Record<string, unknown>;
+    const metaUid = readString(metadata.uid);
+    if (metaUid) {
+      return metaUid;
+    }
+  }
+  return null;
+};
+
+const extractCategory = (event: SimulationEvent | null | undefined): string | null => {
+  if (!event) {
+    return null;
+  }
+  const fromEvent = readString((event as Record<string, unknown>).op_category)
+    ?? readString((event as Record<string, unknown>).category)
+    ?? readString((event as Record<string, unknown>).category_code);
+  if (fromEvent) {
+    return fromEvent;
+  }
+  const metadataRaw = (event as Record<string, unknown>).metadata;
+  if (metadataRaw && typeof metadataRaw === 'object') {
+    const metadata = metadataRaw as Record<string, unknown>;
+    const metaCategory = readString(metadata.op_category)
+      ?? readString(metadata.category)
+      ?? readString(metadata.category_code);
+    if (metaCategory) {
+      return metaCategory;
+    }
+  }
+  return null;
+};
+
+const buildGroupKey = (uid: string | null, category: string | null): string => {
+  const userPart = uid ?? '__global__';
+  const categoryPart = category ?? '__global__';
+  return `${userPart}||${categoryPart}`;
+};
+
+interface GroupThresholdSummary {
+  tauHiSeconds: number;
+  tauLoSeconds: number;
+  sampleCount: number;
+  fallbackToGlobal: boolean;
+}
+
+const normalizeTauPair = (tauHi: number, tauLo: number, fallbackHi: number, fallbackLo: number): {
+  tauHi: number;
+  tauLo: number;
+} => {
+  const hiCandidate = Number.isFinite(tauHi) ? tauHi : fallbackHi;
+  const loCandidate = Number.isFinite(tauLo) ? tauLo : fallbackLo;
+  const nonNegativeHi = Math.max(hiCandidate, 0);
+  const boundedLo = Math.max(Math.min(loCandidate, nonNegativeHi), 0);
+  return { tauHi: nonNegativeHi, tauLo: boundedLo };
+};
+
+const parseOptionalFiniteNumber = (value: unknown): number | null => {
+  if (value === undefined || value === null || value === '') {
+    return null;
+  }
+  const numeric = Number(value);
+  return isFiniteNumber(numeric) ? numeric : null;
+};
+
+const resolveQuantileValue = (value: unknown, fallback: number): number => {
+  const numeric = parseOptionalFiniteNumber(value);
+  if (numeric === null) {
+    return fallback;
+  }
+  if (numeric < 0) {
+    return 0;
+  }
+  if (numeric > 1) {
+    return 1;
+  }
+  return numeric;
 };
 
 const computeQuantile = (values: readonly number[], quantile: number): number => {
@@ -308,6 +438,7 @@ const computeKneeThreshold = (values: readonly number[]): {
 interface ThresholdResolution {
   method: string;
   threshold: number;
+  lowerThreshold: number;
   diagnostics: Partial<TimeDeviationDiagnostics>;
 }
 
@@ -316,15 +447,35 @@ const resolveThresholdDetailed = (
   options: TimeDeviationOptions,
 ): ThresholdResolution => {
   if (!Array.isArray(values) || values.length === 0) {
-    return { method: DEFAULT_OPTIONS.method, threshold: Number.NaN, diagnostics: {} };
+    return {
+      method: DEFAULT_OPTIONS.method,
+      threshold: Number.NaN,
+      lowerThreshold: Number.NaN,
+      diagnostics: {},
+    };
   }
   const methodRaw = options.method;
   const method = typeof methodRaw === 'string' ? methodRaw.toLowerCase() : DEFAULT_OPTIONS.method;
+  const quantileUpperCandidate = resolveQuantileValue(
+    options.quantileUpper ?? options.quantile,
+    DEFAULT_OPTIONS.quantileUpper,
+  );
+  const quantileLowerCandidate = resolveQuantileValue(
+    options.quantileLower,
+    DEFAULT_OPTIONS.quantileLower,
+  );
+  const quantileUpper = Math.max(quantileUpperCandidate, quantileLowerCandidate);
+  const quantileLower = Math.min(quantileUpperCandidate, quantileLowerCandidate);
+  const lowerQuantileThreshold = computeQuantile(values, quantileLower);
   if (method === 'fixed') {
-    const fixed = Number(options.thresholdSeconds);
+    const fixed = parseOptionalFiniteNumber(options.thresholdSeconds);
+    const lowerFixed = parseOptionalFiniteNumber(
+      options.lowerThresholdSeconds ?? options.fallbackLowerThresholdSeconds,
+    );
     return {
       method,
-      threshold: isFiniteNumber(fixed) ? fixed : Number.NaN,
+      threshold: fixed ?? Number.NaN,
+      lowerThreshold: lowerFixed ?? lowerQuantileThreshold,
       diagnostics: {},
     };
   }
@@ -332,17 +483,24 @@ const resolveThresholdDetailed = (
     return {
       method,
       threshold: Number.NaN,
+      lowerThreshold: lowerQuantileThreshold,
       diagnostics: {},
     };
   }
   if (method === 'otsu') {
     const otsu = computeOtsuLogThreshold(values);
     if (!otsu) {
-      return { method, threshold: Number.NaN, diagnostics: { otsu: null } };
+      return {
+        method,
+        threshold: Number.NaN,
+        lowerThreshold: lowerQuantileThreshold,
+        diagnostics: { otsu: null },
+      };
     }
     return {
       method,
       threshold: otsu.threshold,
+      lowerThreshold: lowerQuantileThreshold,
       diagnostics: {
         otsu: {
           thresholdSeconds: otsu.threshold,
@@ -371,6 +529,7 @@ const resolveThresholdDetailed = (
     return {
       method,
       threshold,
+      lowerThreshold: lowerQuantileThreshold,
       diagnostics: {
         otsu: otsu
           ? {
@@ -400,11 +559,11 @@ const resolveThresholdDetailed = (
       },
     };
   }
-  const quantileValue = Number(options.quantile);
-  const targetQuantile = isFiniteNumber(quantileValue) ? quantileValue : DEFAULT_OPTIONS.quantile;
+  const targetQuantile = quantileUpper;
   return {
     method,
     threshold: computeQuantile(values, targetQuantile),
+    lowerThreshold: lowerQuantileThreshold,
     diagnostics: {
       quantile: targetQuantile,
     },
@@ -426,6 +585,7 @@ export const detectTimeDeviation = (
     return {
       events: [],
       thresholdSeconds: 0,
+      thresholdLowerSeconds: 0,
       diagnostics: {
         method: DEFAULT_OPTIONS.method,
         baselineCount: 0,
@@ -434,10 +594,12 @@ export const detectTimeDeviation = (
         baselineMinSeconds: null,
         baselineMaxSeconds: null,
         thresholdSeconds: 0,
+        thresholdLowerSeconds: 0,
         fallbackApplied: false,
         quantile: null,
         otsu: null,
         knee: null,
+        groupThresholds: {},
       },
     };
   }
@@ -447,10 +609,45 @@ export const detectTimeDeviation = (
     ...options,
   };
 
+  if (options.quantile !== undefined && options.quantile !== null) {
+    mergedOptions.quantileUpper = options.quantile;
+  }
+  if (options.quantileLower !== undefined && options.quantileLower !== null) {
+    mergedOptions.quantileLower = options.quantileLower;
+  }
+
   const baselineSource = Array.isArray(mergedOptions.baselineSequence)
     ? mergedOptions.baselineSequence
     : sequence;
   const baselineDeltas = extractDeltaSeries(baselineSource).filter((value) => isFiniteNumber(value));
+  const groupDeltaMap = new Map<string, { deltas: number[] }>();
+  for (let index = 1; index < baselineSource.length; index += 1) {
+    const current = baselineSource[index] ?? null;
+    const previous = baselineSource[index - 1] ?? null;
+    const delta = resolveDeltaSeconds(current, previous);
+    if (!isFiniteNumber(delta)) {
+      continue;
+    }
+    const currentUid = extractUid(current);
+    const previousUid = extractUid(previous);
+    const currentCategory = extractCategory(current);
+    const previousCategory = extractCategory(previous);
+    if (currentUid && previousUid && currentUid !== previousUid) {
+      continue;
+    }
+    if (currentCategory && previousCategory && currentCategory !== previousCategory) {
+      continue;
+    }
+    const uid = currentUid ?? previousUid;
+    const category = currentCategory ?? previousCategory;
+    const key = buildGroupKey(uid, category);
+    const bucket = groupDeltaMap.get(key);
+    if (bucket) {
+      bucket.deltas.push(delta);
+    } else {
+      groupDeltaMap.set(key, { deltas: [delta] });
+    }
+  }
   const minSamples = Number.isInteger(mergedOptions.minSamples) && (mergedOptions.minSamples as number) > 0
     ? (mergedOptions.minSamples as number)
     : DEFAULT_OPTIONS.minSamples;
@@ -464,81 +661,175 @@ export const detectTimeDeviation = (
     baselineMinSeconds: baselineDeltas.length > 0 ? toFiniteOrNull(Math.min(...baselineDeltas)) : null,
     baselineMaxSeconds: baselineDeltas.length > 0 ? toFiniteOrNull(Math.max(...baselineDeltas)) : null,
     thresholdSeconds: 0,
+    thresholdLowerSeconds: 0,
     fallbackApplied: false,
     quantile: null,
     otsu: null,
     knee: null,
+    groupThresholds: {},
   };
 
   let threshold = Number.NaN;
+  let lowerThreshold = Number.NaN;
   let thresholdDiagnostics: Partial<TimeDeviationDiagnostics> = {};
   let fallbackApplied = false;
+  const fallbackUpperCandidate = parseOptionalFiniteNumber(mergedOptions.fallbackThresholdSeconds);
+  const fallbackLowerCandidate = parseOptionalFiniteNumber(
+    mergedOptions.fallbackLowerThresholdSeconds ?? mergedOptions.lowerThresholdSeconds,
+  );
   if (baselineDeltas.length >= minSamples) {
     const resolution = resolveThresholdDetailed(baselineDeltas, mergedOptions);
     threshold = resolution.threshold;
+    lowerThreshold = resolution.lowerThreshold;
     thresholdDiagnostics = resolution.diagnostics;
     diagnosticsBase.method = resolution.method;
   } else {
-    const fallbackRaw = mergedOptions.fallbackThresholdSeconds;
-    if (fallbackRaw !== undefined && fallbackRaw !== null && fallbackRaw !== '') {
-      const fallback = Number(fallbackRaw);
-      if (isFiniteNumber(fallback) && fallback >= 0) {
-        threshold = fallback;
-        fallbackApplied = true;
-      }
+    if (fallbackUpperCandidate !== null && fallbackUpperCandidate >= 0) {
+      threshold = fallbackUpperCandidate;
+      fallbackApplied = true;
+    }
+    if (fallbackLowerCandidate !== null && fallbackLowerCandidate >= 0) {
+      lowerThreshold = fallbackLowerCandidate;
     }
   }
 
-  if (!isFiniteNumber(threshold) && baselineDeltas.length > 0) {
+  if ((!isFiniteNumber(threshold) || !isFiniteNumber(lowerThreshold)) && baselineDeltas.length > 0) {
     const resolution = resolveThresholdDetailed(baselineDeltas, { ...mergedOptions, minSamples: 1 });
-    threshold = resolution.threshold;
-    thresholdDiagnostics = resolution.diagnostics;
-    diagnosticsBase.method = resolution.method;
+    if (!isFiniteNumber(threshold)) {
+      threshold = resolution.threshold;
+      thresholdDiagnostics = resolution.diagnostics;
+      diagnosticsBase.method = resolution.method;
+    }
+    if (!isFiniteNumber(lowerThreshold)) {
+      lowerThreshold = resolution.lowerThreshold;
+    }
   }
 
-  if (!isFiniteNumber(threshold)) {
-    const fallbackRaw = mergedOptions.fallbackThresholdSeconds;
-    if (fallbackRaw !== undefined && fallbackRaw !== null && fallbackRaw !== '') {
-      const fallback = Number(fallbackRaw);
-      if (isFiniteNumber(fallback) && fallback >= 0) {
-        threshold = fallback;
-        fallbackApplied = true;
+  if (!isFiniteNumber(threshold) && fallbackUpperCandidate !== null && fallbackUpperCandidate >= 0) {
+    threshold = fallbackUpperCandidate;
+    fallbackApplied = true;
+  }
+
+  if (!isFiniteNumber(lowerThreshold)) {
+    if (fallbackLowerCandidate !== null && fallbackLowerCandidate >= 0) {
+      lowerThreshold = fallbackLowerCandidate;
+    } else if (baselineDeltas.length > 0) {
+      const quantileLowerValue = resolveQuantileValue(
+        mergedOptions.quantileLower,
+        DEFAULT_OPTIONS.quantileLower,
+      );
+      const estimatedLower = computeQuantile(baselineDeltas, quantileLowerValue);
+      if (isFiniteNumber(estimatedLower)) {
+        lowerThreshold = estimatedLower;
       }
     }
   }
 
-  if (!isFiniteNumber(threshold)) {
-    threshold = 0;
+  const normalizedGlobal = normalizeTauPair(
+    threshold,
+    lowerThreshold,
+    fallbackUpperCandidate ?? 0,
+    fallbackLowerCandidate ?? 0,
+  );
+  threshold = normalizedGlobal.tauHi;
+  lowerThreshold = normalizedGlobal.tauLo;
+
+  const groupThresholdsRecord: Record<string, GroupThresholdSummary> = {};
+  for (const [key, bucket] of groupDeltaMap.entries()) {
+    const { deltas } = bucket;
+    let tauHi = Number.NaN;
+    let tauLo = Number.NaN;
+    let fallbackToGlobal = false;
+    if (deltas.length >= minSamples) {
+      const resolution = resolveThresholdDetailed(deltas, mergedOptions);
+      tauHi = resolution.threshold;
+      tauLo = resolution.lowerThreshold;
+    }
+    if (!Number.isFinite(tauHi) || deltas.length < minSamples) {
+      tauHi = threshold;
+      fallbackToGlobal = true;
+    }
+    if (!Number.isFinite(tauLo)) {
+      tauLo = lowerThreshold;
+    }
+    const normalized = normalizeTauPair(tauHi, tauLo, threshold, lowerThreshold);
+    groupThresholdsRecord[key] = {
+      tauHiSeconds: normalized.tauHi,
+      tauLoSeconds: normalized.tauLo,
+      sampleCount: deltas.length,
+      fallbackToGlobal,
+    };
   }
 
   const diagnostics: TimeDeviationDiagnostics = {
     ...diagnosticsBase,
     thresholdSeconds: threshold,
+    thresholdLowerSeconds: lowerThreshold,
     fallbackApplied,
     quantile: typeof thresholdDiagnostics.quantile === 'number' ? thresholdDiagnostics.quantile : diagnosticsBase.quantile,
     otsu: thresholdDiagnostics.otsu !== undefined ? (thresholdDiagnostics.otsu ?? null) : diagnosticsBase.otsu,
     knee: thresholdDiagnostics.knee !== undefined ? (thresholdDiagnostics.knee ?? null) : diagnosticsBase.knee,
+    groupThresholds: groupThresholdsRecord,
   };
 
   const decorated: TimeDeviationEvent[] = [];
   for (let index = 0; index < sequence.length; index += 1) {
     const current = sequence[index] ?? null;
     const previous = index > 0 ? sequence[index - 1] ?? null : null;
-    const observedDelta = index === 0 ? 0 : resolveDeltaSeconds(current, previous);
+    const isFirstEvent = index === 0;
+    const observedDelta = isFirstEvent ? 0 : resolveDeltaSeconds(current, previous);
     const safeDelta = isFiniteNumber(observedDelta) ? observedDelta : 0;
-    const score = Math.max(0, safeDelta - threshold);
+    const currentUid = extractUid(current);
+    const previousUid = extractUid(previous);
+    const currentCategory = extractCategory(current);
+    const previousCategory = extractCategory(previous);
+    const uid = currentUid ?? previousUid;
+    const category = currentCategory ?? previousCategory;
+    const groupKey = buildGroupKey(uid, category);
+    const groupThreshold = groupThresholdsRecord[groupKey];
+    const normalizedGroup = normalizeTauPair(
+      groupThreshold?.tauHiSeconds ?? threshold,
+      groupThreshold?.tauLoSeconds ?? lowerThreshold,
+      threshold,
+      lowerThreshold,
+    );
+    const tauHi = normalizedGroup.tauHi;
+    const tauLo = normalizedGroup.tauLo;
+    const boundaryEvent =
+      isFirstEvent
+      || (currentUid && previousUid && currentUid !== previousUid)
+      || (currentCategory && previousCategory && currentCategory !== previousCategory);
+    const upperBreach = !boundaryEvent && safeDelta > tauHi;
+    const lowerBreach = !boundaryEvent && safeDelta < tauLo;
+    let score = 0;
+    if (upperBreach) {
+      score = safeDelta - tauHi;
+    } else if (lowerBreach) {
+      score = tauLo - safeDelta;
+    }
+    let sQ = 1;
+    if (upperBreach) {
+      sQ = safeDelta / Math.max(tauHi, 1e-9);
+    } else if (lowerBreach) {
+      sQ = Math.max(tauLo, 1e-9) / Math.max(safeDelta, 1e-9);
+    }
     decorated.push({
       ...(current as Record<string, unknown>),
       timeDeviationObservedDeltaSeconds: safeDelta,
-      timeDeviationThresholdSeconds: threshold,
+      timeDeviationThresholdSeconds: tauHi,
+      timeDeviationThresholdLowerSeconds: tauLo,
       timeDeviationScore: score,
-      timeDeviationFlag: safeDelta > threshold,
+      timeDeviationFlag: upperBreach || lowerBreach,
+      tau_hi: tauHi,
+      tau_lo: tauLo,
+      s_Q: sQ,
     });
   }
 
   return {
     events: decorated,
     thresholdSeconds: threshold,
+    thresholdLowerSeconds: lowerThreshold,
     diagnostics,
   };
 };
