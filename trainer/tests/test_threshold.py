@@ -71,3 +71,28 @@ def test_decide_threshold_rejects_non_finite_tau() -> None:
     with pytest.raises(ValueError):
         decide_threshold(stats)
 
+
+def test_decide_threshold_ignores_nonfinite_knee() -> None:
+    stats = HierarchicalTauEstimate(
+        user=_estimate(
+            event_count=120,
+            tau_otsu=0.4,
+            should_use_knee=True,
+            tau_knee=float("nan"),
+        ),
+        group=None,
+        global_=_estimate(event_count=90, tau_otsu=0.6, should_use_knee=False, tau_knee=None),
+    )
+    threshold = decide_threshold(stats)
+    assert math.isclose(threshold, math.exp(0.4))
+
+
+def test_select_best_estimate_returns_first_available_when_all_sparse() -> None:
+    stats = HierarchicalTauEstimate(
+        user=_estimate(event_count=10, tau_otsu=0.2, should_use_knee=False, tau_knee=None),
+        group=None,
+        global_=_estimate(event_count=20, tau_otsu=0.3, should_use_knee=False, tau_knee=None),
+    )
+    chosen = stats.select_best_estimate()
+    assert chosen is stats.user
+
