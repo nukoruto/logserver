@@ -534,6 +534,17 @@ test('computeFeatureRows is deterministic for identical inputs', () => {
   expect(first.stats).toEqual(second.stats);
 });
 
+test('fitRobustStats propagates the epsilon lower bound from chooseEpsilonMin', () => {
+  const rows: LogRow[] = [];
+  let index = 0;
+  index = appendSession(rows, 'userLower', 'sessLower', 10, [2e-6, 3e-6, 4e-6], index);
+  appendSession(rows, 'userLower', 'sessLower2', 100, [5e-6, 6e-6], index);
+
+  const fitted = fitRobustStats(rows, { epsilon_t: 1e-7, grouping: 'uid', min_samples: 1 });
+
+  expectClose(fitted.epsilon, 1e-6, 'auto epsilon lower bound');
+});
+
 test('StreamingFeatureTransformer maintains prefix stability (causality)', () => {
   const rows: LogRow[] = [];
   let index = 0;
