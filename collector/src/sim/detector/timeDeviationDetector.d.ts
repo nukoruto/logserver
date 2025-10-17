@@ -22,6 +22,11 @@ export interface TimeDeviationEvent extends SimulationEvent {
   tau_hi?: number;
   tau_lo?: number;
   s_Q?: number;
+  timeDeviationCalibrationUSeconds?: number | null;
+  timeDeviationCalibrationXi?: number | null;
+  timeDeviationCalibrationBeta?: number | null;
+  timeDeviationCalibrationPRef?: number | null;
+  timeDeviationCalibrationTauTSeconds?: number | null;
 }
 
 export interface TimeDeviationHistogramDiagnostics {
@@ -61,7 +66,17 @@ export interface TimeDeviationDiagnostics {
     tauLoSeconds: number;
     sampleCount: number;
     fallbackToGlobal: boolean;
- }>;
+  }>;
+  spot?: {
+    uSeconds: number | null;
+    xi: number | null;
+    beta: number | null;
+    pRef: number | null;
+    qStar: number | null;
+    tauTSeconds: number | null;
+    exceedanceCount: number;
+    sampleCount: number;
+  } | null;
 }
 
 export interface TimeDeviationDetectionResult {

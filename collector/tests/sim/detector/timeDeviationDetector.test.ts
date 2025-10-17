@@ -24,6 +24,22 @@ const buildSequence = (deltas: number[], baseTime = '2024-01-01T00:00:00.000Z'):
   return events;
 };
 
+const createDeterministicRng = (seed: number): (() => number) => {
+  let state = seed >>> 0;
+  return () => {
+    state = (state * 1664525 + 1013904223) >>> 0;
+    return state / 0xffffffff;
+  };
+};
+
+const sampleGeneralizedPareto = (rng: () => number, xi: number, beta: number): number => {
+  const u = Math.min(Math.max(rng(), 1e-12), 1 - 1e-12);
+  if (Math.abs(xi) < 1e-6) {
+    return -beta * Math.log(1 - u);
+  }
+  return (beta / xi) * (Math.pow(1 - u, -xi) - 1);
+};
+
 const buildGroupedSequence = (
   uid: string,
   category: string,
@@ -220,5 +236,70 @@ describe('detectTimeDeviation', () => {
     expect(lowerEvent?.timeDeviationObservedDeltaSeconds ?? 0).toBeCloseTo(0.5, 5);
     expect((lowerEvent?.tau_lo ?? 0)).toBeGreaterThan(lowerEvent?.timeDeviationObservedDeltaSeconds ?? 0);
     expect(lowerEvent?.s_Q ?? 0).toBeGreaterThan(1);
+  });
+
+  it('SPOT尾部フィットでξ>0のキャリブレーションを反映し、メタデータを伝搬する', () => {
+    const rng = createDeterministicRng(98765);
+    const body = Array.from({ length: 160 }, () => 0.8 + rng() * 0.4);
+    const tail = Array.from({ length: 40 }, () => 1.5 + sampleGeneralizedPareto(rng, 0.25, 0.6));
+    const baselineDeltas = [...body, ...tail];
+    const baseline = buildSequence(baselineDeltas);
+    const anomalyDelta = 1.5 + sampleGeneralizedPareto(rng, 0.25, 0.6) + 2.5;
+    const target = buildSequence([...body.slice(0, 10), anomalyDelta, ...body.slice(10, 20)]);
+
+    const result = detectTimeDeviation(target, {
+      baselineSequence: baseline,
+      method: 'spot',
+      quantileUpper: 0.9,
+      quantileLower: 0.05,
+    });
+
+    const calibration = result.diagnostics.spot;
+    expect(calibration).not.toBeNull();
+    expect((calibration?.uSeconds ?? 0)).toBeGreaterThan(1);
+    expect((calibration?.tauTSeconds ?? 0)).toBeGreaterThanOrEqual(calibration?.uSeconds ?? 0);
+    expect(Math.abs(calibration?.xi ?? 0)).toBeGreaterThan(0.05);
+    const exceedanceRate = baselineDeltas.filter((delta) => delta > (calibration?.tauTSeconds ?? Number.MAX_VALUE)).length
+      / baselineDeltas.length;
+    expect(exceedanceRate).toBeLessThanOrEqual((calibration?.qStar ?? 0) + 0.01);
+    expect(result.thresholdSeconds).toBeCloseTo(calibration?.tauTSeconds ?? 0, 8);
+    const flagged = result.events.find((event) => event.timeDeviationFlag === true);
+    expect(flagged?.timeDeviationCalibrationTauTSeconds).toBeCloseTo(calibration?.tauTSeconds ?? 0, 6);
+    expect(flagged?.timeDeviationCalibrationPRef).toBeCloseTo(calibration?.pRef ?? 0, 6);
+    expect(flagged?.timeDeviationCalibrationUSeconds).toBeCloseTo(calibration?.uSeconds ?? 0, 6);
+  });
+
+  it('SPOTキャリブレーションはξ≈0の極限でもτ_tと尾部確率を整合させる', () => {
+    const rng = createDeterministicRng(24680);
+    const body = Array.from({ length: 360 }, () => 0.6 + rng() * 0.3);
+    const tail = Array.from({ length: 120 }, () => 1.2 + sampleGeneralizedPareto(rng, 1e-6, 0.5));
+    const baselineDeltas = [...body, ...tail];
+    const baseline = buildSequence(baselineDeltas);
+    const anomalyDelta = 1.2 + sampleGeneralizedPareto(rng, 1e-6, 0.5) + 1.8;
+    const target = buildSequence([...body.slice(0, 8), anomalyDelta, ...body.slice(8, 18)]);
+
+    const result = detectTimeDeviation(target, {
+      baselineSequence: baseline,
+      method: 'spot',
+      quantileUpper: 0.92,
+      quantileLower: 0.05,
+    });
+
+    const calibration = result.diagnostics.spot;
+    expect(calibration).not.toBeNull();
+    expect(Math.abs(calibration?.xi ?? 1)).toBeLessThan(0.12);
+    expect(calibration?.beta ?? 0).toBeGreaterThan(0);
+    const ratio = (calibration?.pRef ?? 0) / Math.max(calibration?.qStar ?? 1e-6, 1e-6);
+    const expectedTau = Math.max(
+      (calibration?.uSeconds ?? 0) + (calibration?.beta ?? 0) * Math.log(Math.max(ratio, 1e-6)),
+      calibration?.uSeconds ?? 0,
+    );
+    expect(result.thresholdSeconds).toBeCloseTo(expectedTau, 4);
+    const exceedanceRate = baselineDeltas.filter((delta) => delta > (calibration?.tauTSeconds ?? Number.MAX_VALUE)).length
+      / baselineDeltas.length;
+    expect(exceedanceRate).toBeLessThanOrEqual((calibration?.qStar ?? 0) + 0.01);
+    const flagged = result.events.find((event) => event.timeDeviationFlag === true);
+    expect(flagged?.timeDeviationCalibrationXi ?? 0).toBeCloseTo(calibration?.xi ?? 0, 6);
+    expect(flagged?.timeDeviationCalibrationBeta ?? 0).toBeCloseTo(calibration?.beta ?? 0, 6);
   });
 });
