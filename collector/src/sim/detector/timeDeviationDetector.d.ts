@@ -3,6 +3,8 @@ import type { SimulationEvent } from '../../services/simulationService';
 export interface TimeDeviationOptions extends Record<string, unknown> {
   method?: 'quantile' | 'fixed' | 'spot' | string;
   quantile?: number;
+  quantileUpper?: number;
+  quantileLower?: number;
   minSamples?: number;
   fallbackThresholdSeconds?: number | string | null;
   thresholdSeconds?: number | string | null;
@@ -14,6 +16,9 @@ export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationThresholdSeconds?: number;
   timeDeviationScore?: number;
   timeDeviationFlag?: boolean;
+  tau_hi?: number;
+  tau_lo?: number;
+  s_Q?: number;
 }
 
 export function detectTimeDeviation(
@@ -22,7 +27,12 @@ export function detectTimeDeviation(
 ): TimeDeviationEvent[];
 
 export function extractDeltaSeries(sequence: readonly SimulationEvent[]): number[];
-export function resolveThreshold(values: readonly number[], options: TimeDeviationOptions): number;
+export interface ThresholdPair {
+  readonly tauHi: number;
+  readonly tauLo: number;
+}
+
+export function resolveThreshold(values: readonly number[], options: TimeDeviationOptions): ThresholdPair | null;
 
 declare const timeDeviationDetector: {
   detectTimeDeviation: typeof detectTimeDeviation;

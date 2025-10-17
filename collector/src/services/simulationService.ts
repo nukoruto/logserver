@@ -95,6 +95,9 @@ export interface SimulationEvent extends Record<string, unknown> {
   timeDeviationObservedDeltaSeconds?: number;
   timeDeviationThresholdSeconds?: number;
   timeDeviationScore?: number;
+  tau_hi?: number;
+  tau_lo?: number;
+  s_Q?: number;
   [key: string]: unknown;
 }
 
@@ -402,6 +405,19 @@ const decorateEvent = ({
     record.timeDeviationScore = Number.isFinite(event.timeDeviationScore)
       ? Number(event.timeDeviationScore)
       : undefined;
+  }
+
+  const tauHi = Number((event as Record<string, unknown>).tau_hi);
+  if (Number.isFinite(tauHi)) {
+    (record as Record<string, unknown>).tau_hi = tauHi;
+  }
+  const tauLo = Number((event as Record<string, unknown>).tau_lo);
+  if (Number.isFinite(tauLo)) {
+    (record as Record<string, unknown>).tau_lo = tauLo;
+  }
+  const sQ = Number((event as Record<string, unknown>).s_Q);
+  if (Number.isFinite(sQ)) {
+    (record as Record<string, unknown>).s_Q = sQ;
   }
 
   if (anomalyTag) {
