@@ -3,6 +3,7 @@ import config from '../config';
 import logger from '../utils/logger';
 import sim from '../sim';
 import { buildAnomalySummary } from '../sim/persistence/simWriter';
+import type { TimeDeviationThresholdSummary } from '../sim/detector/timeDeviationDetector';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
 import type { PersistSimulationResult } from '../sim/persistence/simWriter';
@@ -157,6 +158,7 @@ export interface SimulationResult {
   summary: SimulationSummary;
   files?: SimulationFiles;
   manifest?: Record<string, unknown>;
+  thresholds: TimeDeviationThresholdSummary;
 }
 
 export type NormalizedAnomalyList = Set<StrategyName>;
@@ -511,6 +513,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const sessionIds = new Set<string>();
   let sessionIndex = 0;
   let sessionStartTime = new Date(baseStartTime.getTime());
+  const thresholdCache = timeDeviationDetector.createThresholdCache();
 
   while (events.length < count) {
     const sessionSeed = `${resolvedSeed}:${sessionIndex}`;
@@ -539,7 +542,9 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     });
 
     const protocolAnnotated = protocolValidator.validateProtocol(decorated);
-    const timeAnnotated = timeDeviationDetector.detectTimeDeviation(protocolAnnotated);
+    const timeAnnotated = timeDeviationDetector.detectTimeDeviation(protocolAnnotated, {
+      statsCache: thresholdCache,
+    });
     const labeled = labelSequence(timeAnnotated);
 
     for (const event of labeled) {
@@ -563,6 +568,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
 
   const trimmedEvents = events.slice(0, count);
   const generatedAt = new Date().toISOString();
+  const thresholdSummary = thresholdCache.summary();
 
   let persistenceResult: PersistSimulationResult | null = null;
   if (persist && trimmedEvents.length > 0) {
@@ -576,6 +582,9 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       manifestFileName: options.manifestFileName as string | undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
+      extraMetadata: {
+        time_deviation_thresholds: thresholdSummary,
+      },
     });
   }
 
@@ -593,6 +602,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     },
     events: trimmedEvents,
     summary,
+    thresholds: thresholdSummary,
   };
 
   if (persistenceResult) {
@@ -612,6 +622,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     sessions: summary.sessions,
     anomalies: summary.anomalies,
     files: response.files || null,
+    threshold_tier_usage: thresholdSummary.tier_usage,
     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
   });
 

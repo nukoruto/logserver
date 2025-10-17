@@ -43,6 +43,8 @@ describe('simulationService.generateScenario', () => {
     expect(result.params.seed).toBe('jest-service');
     expect(result.params.seed_source).toBe('provided');
     expect(result.scenarioId).toBeTruthy();
+    expect(result.thresholds.tier_usage).toBeDefined();
+    expect(result.thresholds.sample_counts.global).toBeGreaterThan(0);
 
     const firstEvent = result.events[0];
     expect(firstEvent).toHaveProperty('session_id');
@@ -63,6 +65,8 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.anomaly_summary.normal).toBeGreaterThan(0);
       expect(manifest.parameters.seed).toBe('jest-service');
       expect(manifest.parameters.seed_source).toBe('provided');
+      expect(manifest.extra).toBeDefined();
+      expect(manifest.extra.time_deviation_thresholds.tier_usage).toBeDefined();
     }
   });
 
