@@ -3,12 +3,13 @@
 
 from __future__ import annotations
 
+import logging
 from pathlib import Path
 
 import numpy as np
-import pandas as pd
 import yaml
 
+from trainer.logserver.dataio.processed import load_processed_events
 from trainer.logserver.features.encoders import encode_dataframe
 from trainer.logserver.scoring.anomaly import AnomalyScorer, ScoringConfig
 
@@ -37,8 +38,11 @@ def main(config_path: Path) -> None:
     logging_cfg = config.get("logging", {})
     scoring_cfg = config.get("scoring", {})
 
+    log_level = logging_cfg.get("level", "INFO")
+    logging.basicConfig(level=getattr(logging, str(log_level).upper(), logging.INFO))
+
     processed_dir = Path(data_cfg.get("processed_dir", "data/processed"))
-    df = pd.read_parquet(processed_dir / "events.parquet")
+    df = load_processed_events(processed_dir)
     df.sort_values(["session_id", "timestamp"], inplace=True)
     df.reset_index(drop=True, inplace=True)
 
