@@ -52,7 +52,16 @@ export type AugmentedSimulationEvent = SimulationEvent & {
   time_label: string | null;
 };
 
-export function augmentRows<T extends SimulationEvent>(rows: readonly T[], extras?: FeatureOverrides): Array<T & AugmentedSimulationEvent>;
+export interface AugmentComputationOptions {
+  epsilonT?: number;
+  measurementEpsilon?: number;
+}
+
+export function augmentRows<T extends SimulationEvent>(
+  rows: readonly T[],
+  extras?: FeatureOverrides,
+  options?: AugmentComputationOptions,
+): Array<T & AugmentedSimulationEvent>;
 export function formatCsvAugmented(event: AugmentedSimulationEvent): string;
 
 declare const simWriter: {

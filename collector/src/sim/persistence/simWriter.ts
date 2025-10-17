@@ -54,8 +54,17 @@ export type AugmentedSimulationEvent = SimulationEvent & {
   time_label: string | null;
 };
 
+export interface AugmentComputationOptions {
+  epsilonT?: number;
+  measurementEpsilon?: number;
+}
+
+const EPSILON_MIN = 1e-6;
+const EPSILON_MAX = 1e-2;
+const GLOBAL_SESSION_KEY = '__global__';
+
 const CSV_HEADER =
-  'timestamp,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label,sid_final';
+  'timestamp,timestamp_utc,session_id,user_id,event,method,path,status,latency_ms,delta_t,metadata,dt_sec,log_dt,z,z_clipped,time_label,sid_final';
 
 const EXTRA_COLUMN_NAMES = ['dt_sec', 'log_dt', 'z', 'z_clipped', 'time_label'] as const;
 
@@ -84,6 +93,105 @@ const sanitizeNumeric = (value: unknown): number | null => {
   return value;
 };
 
+const parseTimestamp = (value: unknown): Date | null => {
+  if (!value) {
+    return null;
+  }
+  const date = value instanceof Date ? value : new Date(value as string);
+  if (Number.isNaN(date.getTime())) {
+    return null;
+  }
+  return date;
+};
+
+const estimateMeasurementEpsilon = (events: readonly SimulationEvent[]): number => {
+  let minPositive = Number.POSITIVE_INFINITY;
+  for (const event of events) {
+    const delta = extractDeltaSeconds(event);
+    if (typeof delta === 'number' && Number.isFinite(delta) && delta > 0) {
+      if (delta < minPositive) {
+        minPositive = delta;
+      }
+    }
+  }
+  if (!Number.isFinite(minPositive)) {
+    return EPSILON_MIN;
+  }
+  const candidate = 0.5 * minPositive;
+  if (!Number.isFinite(candidate) || candidate <= 0) {
+    return EPSILON_MIN;
+  }
+  const clamped = Math.min(Math.max(candidate, EPSILON_MIN), EPSILON_MAX);
+  return clamped;
+};
+
+const extractNumeric = (value: unknown): number | null => {
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    return numeric;
+  }
+  return null;
+};
+
+const resolveEpsilonT = (input: PersistSimulationInput | null | undefined, epsilon: number): number => {
+  const parameters = (input?.parameters ?? {}) as Record<string, unknown>;
+  const candidate = extractNumeric(parameters.epsilon_t ?? parameters.epsilonT);
+  if (candidate !== null && candidate >= 0) {
+    return candidate;
+  }
+  const manifest = (input?.manifest ?? {}) as Record<string, unknown>;
+  const timing = (manifest.timing ?? {}) as Record<string, unknown>;
+  const manifestCandidate = extractNumeric(timing.epsilon_t_seconds ?? timing.epsilonT);
+  if (manifestCandidate !== null && manifestCandidate >= 0) {
+    return manifestCandidate;
+  }
+  return epsilon;
+};
+
+const OFFSET_PATTERN = /(Z|[+-]\d{2}:?\d{2})$/;
+
+const parseOffsetFromTimestamp = (value: unknown): number | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const match = value.trim().match(OFFSET_PATTERN);
+  if (!match) {
+    return null;
+  }
+  const token = match[1];
+  if (token === 'Z') {
+    return 0;
+  }
+  const sign = token.startsWith('-') ? -1 : 1;
+  const digits = token.replace(/[+\-]/, '').replace(':', '');
+  const hours = Number(digits.slice(0, 2));
+  const minutes = Number(digits.slice(2) || '0');
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  return sign * (hours * 60 + minutes);
+};
+
+const resolveTimezoneOffsetSeconds = (events: readonly SimulationEvent[]): number => {
+  for (const event of events) {
+    const metadata = (event?.metadata ?? {}) as Record<string, unknown>;
+    const direct = extractNumeric(metadata.timezone_offset_seconds);
+    if (direct !== null) {
+      return direct;
+    }
+    const nestedTiming = (metadata.timing ?? {}) as Record<string, unknown>;
+    const nested = extractNumeric(nestedTiming.timezone_offset_seconds);
+    if (nested !== null) {
+      return nested;
+    }
+    const timestampOffset = parseOffsetFromTimestamp(event.timestamp || event.timestamp_utc);
+    if (timestampOffset !== null) {
+      return timestampOffset * 60;
+    }
+  }
+  return 0;
+};
+
 const computeMeanAndStd = (values: readonly number[]): { mean: number; std: number } => {
   if (!Array.isArray(values) || values.length === 0) {
     return { mean: 0, std: 0 };
@@ -96,12 +204,18 @@ const computeMeanAndStd = (values: readonly number[]): { mean: number; std: numb
   return { mean, std };
 };
 
-const normalizeLabel = (value: unknown): string => {
+const normalizeTimeLabel = (value: unknown): 'initial' | 'measured' | 'unknown' => {
   if (typeof value !== 'string') {
     return 'unknown';
   }
-  const trimmed = value.trim().toLowerCase();
-  return trimmed === 'ok' ? 'ok' : 'unknown';
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'initial') {
+    return 'initial';
+  }
+  if (normalized === 'measured' || normalized === 'ok') {
+    return 'measured';
+  }
+  return 'unknown';
 };
 
 const extrasResolvers: Record<(typeof EXTRA_COLUMN_NAMES)[number], FeatureResolver | null> = {
@@ -115,6 +229,7 @@ const extrasResolvers: Record<(typeof EXTRA_COLUMN_NAMES)[number], FeatureResolv
 export const augmentRows = <T extends SimulationEvent>(
   rows: readonly T[],
   extras: FeatureOverrides = {},
+  options: AugmentComputationOptions = {},
 ): Array<T & AugmentedSimulationEvent> => {
   if (!Array.isArray(rows)) {
     throw new TypeError('rows must be an array');
@@ -133,14 +248,68 @@ export const augmentRows = <T extends SimulationEvent>(
     event && typeof event === 'object' ? ({ ...event } as SimulationEvent) : ({}) as SimulationEvent,
   );
 
-  const dtValues = sanitizedRows.map((event, index) => {
-    const fallback = sanitizeNumeric(extractDeltaSeconds(event));
+  const suppliedMeasurementEpsilon = options.measurementEpsilon;
+  const measurementEpsilon = typeof suppliedMeasurementEpsilon === 'number' && suppliedMeasurementEpsilon > 0
+    ? Math.min(Math.max(suppliedMeasurementEpsilon, EPSILON_MIN), EPSILON_MAX)
+    : estimateMeasurementEpsilon(sanitizedRows);
+  const suppliedEpsilonT = options.epsilonT;
+  const epsilonT = typeof suppliedEpsilonT === 'number' && suppliedEpsilonT >= 0
+    ? suppliedEpsilonT
+    : measurementEpsilon;
+
+  const sessionStates = new Map<string, { previousTimestamp: number | null; sequence: number }>();
+  const dtValues: Array<number | null> = new Array(sanitizedRows.length).fill(null);
+  const timeLabels: Array<'initial' | 'measured' | 'unknown'> = new Array(sanitizedRows.length).fill('unknown');
+
+  for (let index = 0; index < sanitizedRows.length; index += 1) {
+    const event = sanitizedRows[index];
     const resolver = resolvers.dt_sec;
-    const resolved = resolver
-      ? sanitizeNumeric(resolver(event, index, sanitizedRows, fallback))
-      : fallback;
-    return resolved !== null && resolved > 0 ? resolved : null;
-  });
+    const fallbackDelta = sanitizeNumeric(extractDeltaSeconds(event));
+    const resolvedDelta = resolver
+      ? sanitizeNumeric(resolver(event, index, sanitizedRows, fallbackDelta))
+      : fallbackDelta;
+    const sessionId = typeof event.session_id === 'string' && event.session_id.trim().length > 0
+      ? event.session_id
+      : GLOBAL_SESSION_KEY;
+    const timestamp = parseTimestamp(event.timestamp || event.timestamp_utc);
+    const state = sessionStates.get(sessionId) || { previousTimestamp: null, sequence: 0 };
+
+    let dtSec: number | null = resolvedDelta !== null && resolvedDelta > 0 ? resolvedDelta : null;
+    let label: 'initial' | 'measured' | 'unknown';
+
+    if (!timestamp) {
+      label = 'unknown';
+      state.previousTimestamp = null;
+    } else if (state.sequence === 0 || state.previousTimestamp === null) {
+      label = 'initial';
+      dtSec = null;
+      state.previousTimestamp = timestamp.getTime();
+    } else {
+      let deltaCandidate = dtSec;
+      if (deltaCandidate === null) {
+        const diffSeconds = (timestamp.getTime() - state.previousTimestamp) / 1000;
+        if (Number.isFinite(diffSeconds) && diffSeconds >= 0) {
+          deltaCandidate = diffSeconds;
+        }
+      }
+      if (deltaCandidate === null || !Number.isFinite(deltaCandidate) || deltaCandidate < 0) {
+        label = 'unknown';
+        dtSec = null;
+        state.previousTimestamp = timestamp.getTime();
+      } else {
+        const adjusted = Math.max(deltaCandidate, measurementEpsilon);
+        dtSec = adjusted;
+        label = adjusted <= epsilonT ? 'unknown' : 'measured';
+        state.previousTimestamp = timestamp.getTime();
+      }
+    }
+
+    dtValues[index] = dtSec;
+    timeLabels[index] = label;
+    (event as Record<string, unknown>).deltaSeconds = dtSec;
+    state.sequence += 1;
+    sessionStates.set(sessionId, state);
+  }
 
   const positiveDtValues = dtValues.filter((value): value is number => value !== null);
   const { mean, std } = computeMeanAndStd(positiveDtValues);
@@ -172,12 +341,12 @@ export const augmentRows = <T extends SimulationEvent>(
       ? sanitizeNumeric(zClippedResolver(event, index, sanitizedRows, clippedFallback)) ?? clippedFallback
       : clippedFallback;
 
-    const labelFallback = dtSec === null ? 'unknown' : 'ok';
+    const labelFallback = timeLabels[index] ?? 'unknown';
     const labelResolver = resolvers.time_label;
     const labelOverride = labelResolver
       ? labelResolver(event, index, sanitizedRows, labelFallback)
       : null;
-    const timeLabel = labelOverride ? normalizeLabel(labelOverride) : normalizeLabel(labelFallback);
+    const timeLabel = normalizeTimeLabel(labelOverride ?? labelFallback);
 
     return {
       ...(event as Record<string, unknown>),
@@ -336,6 +505,7 @@ export const formatCsvAugmented = (event: AugmentedSimulationEvent): string => {
   const sidFinal = resolveSidFinal(safeEvent);
   const row = [
     safeEvent.timestamp,
+    safeEvent.timestamp_utc,
     safeEvent.session_id,
     safeEvent.user_id,
     safeEvent.event,
@@ -355,8 +525,12 @@ export const formatCsvAugmented = (event: AugmentedSimulationEvent): string => {
   return row.join(',');
 };
 
-const formatCsvRows = (events: readonly SimulationEvent[], extras?: FeatureOverrides): string => {
-  const augmented = augmentRows(events, extras ?? {});
+const formatCsvRows = (
+  events: readonly SimulationEvent[],
+  extras?: FeatureOverrides,
+  options?: AugmentComputationOptions,
+): string => {
+  const augmented = augmentRows(events, extras ?? {}, options ?? {});
   const rows = [CSV_HEADER];
   for (const event of augmented) {
     rows.push(formatCsvAugmented(event));
@@ -384,6 +558,9 @@ export const persistSimulationRun = async (
   }
 
   const labeled = labelSequence(events);
+  const measurementEpsilon = estimateMeasurementEpsilon(labeled);
+  const epsilonT = resolveEpsilonT(input, measurementEpsilon);
+  const offsetSeconds = resolveTimezoneOffsetSeconds(labeled);
   const runId = sanitizeRunId(input?.runId) || generateRunId();
   const generatedAt = new Date().toISOString();
   const outputDir = input?.outputDir ? path.resolve(input.outputDir) : config.simLogRoot;
@@ -395,7 +572,10 @@ export const persistSimulationRun = async (
   const csvPath = path.join(outputDir, csvFileName);
   const manifestPath = path.join(outputDir, manifestFileName);
 
-  const csvContent = formatCsvRows(labeled, input?.featureOverrides);
+  const csvContent = formatCsvRows(labeled, input?.featureOverrides, {
+    epsilonT,
+    measurementEpsilon,
+  });
   await fs.writeFile(csvPath, csvContent, { encoding: 'utf8' });
 
   const hash = crypto.createHash('sha256').update(csvContent, 'utf8').digest('hex');
@@ -435,6 +615,14 @@ export const persistSimulationRun = async (
       sim_log_dir: outputDir,
     },
   } as Record<string, unknown>;
+
+  const existingTiming = (manifest.timing ?? {}) as Record<string, unknown>;
+  manifest.timing = {
+    ...existingTiming,
+    epsilon_seconds: measurementEpsilon,
+    epsilon_t_seconds: epsilonT,
+    timezone_offset_seconds: offsetSeconds,
+  };
 
   if (Array.isArray(input?.sessionIds) && input.sessionIds.length > 0) {
     manifest.session_ids = Array.from(new Set(input.sessionIds));
