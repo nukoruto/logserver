@@ -30,6 +30,16 @@ OPTIONAL_COLUMNS = {
 }
 
 
+def _is_empty_metadata(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and np.isnan(value):
+        return True
+    if isinstance(value, dict):
+        return len(value) == 0
+    return False
+
+
 @dataclass
 class SessionConfig:
     """Configuration for building sessions from raw logs."""
@@ -190,8 +200,11 @@ def sessionize(
     csv_path = output_dir / "events.csv"
     parquet_written = False
     parquet_error: Optional[BaseException] = None
+    parquet_frame = df
+    if "metadata" in df.columns and df["metadata"].apply(_is_empty_metadata).all():
+        parquet_frame = df.drop(columns=["metadata"])  # drop empty struct column for parquet compatibility
     try:
-        df.to_parquet(parquet_path, index=False)
+        parquet_frame.to_parquet(parquet_path, index=False)
         parquet_written = True
     except (ImportError, ValueError) as exc:
         parquet_error = exc
