@@ -13,7 +13,33 @@ export interface FeatureOverrides {
   z?: FeatureResolver;
   z_clipped?: FeatureResolver;
   time_label?: FeatureResolver;
+  z_robust?: FeatureResolver;
+  z_hourly?: FeatureResolver;
+  log_burst_delta?: FeatureResolver;
+  log_burst_flag?: FeatureResolver;
   [key: string]: FeatureResolver | undefined;
+}
+
+export interface FeatureClipBoundsInput {
+  min?: number;
+  max?: number;
+  lower?: number;
+  upper?: number;
+}
+
+export interface FeatureComputationOptions {
+  windowSize?: number;
+  clipBounds?: FeatureClipBoundsInput;
+  quantiles?: number[];
+  logBurstThreshold?: number;
+}
+
+export interface NormalizedFeatureComputationOptions {
+  windowSize: number;
+  clipBounds: { min: number; max: number };
+  quantiles: number[];
+  quantileLabels: string[];
+  logBurstThreshold: number;
 }
 
 export interface PersistSimulationInput extends Record<string, unknown> {
@@ -27,6 +53,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
+  featureOptions?: FeatureComputationOptions | NormalizedFeatureComputationOptions;
   manifest?: Record<string, unknown>;
   transitionTableVersion?: string | null;
   extraMetadata?: Record<string, unknown>;
@@ -50,10 +77,22 @@ export type AugmentedSimulationEvent = SimulationEvent & {
   z: number | null;
   z_clipped: number | null;
   time_label: string | null;
+  z_robust: number | null;
+  z_hourly: number | null;
+  log_burst_delta: number | null;
+  log_burst_flag: number | null;
 };
 
-export function augmentRows<T extends SimulationEvent>(rows: readonly T[], extras?: FeatureOverrides): Array<T & AugmentedSimulationEvent>;
-export function formatCsvAugmented(event: AugmentedSimulationEvent): string;
+export function normalizeFeatureOptions(options?: FeatureComputationOptions | NormalizedFeatureComputationOptions): NormalizedFeatureComputationOptions;
+export function augmentRows<T extends SimulationEvent>(
+  rows: readonly T[],
+  extras?: FeatureOverrides,
+  featureOptionsInput?: FeatureComputationOptions | NormalizedFeatureComputationOptions,
+): Array<T & AugmentedSimulationEvent>;
+export function formatCsvAugmented(
+  event: AugmentedSimulationEvent,
+  featureOptionsInput?: FeatureComputationOptions | NormalizedFeatureComputationOptions,
+): string;
 
 declare const simWriter: {
   persistSimulationRun: typeof persistSimulationRun;
@@ -63,5 +102,5 @@ declare const simWriter: {
   formatCsvAugmented: typeof formatCsvAugmented;
 };
 
-export { augmentRows, buildAnomalySummary, formatCsvAugmented, persistSimulationRun, summarizeDeltas };
+export { augmentRows, buildAnomalySummary, formatCsvAugmented, normalizeFeatureOptions, persistSimulationRun, summarizeDeltas };
 export default simWriter;

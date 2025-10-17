@@ -2,7 +2,15 @@ import * as crypto from 'node:crypto';
 import config from '../config';
 import logger from '../utils/logger';
 import sim from '../sim';
-import { buildAnomalySummary } from '../sim/persistence/simWriter';
+import {
+  buildAnomalySummary,
+  normalizeFeatureOptions,
+} from '../sim/persistence/simWriter';
+import type {
+  FeatureClipBoundsInput,
+  FeatureComputationOptions,
+  NormalizedFeatureComputationOptions,
+} from '../sim/persistence/simWriter';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
 import type { PersistSimulationResult } from '../sim/persistence/simWriter';
@@ -126,6 +134,11 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   scenarioPath?: string | null;
   scenarioFile?: string | null;
   startTime?: Date | string | null;
+  featureWindowSize?: number;
+  featureClipLower?: number;
+  featureClipUpper?: number;
+  featureQuantiles?: Iterable<number> | string | null;
+  featureLogBurstThreshold?: number;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -146,6 +159,13 @@ export interface SimulationParameters extends Record<string, unknown> {
   };
   protocol_validator: {
     enabled: boolean;
+  };
+  feature_augmenter: {
+    window_size: number;
+    clip_bounds: { min: number; max: number };
+    quantiles: number[];
+    quantile_labels: string[];
+    log_burst_threshold: number;
   };
 }
 
@@ -186,6 +206,7 @@ interface DefaultParameterInput {
   timeDeviationMethod: string;
   timeDeviationQuantile: number;
   timeDeviationMinSamples: number;
+  featureOptions: NormalizedFeatureComputationOptions;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -255,6 +276,73 @@ const parseBoolean = (candidate: unknown, fallback: boolean): boolean => {
     }
   }
   return fallback;
+};
+
+const parseOptionalPositiveInteger = (candidate: unknown): number | undefined => {
+  const value = Number(candidate);
+  if (Number.isFinite(value) && value > 0) {
+    const rounded = Math.floor(value);
+    return rounded > 0 ? rounded : undefined;
+  }
+  return undefined;
+};
+
+const parseOptionalNumber = (candidate: unknown): number | undefined => {
+  const value = Number(candidate);
+  return Number.isFinite(value) ? value : undefined;
+};
+
+const parseQuantileCandidates = (candidate: unknown): number[] | undefined => {
+  if (candidate === undefined || candidate === null) {
+    return undefined;
+  }
+  let values: number[] = [];
+  if (typeof candidate === 'string') {
+    values = candidate
+      .split(/[\s,]+/u)
+      .map((part) => Number(part))
+      .filter((part) => Number.isFinite(part));
+  } else if (Array.isArray(candidate)) {
+    values = candidate.map((value) => Number(value));
+  } else if (typeof candidate === 'object' && Symbol.iterator in (candidate as Record<string, unknown>)) {
+    values = Array.from(candidate as Iterable<unknown>, (value) => Number(value));
+  }
+  const filtered = values.filter((value) => Number.isFinite(value) && value > 0 && value < 1);
+  return filtered.length > 0 ? filtered : undefined;
+};
+
+const buildFeatureOptionInput = (options: GenerateScenarioOptions): FeatureComputationOptions => {
+  const featureOptions: FeatureComputationOptions = {};
+
+  const windowSize = parseOptionalPositiveInteger(options.featureWindowSize);
+  if (windowSize !== undefined) {
+    featureOptions.windowSize = windowSize;
+  }
+
+  const clipBounds: FeatureClipBoundsInput = {};
+  const clipLower = parseOptionalNumber(options.featureClipLower);
+  const clipUpper = parseOptionalNumber(options.featureClipUpper);
+  if (clipLower !== undefined) {
+    clipBounds.min = clipLower;
+  }
+  if (clipUpper !== undefined) {
+    clipBounds.max = clipUpper;
+  }
+  if (Object.keys(clipBounds).length > 0) {
+    featureOptions.clipBounds = clipBounds;
+  }
+
+  const quantiles = parseQuantileCandidates(options.featureQuantiles ?? undefined);
+  if (quantiles !== undefined) {
+    featureOptions.quantiles = quantiles;
+  }
+
+  const logBurstThreshold = parseOptionalNumber(options.featureLogBurstThreshold);
+  if (logBurstThreshold !== undefined) {
+    featureOptions.logBurstThreshold = logBurstThreshold;
+  }
+
+  return featureOptions;
 };
 
 export const normalizeAnomalyList = (input: unknown): NormalizedAnomalyList => {
@@ -448,6 +536,13 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   protocol_validator: {
     enabled: true,
   },
+  feature_augmenter: {
+    window_size: input.featureOptions.windowSize,
+    clip_bounds: input.featureOptions.clipBounds,
+    quantiles: input.featureOptions.quantiles,
+    quantile_labels: input.featureOptions.quantileLabels,
+    log_burst_threshold: input.featureOptions.logBurstThreshold,
+  },
 });
 
 export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
@@ -468,6 +563,8 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const scenarioVersion = typeof scenarioVersionRaw === 'string' ? scenarioVersionRaw : null;
 
   const baseStartTime = parseStartTime(options.startTime ?? null);
+  const featureOptionsInput = buildFeatureOptionInput(options);
+  const featureOptions = normalizeFeatureOptions(featureOptionsInput);
   const seedResolution = resolveSeed(options.seed);
   const resolvedSeed = seedResolution.value;
   const parameters = defaultParameters({
@@ -484,6 +581,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeDeviationMethod: 'quantile',
     timeDeviationQuantile: 0.99,
     timeDeviationMinSamples: 5,
+    featureOptions,
   });
 
   const selectedStrategies = buildStrategyOverrides(anomalies);
@@ -505,6 +603,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     scenario_path: scenarioPath,
     run_id: options.runId || null,
     time_deviation_detector: parameters.time_deviation_detector,
+    feature_augmenter: parameters.feature_augmenter,
   });
 
   const events: SimulationEvent[] = [];
@@ -576,6 +675,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       manifestFileName: options.manifestFileName as string | undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
+      featureOptions,
     });
   }
 
