@@ -2,6 +2,38 @@ import { quantileSorted } from 'simple-statistics';
 import { declusterExceedances } from './decluster.js';
 import { clamp, createRunningMoments, updateRunningMoments } from './utils.js';
 
+export function gpSurvival(y: number, xi: number, beta: number): number {
+  if (y <= 0) {
+    return 1;
+  }
+  const safeBeta = Math.max(beta, 1e-12);
+  if (Math.abs(xi) < 1e-12) {
+    return Math.exp(-y / safeBeta);
+  }
+  const inside = 1 + (xi * y) / safeBeta;
+  if (inside <= 0) {
+    return 0;
+  }
+  return Math.pow(inside, -1 / xi);
+}
+
+export function spotThreshold(u: number, xi: number, beta: number, pRef: number, q: number): number {
+  const safeQ = Math.max(q, 1e-12);
+  const ratio = Math.max(pRef / safeQ, 1e-12);
+  const safeBeta = Math.max(beta, 1e-12);
+  if (Math.abs(xi) < 1e-12) {
+    return u + safeBeta * Math.log(ratio);
+  }
+  return u + (safeBeta / xi) * (Math.pow(ratio, xi) - 1);
+}
+
+export function pValueRef(y: number, xi: number, beta: number, pRef: number): number {
+  if (y <= 0) {
+    return Math.max(pRef, 0);
+  }
+  return Math.max(pRef, 0) * gpSurvival(y, xi, beta);
+}
+
 export interface SpotSample {
   readonly value: number;
   readonly index: number;

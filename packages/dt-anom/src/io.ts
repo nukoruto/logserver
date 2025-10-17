@@ -137,29 +137,33 @@ export async function loadDtRecords(
           }
           try {
             const dt = toFiniteNumber(dtRaw, options.dtColumn);
+            let logDtValue: number | undefined;
+            const logDtRaw = row[options.logDtColumn];
+            if (logDtRaw !== undefined && logDtRaw !== null && String(logDtRaw).length > 0) {
+              try {
+                logDtValue = toFiniteNumber(logDtRaw, options.logDtColumn);
+              } catch {
+                /* ignore */
+              }
+            }
+            let zDeseasValue: number | undefined;
+            const zDeseasRaw = row[options.zDeseasColumn];
+            if (zDeseasRaw !== undefined && zDeseasRaw !== null && String(zDeseasRaw).length > 0) {
+              try {
+                zDeseasValue = toFiniteNumber(zDeseasRaw, options.zDeseasColumn);
+              } catch {
+                /* ignore */
+              }
+            }
             const record: DtRecord = {
               index,
               uid,
               opCategory,
               dt,
-              timestampUtc: typeof row.timestamp_utc === 'string' ? row.timestamp_utc : undefined
+              ...(logDtValue !== undefined ? { logDt: logDtValue } : {}),
+              ...(zDeseasValue !== undefined ? { zDeseas: zDeseasValue } : {}),
+              ...(typeof row.timestamp_utc === 'string' ? { timestampUtc: row.timestamp_utc } : {})
             };
-            const logDtRaw = row[options.logDtColumn];
-            if (logDtRaw !== undefined && logDtRaw !== null && String(logDtRaw).length > 0) {
-              try {
-                record.logDt = toFiniteNumber(logDtRaw, options.logDtColumn);
-              } catch {
-                /* ignore */
-              }
-            }
-            const zDeseasRaw = row[options.zDeseasColumn];
-            if (zDeseasRaw !== undefined && zDeseasRaw !== null && String(zDeseasRaw).length > 0) {
-              try {
-                record.zDeseas = toFiniteNumber(zDeseasRaw, options.zDeseasColumn);
-              } catch {
-                /* ignore */
-              }
-            }
             records.push(record);
             index += 1;
           } catch {

@@ -37,6 +37,7 @@ export const spotGroupEntrySchema = z.object({
 export const anomalyStatsSchema = z.object({
   version: z.literal(1),
   generated_at: z.string().min(1),
+  algo_ver: z.literal('5.0-spec'),
   base_column: z.string().min(1),
   quantile_levels: z.array(z.number().gt(0).lt(1)).min(1),
   global_quantiles: z.array(quantileEntrySchema).min(1),
@@ -87,13 +88,13 @@ export const anomalyMetaSchema = z.object({
     base_std: z.number().gt(0)
   }),
   budget: budgetSchema,
-  algo_ver: z.string().min(1),
+  algo_ver: z.literal('5.0-spec'),
   alpha: z.number().gte(0),
   q: z.number().gt(0).lt(1),
   calib_window: z.number().int().gte(1),
   decluster_r: z.number().gte(0),
   kofn: z.tuple([z.number().int().gte(1), z.number().int().gte(1)]),
-  hysteresis_gamma: z.number().gt(1),
+  H: z.number().gt(1),
   reestimate_every: z.number().int().gte(0),
   min_exceed: z.number().int().gte(0),
   pool_strategy: z.string().min(1),
