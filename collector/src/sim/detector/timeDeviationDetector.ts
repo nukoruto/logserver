@@ -22,6 +22,11 @@ export interface TimeDeviationEvent extends SimulationEvent {
   tau_hi?: number;
   tau_lo?: number;
   s_Q?: number;
+  timeDeviationCalibrationUSeconds?: number | null;
+  timeDeviationCalibrationXi?: number | null;
+  timeDeviationCalibrationBeta?: number | null;
+  timeDeviationCalibrationPRef?: number | null;
+  timeDeviationCalibrationTauTSeconds?: number | null;
 }
 
 export interface TimeDeviationHistogramDiagnostics {
@@ -62,6 +67,16 @@ export interface TimeDeviationDiagnostics {
     sampleCount: number;
     fallbackToGlobal: boolean;
   }>;
+  spot?: {
+    uSeconds: number | null;
+    xi: number | null;
+    beta: number | null;
+    pRef: number | null;
+    qStar: number | null;
+    tauTSeconds: number | null;
+    exceedanceCount: number;
+    sampleCount: number;
+  } | null;
 }
 
 export interface TimeDeviationDetectionResult {
@@ -283,6 +298,102 @@ const computeStd = (values: readonly number[]): number => {
   return variance > 0 ? Math.sqrt(variance) : 0;
 };
 
+const clamp = (value: number, min: number, max: number): number => {
+  if (value < min) {
+    return min;
+  }
+  if (value > max) {
+    return max;
+  }
+  return value;
+};
+
+const computeMeanAndVariance = (
+  values: readonly number[],
+): { mean: number; variance: number } => {
+  if (!Array.isArray(values) || values.length === 0) {
+    return { mean: Number.NaN, variance: Number.NaN };
+  }
+  const mean = computeMean(values);
+  if (!Number.isFinite(mean)) {
+    return { mean: Number.NaN, variance: Number.NaN };
+  }
+  const variance = values.reduce((acc, value) => acc + (value - mean) ** 2, 0) / values.length;
+  return { mean, variance };
+};
+
+interface SpotCalibrationResult {
+  uSeconds: number;
+  xi: number;
+  beta: number;
+  pRef: number;
+  qStar: number;
+  tauTSeconds: number;
+  exceedanceCount: number;
+  sampleCount: number;
+}
+
+const resolveSpotCalibration = (
+  values: readonly number[],
+  quantileUpper: number,
+): SpotCalibrationResult | null => {
+  if (!Array.isArray(values) || values.length === 0) {
+    return null;
+  }
+  const sorted = values.filter((value) => isFiniteNumber(value)).sort((a, b) => a - b);
+  if (sorted.length === 0) {
+    return null;
+  }
+  const uSeconds = computeQuantile(sorted, quantileUpper);
+  if (!isFiniteNumber(uSeconds)) {
+    return null;
+  }
+  const exceedances = sorted.filter((value) => value > uSeconds);
+  const residuals = exceedances
+    .map((value) => value - uSeconds)
+    .filter((value) => isFiniteNumber(value) && value >= 0);
+  const pRef = sorted.length > 0 ? exceedances.length / sorted.length : 0;
+  const baseTarget = Math.max(1 - quantileUpper, 1e-6);
+  const qStar = Math.max(Math.min(baseTarget, pRef || baseTarget), 1e-6);
+  const { mean, variance } = computeMeanAndVariance(residuals);
+  let xi = 0;
+  let beta = residuals.length > 0 ? Math.max(mean, 1e-9) : 1e-6;
+  if (residuals.length >= 2 && Number.isFinite(mean) && Number.isFinite(variance) && variance > 0) {
+    const ratio = (mean * mean) / variance;
+    const xiCandidate = 0.5 * (1 - ratio);
+    const boundedXi = clamp(xiCandidate, -0.9, 0.95);
+    const betaCandidate = Math.max(mean * (1 - boundedXi), 1e-9);
+    xi = Number.isFinite(boundedXi) ? boundedXi : 0;
+    beta = Number.isFinite(betaCandidate) ? betaCandidate : beta;
+  } else if (residuals.length === 1) {
+    beta = Math.max(residuals[0], 1e-6);
+    xi = 0;
+  }
+  const ratio = qStar > 0 ? pRef / qStar : 0;
+  let tauCandidate = uSeconds;
+  if (pRef > 0 && ratio > 0) {
+    if (Math.abs(xi) < 1e-6) {
+      tauCandidate = uSeconds + beta * Math.log(ratio);
+    } else {
+      tauCandidate = uSeconds + (beta / xi) * (ratio ** xi - 1);
+    }
+  }
+  if (!Number.isFinite(tauCandidate)) {
+    tauCandidate = uSeconds;
+  }
+  const tauTSeconds = Math.max(tauCandidate, uSeconds);
+  return {
+    uSeconds,
+    xi,
+    beta,
+    pRef,
+    qStar,
+    tauTSeconds,
+    exceedanceCount: exceedances.length,
+    sampleCount: sorted.length,
+  };
+};
+
 interface HistogramResult {
   counts: number[];
   binEdgesLog: number[];
@@ -480,11 +591,35 @@ const resolveThresholdDetailed = (
     };
   }
   if (method === 'spot') {
+    const calibration = resolveSpotCalibration(values, quantileUpper);
+    if (!calibration) {
+      return {
+        method,
+        threshold: Number.NaN,
+        lowerThreshold: lowerQuantileThreshold,
+        diagnostics: {
+          spot: null,
+          quantile: quantileUpper,
+        },
+      };
+    }
     return {
       method,
-      threshold: Number.NaN,
+      threshold: calibration.tauTSeconds,
       lowerThreshold: lowerQuantileThreshold,
-      diagnostics: {},
+      diagnostics: {
+        quantile: quantileUpper,
+        spot: {
+          uSeconds: calibration.uSeconds,
+          xi: calibration.xi,
+          beta: calibration.beta,
+          pRef: calibration.pRef,
+          qStar: calibration.qStar,
+          tauTSeconds: calibration.tauTSeconds,
+          exceedanceCount: calibration.exceedanceCount,
+          sampleCount: calibration.sampleCount,
+        },
+      },
     };
   }
   if (method === 'otsu') {
@@ -600,6 +735,7 @@ export const detectTimeDeviation = (
         otsu: null,
         knee: null,
         groupThresholds: {},
+        spot: null,
       },
     };
   }
@@ -667,6 +803,7 @@ export const detectTimeDeviation = (
     otsu: null,
     knee: null,
     groupThresholds: {},
+    spot: null,
   };
 
   let threshold = Number.NaN;
@@ -770,9 +907,11 @@ export const detectTimeDeviation = (
     otsu: thresholdDiagnostics.otsu !== undefined ? (thresholdDiagnostics.otsu ?? null) : diagnosticsBase.otsu,
     knee: thresholdDiagnostics.knee !== undefined ? (thresholdDiagnostics.knee ?? null) : diagnosticsBase.knee,
     groupThresholds: groupThresholdsRecord,
+    spot: thresholdDiagnostics.spot !== undefined ? (thresholdDiagnostics.spot ?? null) : diagnosticsBase.spot,
   };
 
   const decorated: TimeDeviationEvent[] = [];
+  const calibration = diagnostics.spot ?? null;
   for (let index = 0; index < sequence.length; index += 1) {
     const current = sequence[index] ?? null;
     const previous = index > 0 ? sequence[index - 1] ?? null : null;
@@ -823,6 +962,11 @@ export const detectTimeDeviation = (
       tau_hi: tauHi,
       tau_lo: tauLo,
       s_Q: sQ,
+      timeDeviationCalibrationUSeconds: calibration?.uSeconds ?? null,
+      timeDeviationCalibrationXi: calibration?.xi ?? null,
+      timeDeviationCalibrationBeta: calibration?.beta ?? null,
+      timeDeviationCalibrationPRef: calibration?.pRef ?? null,
+      timeDeviationCalibrationTauTSeconds: calibration?.tauTSeconds ?? null,
     });
   }
 

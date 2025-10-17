@@ -175,6 +175,7 @@ export interface SimulationParameters extends Record<string, unknown> {
     fallback_threshold_seconds: number | null;
     threshold_seconds: number | null;
     diagnostics?: TimeDeviationDiagnostics | null;
+    calibration?: TimeDeviationDiagnostics['spot'] | null;
   };
   protocol_validator: {
     enabled: boolean;
@@ -490,6 +491,7 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
     min_samples: input.timeDeviationMinSamples,
     fallback_threshold_seconds: input.timeDeviationFallback,
     threshold_seconds: null,
+    calibration: null,
   },
   protocol_validator: {
     enabled: true,
@@ -661,6 +663,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   if (lastTimeDeviationResult) {
     parameters.time_deviation_detector.threshold_seconds = lastTimeDeviationResult.thresholdSeconds;
     parameters.time_deviation_detector.diagnostics = lastTimeDeviationResult.diagnostics;
+    parameters.time_deviation_detector.calibration = lastTimeDeviationResult.diagnostics.spot ?? null;
   }
 
   let persistenceResult: PersistSimulationResult | null = null;
@@ -681,6 +684,18 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
               method: parameters.time_deviation_detector.method,
               threshold_seconds: lastTimeDeviationResult.thresholdSeconds,
               diagnostics: lastTimeDeviationResult.diagnostics,
+              calibration: lastTimeDeviationResult.diagnostics.spot
+                ? {
+                    u_seconds: lastTimeDeviationResult.diagnostics.spot.uSeconds,
+                    xi: lastTimeDeviationResult.diagnostics.spot.xi,
+                    beta: lastTimeDeviationResult.diagnostics.spot.beta,
+                    p_ref: lastTimeDeviationResult.diagnostics.spot.pRef,
+                    q_star: lastTimeDeviationResult.diagnostics.spot.qStar,
+                    tau_t_seconds: lastTimeDeviationResult.diagnostics.spot.tauTSeconds,
+                    exceedance_count: lastTimeDeviationResult.diagnostics.spot.exceedanceCount,
+                    sample_count: lastTimeDeviationResult.diagnostics.spot.sampleCount,
+                  }
+                : null,
             },
           }
         : undefined,
