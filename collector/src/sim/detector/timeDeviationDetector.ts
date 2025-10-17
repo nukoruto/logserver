@@ -1,5 +1,16 @@
 import type { SimulationEvent } from '../../services/simulationService';
 
+export interface TimeDeviationVotingOptions extends Record<string, unknown> {
+  enabled?: boolean;
+  k?: number;
+  n?: number;
+}
+
+export interface TimeDeviationHysteresisOptions extends Record<string, unknown> {
+  enabled?: boolean;
+  holdCount?: number;
+}
+
 export interface TimeDeviationOptions extends Record<string, unknown> {
   method?: 'quantile' | 'fixed' | 'spot' | string;
   quantile?: number;
@@ -7,12 +18,17 @@ export interface TimeDeviationOptions extends Record<string, unknown> {
   fallbackThresholdSeconds?: number | string | null;
   thresholdSeconds?: number | string | null;
   baselineSequence?: readonly SimulationEvent[];
+  voting?: TimeDeviationVotingOptions;
+  hysteresis?: TimeDeviationHysteresisOptions;
 }
 
 export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationObservedDeltaSeconds?: number;
   timeDeviationThresholdSeconds?: number;
   timeDeviationScore?: number;
+  timeDeviationRawFlag?: boolean;
+  timeDeviationVotingFlag?: boolean;
+  timeDeviationHoldRemaining?: number;
   timeDeviationFlag?: boolean;
 }
 
@@ -21,6 +37,28 @@ const DEFAULT_OPTIONS: Required<Pick<TimeDeviationOptions, 'method' | 'quantile'
   quantile: 0.99,
   minSamples: 5,
   fallbackThresholdSeconds: null,
+};
+
+type NormalizedVotingOptions = {
+  enabled: boolean;
+  k: number;
+  n: number;
+};
+
+type NormalizedHysteresisOptions = {
+  enabled: boolean;
+  holdCount: number;
+};
+
+const DEFAULT_VOTING_OPTIONS: NormalizedVotingOptions = {
+  enabled: true,
+  k: 1,
+  n: 1,
+};
+
+const DEFAULT_HYSTERESIS_OPTIONS: NormalizedHysteresisOptions = {
+  enabled: true,
+  holdCount: 0,
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -114,6 +152,93 @@ export const resolveThreshold = (
   return computeQuantile(values, targetQuantile);
 };
 
+const normalizeVotingOptions = (input?: TimeDeviationVotingOptions | null): NormalizedVotingOptions => {
+  const enabled = input?.enabled === false ? false : true;
+  const kCandidate = Number((input as Record<string, unknown> | undefined)?.k);
+  const nCandidate = Number((input as Record<string, unknown> | undefined)?.n);
+  const normalizedN = Number.isInteger(nCandidate) && (nCandidate as number) > 0
+    ? (nCandidate as number)
+    : DEFAULT_VOTING_OPTIONS.n;
+  const normalizedK = Number.isInteger(kCandidate) && (kCandidate as number) > 0
+    ? Math.min(kCandidate as number, normalizedN)
+    : Math.min(DEFAULT_VOTING_OPTIONS.k, normalizedN);
+  return {
+    enabled,
+    k: normalizedK,
+    n: normalizedN,
+  };
+};
+
+const normalizeHysteresisOptions = (input?: TimeDeviationHysteresisOptions | null): NormalizedHysteresisOptions => {
+  const enabled = input?.enabled === false ? false : true;
+  const holdCandidate = Number((input as Record<string, unknown> | undefined)?.holdCount);
+  const holdCount = Number.isInteger(holdCandidate) && (holdCandidate as number) >= 0
+    ? (holdCandidate as number)
+    : DEFAULT_HYSTERESIS_OPTIONS.holdCount;
+  return {
+    enabled,
+    holdCount,
+  };
+};
+
+const applyVoting = (rawFlags: readonly boolean[], options: NormalizedVotingOptions): boolean[] => {
+  if (!options.enabled) {
+    return rawFlags.slice();
+  }
+  const windowSize = Math.max(1, options.n);
+  const required = Math.max(1, Math.min(options.k, windowSize));
+  const result: boolean[] = new Array(rawFlags.length).fill(false);
+  const window: boolean[] = [];
+  let activeCount = 0;
+  for (let index = 0; index < rawFlags.length; index += 1) {
+    const flag = rawFlags[index] === true;
+    window.push(flag);
+    if (flag) {
+      activeCount += 1;
+    }
+    if (window.length > windowSize) {
+      const removed = window.shift();
+      if (removed) {
+        activeCount -= 1;
+      }
+    }
+    result[index] = activeCount >= required;
+  }
+  return result;
+};
+
+const applyHysteresis = (
+  votingFlags: readonly boolean[],
+  options: NormalizedHysteresisOptions,
+): { finalFlags: boolean[]; holdRemaining: number[] } => {
+  if (!options.enabled || options.holdCount <= 0) {
+    return {
+      finalFlags: votingFlags.slice(),
+      holdRemaining: new Array(votingFlags.length).fill(0),
+    };
+  }
+  const finalFlags: boolean[] = new Array(votingFlags.length).fill(false);
+  const holdRemaining: number[] = new Array(votingFlags.length).fill(0);
+  let remaining = 0;
+  const holdCount = Math.max(0, options.holdCount);
+  for (let index = 0; index < votingFlags.length; index += 1) {
+    if (votingFlags[index]) {
+      remaining = holdCount;
+      finalFlags[index] = true;
+      holdRemaining[index] = remaining;
+    } else if (remaining > 0) {
+      remaining -= 1;
+      finalFlags[index] = true;
+      holdRemaining[index] = remaining;
+    } else {
+      remaining = 0;
+      finalFlags[index] = false;
+      holdRemaining[index] = 0;
+    }
+  }
+  return { finalFlags, holdRemaining };
+};
+
 export const detectTimeDeviation = (
   sequence: readonly SimulationEvent[],
   options: TimeDeviationOptions = {},
@@ -167,19 +292,35 @@ export const detectTimeDeviation = (
   }
 
   const decorated: TimeDeviationEvent[] = [];
+  const rawFlags: boolean[] = [];
   for (let index = 0; index < sequence.length; index += 1) {
     const current = sequence[index] ?? null;
     const previous = index > 0 ? sequence[index - 1] ?? null : null;
     const observedDelta = index === 0 ? 0 : resolveDeltaSeconds(current, previous);
     const safeDelta = isFiniteNumber(observedDelta) ? observedDelta : 0;
     const score = Math.max(0, safeDelta - threshold);
+    const rawFlag = safeDelta > threshold;
+    rawFlags.push(rawFlag);
     decorated.push({
       ...(current as Record<string, unknown>),
       timeDeviationObservedDeltaSeconds: safeDelta,
       timeDeviationThresholdSeconds: threshold,
       timeDeviationScore: score,
-      timeDeviationFlag: safeDelta > threshold,
+      timeDeviationRawFlag: rawFlag,
+      timeDeviationFlag: rawFlag,
     });
+  }
+
+  const votingOptions = normalizeVotingOptions(options.voting || null);
+  const hysteresisOptions = normalizeHysteresisOptions(options.hysteresis || null);
+
+  const votingFlags = applyVoting(rawFlags, votingOptions);
+  const { finalFlags, holdRemaining } = applyHysteresis(votingFlags, hysteresisOptions);
+
+  for (let index = 0; index < decorated.length; index += 1) {
+    decorated[index].timeDeviationVotingFlag = votingFlags[index];
+    decorated[index].timeDeviationHoldRemaining = holdRemaining[index];
+    decorated[index].timeDeviationFlag = finalFlags[index];
   }
 
   return decorated;

@@ -110,6 +110,21 @@ export interface SimulationFiles {
   hash: string;
 }
 
+export interface GenerateScenarioTimeDeviationOptions extends Record<string, unknown> {
+  method?: string;
+  quantile?: number;
+  minSamples?: number;
+  voting?: {
+    enabled?: boolean;
+    k?: number;
+    n?: number;
+  };
+  hysteresis?: {
+    enabled?: boolean;
+    holdCount?: number;
+  };
+}
+
 export interface GenerateScenarioOptions extends Record<string, unknown> {
   seed?: string | number | null;
   count?: number;
@@ -126,6 +141,22 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   scenarioPath?: string | null;
   scenarioFile?: string | null;
   startTime?: Date | string | null;
+  timeDeviationDetector?: GenerateScenarioTimeDeviationOptions;
+}
+
+export interface TimeDeviationDetectorParameters extends Record<string, unknown> {
+  method: string;
+  quantile: number;
+  min_samples: number;
+  voting: {
+    enabled: boolean;
+    k: number;
+    n: number;
+  };
+  hysteresis: {
+    enabled: boolean;
+    hold_count: number;
+  };
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -139,11 +170,7 @@ export interface SimulationParameters extends Record<string, unknown> {
   session_spacing_seconds: number;
   persist: boolean;
   max_steps: number;
-  time_deviation_detector: {
-    method: string;
-    quantile: number;
-    min_samples: number;
-  };
+  time_deviation_detector: TimeDeviationDetectorParameters;
   protocol_validator: {
     enabled: boolean;
   };
@@ -183,9 +210,7 @@ interface DefaultParameterInput {
   sessionSpacingSeconds: number;
   persist: boolean;
   maxSteps: number;
-  timeDeviationMethod: string;
-  timeDeviationQuantile: number;
-  timeDeviationMinSamples: number;
+  timeDeviation: TimeDeviationDetectorParameters;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -255,6 +280,57 @@ const parseBoolean = (candidate: unknown, fallback: boolean): boolean => {
     }
   }
   return fallback;
+};
+
+const normalizeTimeDeviationDetectorParameters = (
+  overrides?: GenerateScenarioTimeDeviationOptions | null,
+): TimeDeviationDetectorParameters => {
+  const methodCandidate = typeof overrides?.method === 'string' ? overrides.method.trim() : '';
+  const method = methodCandidate.length > 0 ? methodCandidate : 'quantile';
+
+  const quantileCandidate = Number(overrides?.quantile);
+  const quantile = Number.isFinite(quantileCandidate)
+    ? Math.min(Math.max(quantileCandidate, 0), 1)
+    : 0.99;
+
+  const minSamplesCandidate = Number(overrides?.minSamples);
+  const minSamples = Number.isInteger(minSamplesCandidate) && (minSamplesCandidate as number) > 0
+    ? (minSamplesCandidate as number)
+    : 5;
+
+  const votingInput = overrides?.voting;
+  const votingEnabled = votingInput?.enabled === false ? false : true;
+  const votingNCandidate = Number(votingInput?.n);
+  const votingKCand = Number(votingInput?.k);
+  const votingN = Number.isInteger(votingNCandidate) && (votingNCandidate as number) > 0
+    ? (votingNCandidate as number)
+    : 1;
+  const votingKBase = Number.isInteger(votingKCand) && (votingKCand as number) > 0
+    ? (votingKCand as number)
+    : 1;
+  const votingK = Math.min(votingKBase, votingN);
+
+  const hysteresisInput = overrides?.hysteresis;
+  const hysteresisEnabled = hysteresisInput?.enabled === false ? false : true;
+  const holdCandidate = Number(hysteresisInput?.holdCount);
+  const holdCount = Number.isInteger(holdCandidate) && (holdCandidate as number) >= 0
+    ? (holdCandidate as number)
+    : 0;
+
+  return {
+    method,
+    quantile,
+    min_samples: minSamples,
+    voting: {
+      enabled: votingEnabled,
+      k: votingK,
+      n: votingN,
+    },
+    hysteresis: {
+      enabled: hysteresisEnabled,
+      hold_count: holdCount,
+    },
+  };
 };
 
 export const normalizeAnomalyList = (input: unknown): NormalizedAnomalyList => {
@@ -440,11 +516,7 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   session_spacing_seconds: input.sessionSpacingSeconds,
   persist: input.persist,
   max_steps: input.maxSteps,
-  time_deviation_detector: {
-    method: input.timeDeviationMethod,
-    quantile: input.timeDeviationQuantile,
-    min_samples: input.timeDeviationMinSamples,
-  },
+  time_deviation_detector: input.timeDeviation,
   protocol_validator: {
     enabled: true,
   },
@@ -470,6 +542,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const baseStartTime = parseStartTime(options.startTime ?? null);
   const seedResolution = resolveSeed(options.seed);
   const resolvedSeed = seedResolution.value;
+  const timeDeviationConfig = normalizeTimeDeviationDetectorParameters(options.timeDeviationDetector ?? null);
   const parameters = defaultParameters({
     count,
     anomalies,
@@ -481,9 +554,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     sessionSpacingSeconds,
     persist,
     maxSteps,
-    timeDeviationMethod: 'quantile',
-    timeDeviationQuantile: 0.99,
-    timeDeviationMinSamples: 5,
+    timeDeviation: timeDeviationConfig,
   });
 
   const selectedStrategies = buildStrategyOverrides(anomalies);
@@ -539,7 +610,20 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     });
 
     const protocolAnnotated = protocolValidator.validateProtocol(decorated);
-    const timeAnnotated = timeDeviationDetector.detectTimeDeviation(protocolAnnotated);
+    const timeAnnotated = timeDeviationDetector.detectTimeDeviation(protocolAnnotated, {
+      method: parameters.time_deviation_detector.method,
+      quantile: parameters.time_deviation_detector.quantile,
+      minSamples: parameters.time_deviation_detector.min_samples,
+      voting: {
+        enabled: parameters.time_deviation_detector.voting.enabled,
+        k: parameters.time_deviation_detector.voting.k,
+        n: parameters.time_deviation_detector.voting.n,
+      },
+      hysteresis: {
+        enabled: parameters.time_deviation_detector.hysteresis.enabled,
+        holdCount: parameters.time_deviation_detector.hysteresis.hold_count,
+      },
+    });
     const labeled = labelSequence(timeAnnotated);
 
     for (const event of labeled) {

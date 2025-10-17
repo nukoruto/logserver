@@ -42,6 +42,8 @@ describe('simulationService.generateScenario', () => {
     expect(result.summary.anomalies.normal).toBeGreaterThan(0);
     expect(result.params.seed).toBe('jest-service');
     expect(result.params.seed_source).toBe('provided');
+    expect(result.params.time_deviation_detector.voting).toEqual({ enabled: true, k: 1, n: 1 });
+    expect(result.params.time_deviation_detector.hysteresis).toEqual({ enabled: true, hold_count: 0 });
     expect(result.scenarioId).toBeTruthy();
 
     const firstEvent = result.events[0];
@@ -63,6 +65,8 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.anomaly_summary.normal).toBeGreaterThan(0);
       expect(manifest.parameters.seed).toBe('jest-service');
       expect(manifest.parameters.seed_source).toBe('provided');
+      expect(manifest.parameters.time_deviation_detector.voting).toEqual({ enabled: true, k: 1, n: 1 });
+      expect(manifest.parameters.time_deviation_detector.hysteresis).toEqual({ enabled: true, hold_count: 0 });
     }
   });
 

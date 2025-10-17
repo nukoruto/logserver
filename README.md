@@ -399,7 +399,9 @@ pnpm --filter @logserver/splitter-gui exec playwright test
     "time_deviation_detector": {
       "method": "quantile",
       "quantile": 0.99,
-      "min_samples": 5
+      "min_samples": 5,
+      "voting": { "enabled": true, "k": 1, "n": 1 },
+      "hysteresis": { "enabled": true, "hold_count": 0 }
     },
     "protocol_validator": {
       "enabled": true
