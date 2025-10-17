@@ -14,7 +14,7 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const PACKAGE_ROOT = path.join(__dirname, '..', '..');
 const DIST_DIR = path.join(PACKAGE_ROOT, 'dist');
 const SPLIT_SESSIONS_BIN = path.join(DIST_DIR, 'bulk.js');
-const SESSION_SPLITTER_BIN = path.join(DIST_DIR, 'index.js');
+const SESSION_SPLITTER_BIN = path.join(DIST_DIR, 'cli.js');
 const FIXTURES_ROOT = path.join(__dirname, '..', 'fixtures');
 
 interface SplitScenario {
