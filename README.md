@@ -209,6 +209,9 @@ cd collector && node scripts/check-ntp.js
 ```
 
 - 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。
+- `trainer.scripts.preprocess` は `data.chunksize`（既定 100,000）と `data.use_pyarrow` に従って CSV/JSON/Parquet をチャンク単位で読み込み、Δt 計算・セッション化した結果を `events.csv` / `events.parquet` へ追記します。監査レポート用のサンプルは `report.max_rows` で上限制御され、`null` を指定すると全行を統計用に読み込み、`0` 以下でサンプル取得を完全に無効化します。
+- `trainer.scripts.score` は `scoring.chunksize` と `scoring.use_pyarrow` を用いて Parquet ストリーミング推論を行い、セッションが分割されないようにチャンク境界の carry-over を保持しつつ `scores.csv` に追記します。既存の `runs/latest` ディレクトリ構造は変更せず、モデル読込と異常スコア平滑化は従来どおりです。
+- 100 万行のモックデータを対象にした統合テスト（`trainer/tests/test_streaming_large.py`）で処理時間（180 秒以内）とメモリ上限（約 1.2 GB 未満）を検証しており、チャンク処理に失敗した場合はテストが失敗するようになっています。
 
 - 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。
 - `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。

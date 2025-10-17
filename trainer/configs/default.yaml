@@ -5,6 +5,8 @@ data:
   interim_dir: data/interim
   processed_dir: data/processed
   sample_dir: data/sample
+  chunksize: 100000
+  use_pyarrow: true
 session:
   idle_timeout: 1800
   tz: UTC
@@ -29,9 +31,14 @@ scoring:
   window: session
   smoothing: moving_average
   smoothing_window: 5
+  chunksize: 100000
+  use_pyarrow: true
 threshold:
   method: quantile
   quantile: 0.995
 logging:
   level: INFO
   dir: runs
+report:
+  enabled: true
+  max_rows: 200000

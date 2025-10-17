@@ -1,11 +1,13 @@
 # -*- coding: utf-8 -*-
 import json
 from pathlib import Path
+from typing import Iterable
 
 import pandas as pd
 
 from trainer.logserver.dataio.sessionize import SessionConfig, load_events, sessionize
 from trainer.logserver.eval.preproc_report import generate_preproc_report
+from trainer.scripts import preprocess as preprocess_cli
 
 
 def test_generate_preproc_report(tmp_path: Path) -> None:
@@ -43,3 +45,21 @@ def test_generate_preproc_report(tmp_path: Path) -> None:
     assert len(payload["samples"]) <= 2
     assert all(sample["rows"] for sample in payload["samples"])
     assert report == payload
+
+
+def test_collect_rows_limit_handling() -> None:
+    frames = [
+        pd.DataFrame({"value": [1, 2, 3]}),
+        pd.DataFrame({"value": [4, 5]}),
+    ]
+
+    def generator() -> Iterable[pd.DataFrame]:
+        for frame in frames:
+            yield frame
+
+    empty = preprocess_cli._collect_rows(generator(), 0)
+    assert empty.empty
+
+    unlimited = preprocess_cli._collect_rows(generator(), None)
+    assert len(unlimited) == sum(len(frame) for frame in frames)
+    assert unlimited.iloc[0]["value"] == 1
