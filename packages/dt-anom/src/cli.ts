@@ -36,30 +36,30 @@ interface FitCommandOptions {
   readonly metaOut: string;
   readonly column: string;
   readonly quantile?: string;
-  readonly quantileLower: number;
-  readonly quantileUpper: number;
-  readonly minQuantileSamples: number;
-  readonly budgetTotal: number;
+  readonly quantileLower?: number;
+  readonly quantileUpper?: number;
+  readonly minQuantileSamples?: number;
+  readonly budgetTotal?: number;
   readonly budgetWeightMode?: 'count' | 'uniform';
   readonly spotDomain: 'log_dt' | 'z_deseas';
   readonly spotCalibCount?: number;
   readonly spotCalibStart?: string;
   readonly spotCalibEnd?: string;
   readonly spotP0: string;
-  readonly minTail: number;
-  readonly flagTailProb: number;
-  readonly alpha: number;
-  readonly q: number;
-  readonly calibWindow: number;
-  readonly declusterR: number;
+  readonly minTail?: number;
+  readonly flagTailProb?: number;
+  readonly alpha?: number;
+  readonly q?: number;
+  readonly calibWindow?: number;
+  readonly declusterR?: number;
   readonly kofn: string;
-  readonly H: number;
-  readonly reestimateEvery: number;
-  readonly minExceed: number;
+  readonly H?: number;
+  readonly reestimateEvery?: number;
+  readonly minExceed?: number;
   readonly poolStrategy: string;
-  readonly xiEps: number;
-  readonly upperCapPerDay: number;
-  readonly lowerClip: number;
+  readonly xiEps?: number;
+  readonly upperCapPerDay?: number;
+  readonly lowerClip?: number;
   readonly seed: string;
   readonly preprocHash: string;
 }
@@ -100,15 +100,14 @@ program
   .requiredOption('-m, --meta-out <path>', 'Output anomaly meta JSON')
   .option('-c, --column <name>', 'Base column to score', 'dt_sec')
   .option('--quantile <values>', 'Quantile levels (comma-separated)')
-  .option('--quantile-lower <value>', 'Lower quantile for tau_lo', parseFloatArg, 0.01)
-  .option('--quantile-upper <value>', 'Upper quantile for tau_hi', parseFloatArg, 0.99)
+  .option('--quantile-lower <value>', 'Lower quantile for tau_lo', parseFloatArg)
+  .option('--quantile-upper <value>', 'Upper quantile for tau_hi', parseFloatArg)
   .option(
     '--min-quantile-samples <count>',
     'Minimum samples required for (uid, op_category) quantile without fallback',
-    parseIntArg,
-    30
+    parseIntArg
   )
-  .option('--budget-total <value>', 'Global probability budget Q_total', parseFloatArg, 1e-2)
+  .option('--budget-total <value>', 'Global probability budget Q_total', parseFloatArg)
   .option('--budget-weight-mode <mode>', 'Weight mode for budget allocation (count|uniform)', 'count')
   .option('--spot-domain <value>', 'SPOT calibration domain (log_dt|z_deseas)', 'log_dt')
   .option('--spot-calib-count <value>', 'Initial record count for SPOT calibration', parseIntArg)
@@ -119,20 +118,20 @@ program
     'Candidate quantiles for SPOT baseline threshold (comma-separated)',
     '0.9,0.93,0.95,0.975,0.99'
   )
-  .option('--min-tail <count>', 'Minimum tail sample count', parseIntArg, 50)
-  .option('--flag-tail-prob <value>', 'Tail probability threshold for flagging', parseFloatArg, 1e-3)
-  .option('--alpha <value>', 'Score combination coefficient', parseFloatArg, 0.5)
-  .option('--q <value>', 'Quantile target for control rules', parseFloatArg, 0.99)
-  .option('--calib-window <value>', 'Calibration window length', parseIntArg, 1000)
-  .option('--decluster-r <value>', 'Declustering separation parameter', parseIntArg, 5)
+  .option('--min-tail <count>', 'Minimum tail sample count', parseIntArg)
+  .option('--flag-tail-prob <value>', 'Tail probability threshold for flagging', parseFloatArg)
+  .option('--alpha <value>', 'Score combination coefficient', parseFloatArg)
+  .option('--q <value>', 'Quantile target for control rules', parseFloatArg)
+  .option('--calib-window <value>', 'Calibration window length', parseIntArg)
+  .option('--decluster-r <value>', 'Declustering separation parameter', parseIntArg)
   .option('--kofn <k>/<n>', 'k-of-n voting parameters', '3/5')
-  .option('--H <value>', 'Hysteresis ratio (>1)', parseFloatArg, 1.1)
-  .option('--reestimate-every <value>', 'Re-estimation interval (events)', parseIntArg, 10000)
-  .option('--min-exceed <value>', 'Minimum exceedances before alarm', parseIntArg, 5)
+  .option('--H <value>', 'Hysteresis ratio (>1)', parseFloatArg)
+  .option('--reestimate-every <value>', 'Re-estimation interval (events)', parseIntArg)
+  .option('--min-exceed <value>', 'Minimum exceedances before alarm', parseIntArg)
   .option('--pool-strategy <value>', 'Pooling strategy for group tail statistics', 'per-user')
-  .option('--xi-eps <value>', 'Xi epsilon for stability', parseFloatArg, 1e-3)
-  .option('--upper-cap-per-day <value>', 'Upper cap per day', parseIntArg, 50)
-  .option('--lower-clip <value>', 'Lower clip value', parseFloatArg, -5)
+  .option('--xi-eps <value>', 'Xi epsilon for stability', parseFloatArg)
+  .option('--upper-cap-per-day <value>', 'Upper cap per day', parseIntArg)
+  .option('--lower-clip <value>', 'Lower clip value', parseFloatArg)
   .option('--seed <values>', 'Random seeds used in upstream stages (comma-separated)', '0')
   .requiredOption('--preproc-hash <value>', 'Preprocessing pipeline hash (SHA-256)')
   .action(async (rawOptions: unknown) => {
@@ -156,36 +155,52 @@ program
     }
     const kofnParsed = parseKOfN(cmdOpts.kofn ?? '3/5');
     const budgetWeightMode = cmdOpts.budgetWeightMode ?? 'count';
+    const quantileLower = cmdOpts.quantileLower ?? 0.01;
+    const quantileUpper = cmdOpts.quantileUpper ?? 0.99;
+    const minQuantileSamples = cmdOpts.minQuantileSamples ?? 30;
+    const budgetTotal = cmdOpts.budgetTotal ?? 1e-2;
+    const minTailCount = cmdOpts.minTail ?? 50;
+    const flagTailProbability = cmdOpts.flagTailProb ?? 1e-3;
+    const alpha = cmdOpts.alpha ?? 0.5;
+    const q = cmdOpts.q ?? 0.99;
+    const calibWindow = cmdOpts.calibWindow ?? 1000;
+    const declusterR = cmdOpts.declusterR ?? 5;
+    const H = cmdOpts.H ?? 1.1;
+    const reestimateEvery = cmdOpts.reestimateEvery ?? 10000;
+    const minExceed = cmdOpts.minExceed ?? 5;
+    const xiEps = cmdOpts.xiEps ?? 1e-3;
+    const upperCapPerDay = cmdOpts.upperCapPerDay ?? 50;
+    const lowerClip = cmdOpts.lowerClip ?? -5;
     const result = await fitAnomalyModel({
       inputs: cmdOpts.input,
       statsOut: cmdOpts.statsOut,
       metaOut: cmdOpts.metaOut,
       baseColumn: cmdOpts.column,
       quantiles,
-      quantileLower: cmdOpts.quantileLower,
-      quantileUpper: cmdOpts.quantileUpper,
-      minQuantileSamples: cmdOpts.minQuantileSamples,
-      budgetTotal: cmdOpts.budgetTotal ?? 1e-2,
+      quantileLower,
+      quantileUpper,
+      minQuantileSamples,
+      budgetTotal,
       budgetWeightMode,
       spotDomain: cmdOpts.spotDomain,
       spotCalibCount: cmdOpts.spotCalibCount,
       spotCalibStart: cmdOpts.spotCalibStart,
       spotCalibEnd: cmdOpts.spotCalibEnd,
       spotQuantileCandidates: spotCandidates,
-      minTailCount: cmdOpts.minTail,
-      flagTailProbability: cmdOpts.flagTailProb,
-      alpha: cmdOpts.alpha,
-      q: cmdOpts.q,
-      calibWindow: cmdOpts.calibWindow,
-      declusterR: cmdOpts.declusterR,
+      minTailCount,
+      flagTailProbability,
+      alpha,
+      q,
+      calibWindow,
+      declusterR,
       kofn: [kofnParsed.k, kofnParsed.n],
-      H: cmdOpts.H,
-      reestimateEvery: cmdOpts.reestimateEvery,
-      minExceed: cmdOpts.minExceed,
+      H,
+      reestimateEvery,
+      minExceed,
       poolStrategy: cmdOpts.poolStrategy,
-      xiEps: cmdOpts.xiEps,
-      upperCapPerDay: cmdOpts.upperCapPerDay,
-      lowerClip: cmdOpts.lowerClip,
+      xiEps,
+      upperCapPerDay,
+      lowerClip,
       seeds,
       preprocHash: cmdOpts.preprocHash
     });
