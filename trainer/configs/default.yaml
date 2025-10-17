@@ -32,6 +32,8 @@ scoring:
 threshold:
   method: quantile
   quantile: 0.995
+  target_alpha: 0.005
+  normal_reference: scores_reference_normal.csv
 logging:
   level: INFO
   dir: runs
