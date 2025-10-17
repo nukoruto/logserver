@@ -80,10 +80,10 @@
 - 致命的に不明な場合は、必要最小限の質問を 1 回だけ付すか、`TODO:` としてコード内に明示して先に進める。
 
 ## 方針
-- リポ構成：logserver をモノレポ（収集＝`collector/`、学習＝`trainer/`）
-- 実行環境：収集＝Windows 11 ネイティブ（Node.js/Express）／学習＝WSL2 上の Docker（GPU）
+- リポ構成：logserver をモノレポ（シミュレーション＝`collector/`、学習＝`trainer/`）
+- 実行環境：シミュレーション＝Windows 11 / Ubuntu 22.04（Node.js CLI）／学習＝WSL2 上の Docker（GPU）
 - データ契約：`/contract/` に CSV スキーマ、op_category 辞書、セッション分割設定（Otsu/ε/肘法）を明記
-- 出力先：収集は `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
+- 出力先：シミュレーションは `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
 - セキュリティ／表記：擬似匿名化＝HKDF-SHA256(JWT_HMAC_KEY, info="sid") で導出した `K_ds` による HMAC-SHA256（`kid` を .env / メタデータに記録）、時刻＝UTC（RFC 3339）
 - GPU 切替：`GPU_MODE=ada6000|4060` で `CUDA_VISIBLE_DEVICES` を切替
 

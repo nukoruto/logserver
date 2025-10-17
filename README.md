@@ -23,16 +23,15 @@
 ---
 
 ## 2. 主な機能
-- **セッション化 / 前処理**：ユーザID・タイムアウトでセッション分割、操作カテゴリ（抽象化）付与、Δt 計算
-- **擬似匿名化**：JWT 等のトークンは `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")` から得た鍵で HMAC-SHA256 を適用し、生値を永続化しない（`kid` は `.env` や `metadata.json` に記録）
+- **シナリオ駆動シミュレーション**：`collector/src/services/simulationService.ts` が正常／異常シナリオを決定的に生成し、Δt と操作イベントを含むログ系列を CSV + manifest で永続化
+- **セッション化 / 前処理**：生成済みログをセッション単位へ分割し、操作カテゴリ（抽象化）と Δt を特徴量として付与
 - **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力、次イベント／Δt 予測による**予測誤差型**の異常検知
 - **異常スコア**：予測確率の逸脱 + Δt 予測誤差/尤度を統合
 - **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
-- **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、鍵情報、データセット SHA-256 を保存し、追試・監査を支援
+- **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、データセット SHA-256 を保存し、追試・監査を支援
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
-- **NTP オフセット監視**：`chronyc tracking` または `ntpstat` を解析し、95 パーセンタイルが 50ms を超過した場合は `/healthz` を 503 に切り替えて警告ログを出力
 
 ---
 
@@ -49,15 +48,15 @@
 ├─ collector/
 │   ├─ package.json
 │   ├─ package-lock.json
-│   ├─ server.js
-│   └─ src/
-│       ├─ app.js
-│       ├─ config/
-│       ├─ middleware/
-│       ├─ routes/
+│   ├─ src/
+│   │   ├─ config/
+│   │   ├─ services/
+│   │   │   └─ simulationService.ts
+│   │   └─ sim/
+│   └─ tests/
+│       ├─ scripts/
 │       ├─ services/
-│       ├─ storage/
-│       └─ utils/
+│       └─ sim/
 ├─ trainer/
 │   ├─ configs/
 │   │   ├─ default.yaml
@@ -95,7 +94,7 @@
 ## 4. セットアップ
 
 ### 4.1 依存関係
-本リポジトリは Node.js（収集・Web UI）と Python（学習・解析）が同居する **pnpm モノレポ** です。Node.js 側のパッケージは `pnpm` で統一管理し、Python 側は従来どおり `pip` または `conda` を利用します。セットアップ時は以下の順に依存関係を整えてください。
+本リポジトリは Node.js（シミュレーション CLI）と Python（学習・解析）が同居する **pnpm モノレポ** です。Node.js 側のパッケージは `pnpm` で統一管理し、Python 側は従来どおり `pip` または `conda` を利用します。セットアップ時は以下の順に依存関係を整えてください。
 
 1. Corepack で `pnpm@9.0.0` を有効化し、モノレポ全体の Node.js 依存を解決します。
 
@@ -133,54 +132,27 @@
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
 
 ### 4.3 環境変数ファイル (.env)
-1. 雛形 `.env.example` を `.env` にコピーする。
+1. 雛形 `.env.example` を `.env` にコピーする（任意）。
    ```bash
    cp .env.example .env
    ```
-2. `JWT_HMAC_KEY` には 128bit 以上の鍵（Base64 または Hex）を設定する。例:
-   ```bash
-   openssl rand -base64 32
-   ```
-3. `SID_KEY_ID` には鍵バージョンを示す識別子を設定する。例: `sid-fixture-202406`。`JWT_HMAC_KEY` からは自動的に `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")` を導出し、UID/セッション ID の擬似化に用いる。
+2. シミュレーション結果の保存先を変更したい場合は `SIM_LOG_DIR` を設定する。設定がなければ `data/sim/` が利用される。
 
-### 4.4 Docker コンテナ (収集サーバ)
-
-収集サーバは `node:20-alpine` ベースの Docker イメージを同梱しています。再現性の高い実行環境が必要な場合は、以下でコンテナを起動してください。
+### 4.4 シミュレーションログ生成
+シナリオに基づく CSV / manifest を生成するには、リポジトリルートで次を実行する。
 
 ```bash
-docker compose up --build
+pnpm exec ts-node scripts/simulate.ts \
+  --scenario configs/scenario_default.json \
+  --seed demo-seed \
+  --anomalies time,auth \
+  --count 256 \
+  --output-dir data/sim
 ```
 
-- `LOG_DIR` は `/var/log/logserver` としてボリューム化され、ホスト側の `./artifacts/` に永続化されます。
-- `GPU_MODE` を `ada6000` または `4060` に設定すると、エントリポイントが `CUDA_VISIBLE_DEVICES` を自動調整します（学習系と同一規約）。
-- `.env` をルートに配置すると Compose が自動で読み込みます。研究用の既定鍵として `c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=` を用意しています。
-
-コンテナ起動後、`http://localhost:8000/api/v1/health` が 200 を返却すれば準備完了です。停止は `docker compose down` を利用してください。
-
-### 4.5 サンプルデータ生成
-
-研究用の安定した統計量をもつ CSV を生成するために、ヘッドレスクライアントによるセッション操作のシードスクリプトを用意しています。
-
-```bash
-cd collector
-npm run seed
-```
-
-- `JWT_HMAC_KEY` が未設定の場合は上記コマンドが再現性保証用の固定キーを自動適用します。
-- デフォルトで 220 セッション、1,000 行以上のイベントを `/api/v1/events` に送信し、`artifacts/` 以下へ CSV を蓄積します。
-- `SEED_SESSION_COUNT` や `SEED_INTERVAL_MS` 等の環境変数でシナリオを調整できます。
-3. `LOG_DIR` や `CSV_ROTATION` など、運用に合わせて値を調整する。
-4. `.env` には秘匿情報が含まれるため **Git へコミットしないこと**。必要に応じて `.gitignore` や `git update-index --skip-worktree .env` を利用する。
-5. Node.js 側では `dotenv` により `.env` が自動ロードされる。別パスを使用したい場合は `CONFIG_PATH` 環境変数を指定する。
-6. NTP 計測コマンド（`chronyc` または `ntpstat`）が利用できない環境では、`NTP_MONITOR_DISABLED=true` を設定して監視を明示的に停止する。
-
-主な環境変数（一部抜粋）:
-
-| 変数名 | 既定値 | 説明 |
-| --- | --- | --- |
-| `SIM_LOG_DIR` | `data/sim` | シミュレーションで生成されたイベント CSV とマニフェストの保存先。絶対パス／相対パスいずれも指定可能。 |
-
----
+- `--persist false` を指定すると、生成結果を標準出力に表示するだけでファイルは生成されない。
+- `--session-spacing` や `--max-steps` を用いてセッション間隔や系列長を制御できる。
+- 実行時には INFO ログでシード値・異常戦略・出力先が記録される。
 
 ## 5. 使い方（CLI の一例）
 
@@ -206,10 +178,6 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 - `TrainerConfig.device` は `auto` が既定で、`GPU_MODE=ada6000`（RTX 6000 Ada）または `GPU_MODE=4060`（RTX 4060）を指定すると、自動で `cuda:0` と最適化済みの `num_workers` / `prefetch_factor` / `pin_memory` / `persistent_workers` を適用します。`GPU_MODE` を未設定か、対応表に存在しない値の場合は CUDA 利用可否を判定し `cuda:0` または `cpu` を選択します。
 - DataLoader は IterableDataset ベースで、メモリ常駐の numpy 配列だけでなく `numpy.memmap` やスライス呼び出し可能オブジェクトから必要なセッションのみを読み出してバッチ化します。学習実行後は `model.pt` / `features.json` / `model_config.json` に加えて乱数種・DataLoader パラメタ・Git コミットを記録した `repro.json` が生成され、再現性監査を支援します。
-
-# 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
-cd collector && node scripts/check-ntp.js
-```
 
 - 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。
 - `trainer.scripts.preprocess` は `data.chunksize`（既定 100,000）と `data.use_pyarrow` に従って CSV/JSON/Parquet をチャンク単位で読み込み、Δt 計算・セッション化した結果を `events.csv` / `events.parquet` へ追記します。監査レポート用のサンプルは `report.max_rows` で上限制御され、`null` を指定すると全行を統計用に読み込み、`0` 以下でサンプル取得を完全に無効化します。

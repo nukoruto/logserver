@@ -33,37 +33,21 @@
 | `test_trainer.py` | `train_model` が最小データセットで学習成果物（モデル・統計）を生成するかを確認。 | 同上 |
 
 ## 2. Node: `collector` (Jest)
-- 共通準備: `pnpm --filter session-anomaly-detection install`（ルート `pnpm install` 済みなら不要）。必要に応じ `pnpm --filter session-anomaly-detection run build` で型チェック済みビルドを生成。
-- 実行方法: ルートで `pnpm --filter session-anomaly-detection test`。個別には `pnpm --filter session-anomaly-detection exec jest path/to/test.ts`。
+- 準備: `pnpm --filter session-anomaly-detection install`。TypeScript ビルドは不要（ts-jest がトランスパイル）。
+- 実行方法: `pnpm --filter session-anomaly-detection test`
 
 | ファイル | 内容 | 使用コマンド例 |
 | --- | --- | --- |
-| `tests/middleware/logCapture.test.ts` | ログキャプチャミドルウェアが JWT キー設定を扱いログフレームへ付与する挙動を確認。 | `pnpm --filter session-anomaly-detection test -- tests/middleware/logCapture.test.ts` |
-| `tests/middleware/opCategory.test.ts` | 操作カテゴリ付与ミドルウェアがログに `op_category` を追加するか検証。 | 同上 |
-| `tests/ntp/offset.test.ts` | `NtpMonitor` のオフセット取得で `execFile` 呼び出しをモックし閾値判定を確認。 | 同上 |
-| `tests/routes/health.test.ts` | `/health` ルートの集約ステータス計算 (`deriveOverallHealth`) のロジックを検証。 | 同上 |
-| `tests/routes/metrics.test.ts` | Prometheus 形式メトリクス文字列の整形 (`formatPrometheusMetrics`) を確認。 | 同上 |
-| `tests/schema/logRecord.test.ts` | ログレコード Zod スキーマのバリデーションおよびエラー分類をテスト。 | 同上 |
-| `tests/scripts/audit.test.ts` | 監査スクリプト (`scripts/audit.ts`) が CSV 出力を生成し適切に終了するかを e2e で確認。 | 同上 |
-| `tests/scripts/simulate.test.ts` | `scripts/simulate.ts` が出力ディレクトリを生成し CSV を作成するかを検証。 | 同上 |
-| `tests/security/noJwtLeak.test.ts` | 擬似化後に JWT がディスクへ漏洩していないことをファイル走査で確認。 | 同上 |
-| `tests/services/ntpMonitor.test.ts` | NTP モニタのしきい値評価・通知挙動をモックで検証。 | 同上 |
-| `tests/services/simulationService.test.ts` | シミュレーション生成 (`generateScenario`) の成果物がメタを含むか確認。 | 同上 |
-| `tests/sim/anomalyInjector.test.ts` | 異常注入ロジック (`injectAnomaly`) がイベント列に異常タグを付けるか検証。 | 同上 |
-| `tests/sim/labeler.test.ts` | ラベリング処理が正常/異常ラベルを適切に割り当てるか確認。 | 同上 |
-| `tests/sim/normalGenerator.test.ts` | 正常系列生成 (`generateNormalSequence`) の結果がシナリオ設定に沿うか検証。 | 同上 |
-| `tests/sim/protocolValidator.test.ts` | プロトコル検証 (`validateProtocol`) のエラー分岐をチェック。 | 同上 |
+| `tests/scripts/audit.test.ts` | 監査スクリプト (`scripts/audit.ts`) が CSV 出力を生成し適切に終了するかを e2e で確認。 | `pnpm --filter session-anomaly-detection test -- tests/scripts/audit.test.ts` |
+| `tests/scripts/simulate.test.ts` | `scripts/simulate.ts` がディレクトリ生成・CSV 永続化を行うか検証。 | 同上 |
+| `tests/services/simulationService.test.ts` | シミュレーション生成 (`generateScenario`) の成果物がメタ情報を含むか確認。 | 同上 |
+| `tests/sim/anomalyInjector.test.ts` | 異常注入ロジック (`injectAnomaly`) がイベント列へ異常タグを付与するか検証。 | 同上 |
+| `tests/sim/labeler.test.ts` | ラベリング処理が正常/異常ラベルを割り当てるか確認。 | 同上 |
+| `tests/sim/normalGenerator.test.ts` | 正常系列生成 (`generateNormalSequence`) がシナリオ設定に従うか検証。 | 同上 |
+| `tests/sim/protocolValidator.test.ts` | プロトコル検証 (`validateProtocol`) のエラーパスをチェック。 | 同上 |
 | `tests/sim/scenarioLoader.test.ts` | シナリオファイル選択（デフォルト vs 外部指定）の優先順位を検証。 | 同上 |
-| `tests/sim/simWriter.test.ts` | シミュレーション結果の CSV/メタファイル永続化 (`persistSimulationRun`) を確認。 | 同上 |
+| `tests/sim/simWriter.test.ts` | シミュレーション結果の CSV/manifest 永続化 (`persistSimulationRun`) を確認。 | 同上 |
 | `tests/sim/timeDeviationDetector.test.ts` | Δt 異常検出 (`detectTimeDeviation`) の分位点ロジックを検証。 | 同上 |
-| `tests/sink/csvSink.test.ts` | CSV シンクがローテーションやヘッダ書き込みを正しく行うか検証。 | 同上 |
-| `tests/validation/toValidationIssues.test.ts` | Zod の `ZodError` から独自フォーマットへ変換する関数を検証。 | 同上 |
-| `tests/log_ingest.e2e.test.ts` | ログ投入サービスが JWT を擬似化し CSV 永続化で秘匿化されるか e2e で確認。 | 同上 |
-| `tests/index.test.ts` | エントリーポイントがアプリケーションを初期化する際の主要依存をモックしルーティング構築を検証。 | 同上 |
-| `tests/e2e/security.spec.ts` | `scripts/run-e2e.ts` を通じた CLI 連携の総合試験。 | `pnpm --filter session-anomaly-detection exec jest tests/e2e/security.spec.ts` |
-| `tests/scripts/simulate.test.ts` | （上記参照） |
-| `tests/scripts/audit.test.ts` | （上記参照） |
-| `src/security/uid.test.ts` | JWT から UID を導出するユーティリティの決定性と形式を検証。 | `pnpm --filter session-anomaly-detection exec jest src/security/uid.test.ts` |
 
 ## 3. Node: `@logserver/dt-preproc` (Vitest)
 - 準備: `pnpm --filter @logserver/dt-preproc install`。`pnpm --filter @logserver/dt-preproc run build` で dist 生成（テスト内で `@logserver/csv-schema` の dist を参照するため事前ビルド推奨）。

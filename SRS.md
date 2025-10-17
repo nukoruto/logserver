@@ -31,7 +31,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - 評価担当: 指標設計、実験・検証、報告
 
 ## 5. システム概要（アーキテクチャ）
-1. データ層: ログ収集（Node.js/Express）、永続化（CSV/Parquet）  
+1. データ層: シナリオ駆動ログ生成（TypeScript シミュレーション）、永続化（CSV/Parquet）  
 2. 前処理層: セッション分割、イベント埋め込み、Δt 付与、標準化  
 3. 学習層: LSTM（予測型または再構成型）学習、検証  
 4. 推論層: 異常スコア算出、オンライン/バッチ推論  
@@ -39,7 +39,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 
 ## 6. データ要件
 ### 6.1 収集
-- ランタイム: Node.js v20 以上、Express  
+- ランタイム: Node.js v20 以上（シミュレーション CLI）  
 - 収集対象: テストシナリオに基づく正常ログ、自動/半自動生成の異常ログ（順序逸脱、再送、Δt 異常など）  
 - 保存形式: CSV または Parquet（列指向推奨）  
 - タイムゾーン: UTC で統一
@@ -154,7 +154,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
   - SRS.md
   - CONSTRAINTS.md
   - Makefile
-  - collector/（ログ収集サーバ。Node.js/Express 実装）
+  - collector/（ログシミュレーション CLI。TypeScript 実装）
     - package.json / package-lock.json
     - server.js
     - src/（config, middleware, routes, services, storage, utils）
