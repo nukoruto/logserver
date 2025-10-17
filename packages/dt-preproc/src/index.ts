@@ -3,12 +3,14 @@ import {
   computeDeltas,
   forEachUser,
   parseCsv,
+  type DeltaAnnotatedRow,
   type CsvParseStats,
   type CsvRow,
   type DeltaTimeLabel,
   type ParseCsvOptions
 } from '@logserver/csv-schema';
 import { lburst } from './math.js';
+import { chooseEpsilonMin } from './epsilon.js';
 
 const ROBUST_SCALE_FACTOR = 1.4826;
 const ROBUST_Z_FLOOR = 1e-12;
@@ -58,7 +60,7 @@ interface StatsLookup {
 }
 
 export interface PreprocCfg {
-  epsilon: number;
+  epsilon?: number;
   epsilon_t: number;
   grouping?: 'uid' | 'uid_session';
   min_samples?: number;
@@ -1369,13 +1371,31 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
   if (!Array.isArray(rows)) {
     throw new TypeError('rows must be an array');
   }
-  const epsilon = Number.isFinite(cfg?.epsilon) && cfg.epsilon >= 0 ? cfg.epsilon : 0;
   const epsilonT = Number.isFinite(cfg?.epsilon_t) && cfg.epsilon_t >= 0 ? cfg.epsilon_t : 0;
   const grouping = normalizeGrouping(cfg?.grouping);
   const minSamples = Number.isFinite(cfg?.min_samples) && cfg.min_samples !== undefined
     ? Math.max(1, Math.floor(cfg.min_samples))
     : 1;
-  const logEps = Math.max(epsilon, LOG_EPS_FLOOR);
+
+  const positiveDeltas: number[] = [];
+  const annotatedByUser = new Map<string, DeltaAnnotatedRow<LogRow>[]>();
+
+  forEachUser(rows, (uid, userRows) => {
+    const deltaResult = computeDeltas(userRows, { epsilon: 0, epsilon_t: epsilonT });
+    annotatedByUser.set(uid, deltaResult.rows);
+    for (const { deltaSeconds, timeLabel } of deltaResult.rows) {
+      if (deltaSeconds === null || !Number.isFinite(deltaSeconds) || deltaSeconds <= 0) {
+        continue;
+      }
+      if (timeLabel !== 'measured') {
+        continue;
+      }
+      positiveDeltas.push(deltaSeconds);
+    }
+  });
+
+  const epsilonCandidate = chooseEpsilonMin(positiveDeltas);
+  const epsilon = Math.max(epsilonCandidate, LOG_EPS_FLOOR);
 
   const globalValues: number[] = [];
   const globalHourly = new Map<number, number[]>();
@@ -1384,16 +1404,16 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
     { key: GroupKey; values: number[]; hourly: Map<number, number[]> }
   >();
 
-  forEachUser(rows, (uid, userRows) => {
-    const deltaResult = computeDeltas(userRows, { epsilon, epsilon_t: epsilonT });
-    for (const { row, deltaSeconds, timeLabel } of deltaResult.rows) {
+  for (const [uid, entries] of annotatedByUser.entries()) {
+    for (const { row, deltaSeconds, timeLabel } of entries) {
       if (timeLabel !== 'measured' || deltaSeconds === null) {
         continue;
       }
       if (!Number.isFinite(deltaSeconds) || deltaSeconds < 0) {
         continue;
       }
-      const x = Math.log(deltaSeconds + logEps);
+      const adjusted = Math.max(deltaSeconds, epsilon);
+      const x = Math.log(adjusted + epsilon);
       if (!Number.isFinite(x)) {
         continue;
       }
@@ -1415,7 +1435,7 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
       acc.values.push(x);
       appendHourly(acc.hourly, hour, x);
     }
-  });
+  }
 
   if (globalValues.length === 0) {
     throw new Error('No measured Δt values available to fit robust statistics');
@@ -1452,7 +1472,7 @@ export function fitRobustStats(rows: LogRow[], cfg: PreprocCfg): FittedStats {
   }
 
   return {
-    epsilon: logEps,
+    epsilon,
     groups: groupStats,
     global: globalStats
   };

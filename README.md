@@ -230,14 +230,13 @@ pnpm --filter @logserver/dt-preproc run build
 pnpm exec dt-preproc fit \
   --in data/train/*.csv \
   --grouping uid_session \
-  --epsilon 0.0005 \
   --epsilon-t 0.05 \
   --clip-max 300 \
   --robust-z-clip 5 \
   --window 10 \
   --quantiles 0.25,0.5,0.75 \
   --out stats/preproc_stats.json \
-  --meta stats/preproc.yaml
+  --meta stats/preproc_meta.json
 
 # 3) 保存済み統計を使って検証データを変換（Transform）
 pnpm exec dt-preproc transform \
@@ -261,7 +260,7 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml \
   --cases 10 --out reports/explain_latest.json
 ```
 
-各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc.yaml`）を再利用して追加検証を実施します。
+各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc_meta.json`）を再利用して追加検証を実施します。
 
 学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。
 
@@ -273,14 +272,13 @@ pnpm --filter @logserver/dt-preproc run build
 pnpm exec dt-preproc fit \
   --in data/train/*.csv \
   --grouping uid_session \
-  --epsilon 0.0005 \
   --epsilon-t 0.05 \
   --clip-max 300 \
   --robust-z-clip 5 \
   --window 10 \
   --quantiles 0.25,0.5,0.75 \
   --out stats/preproc_stats.json \
-  --meta stats/preproc.yaml
+  --meta stats/preproc_meta.json
 
 # 変換：保存済み統計を用いて特徴量を追記（RFC 4180 準拠のストリーミング処理）
 pnpm exec dt-preproc transform \
@@ -293,22 +291,17 @@ pnpm exec dt-preproc transform \
 ※ `transform` で `--window` / `--quantiles` を省略した場合は、`fit` 時に保存した設定が自動的に再利用されます。
 ```
 
-`fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパスに実行オプション・入力リスト・CSV パース統計を YAML/JSON 形式で出力します（`options.quantile_window` と `options.quantiles` も記録）。`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z`, `delta_quantile_0_25` など）を追記した CSV を生成します。履歴が無い初期行は空欄（空文字）で埋め、NaN を出力しません。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
+`fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパス（例：`stats/preproc_meta.json`）にアルゴリズム情報を出力します。メタファイルは JSON/YAML のいずれにも対応し、内容は下記 3 フィールドのみです。
 
-#### `preproc.yaml` のフィールド
+```json
+{ "algo_ver": "5.0-spec", "epsilon": "min_half", "epsilon_value": 0.00075 }
+```
 
-`stats/preproc.yaml` は `dt-preproc fit` の**監査メタデータ**で、以下のキーを含みます。
+- `algo_ver`: Δt 前処理アルゴリズムの仕様バージョン。
+- `epsilon`: 推定方式（`min_half` 固定）。
+- `epsilon_value`: Δt>0 の最小値の半分を 1e-6〜1e-2 にクリップした値（秒）。
 
-| キー | 説明 |
-| --- | --- |
-| `command` | 実行されたサブコマンド。例: `fit` |
-| `inputs` | フィットに利用した CSV 一覧。再現時のチェックに利用 |
-| `options` | `--epsilon` など CLI オプションのスナップショット |
-| `stats_sha256` | `preproc_stats.json` のハッシュ。改ざん検知 |
-| `generated_at` | UTC タイムスタンプ（ISO 8601） |
-| `environment` | Node.js / pnpm / Git commit などのバージョン情報 |
-
-この YAML を `git lfs` 管理する必要はありませんが、実験ごとに保存しておくと再現性を担保できます。
+`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z`, `delta_quantile_0_25` など）を追記した CSV を生成します。履歴が無い初期行は空欄（空文字）で埋め、NaN を出力しません。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
 
 #### 単位不変性テスト（Unit Invariance Test）の読み解き方
 
@@ -316,7 +309,7 @@ pnpm exec dt-preproc transform \
 
 - `status: "pass"` … フィット時と同じ単位であることを確認。
 - `status: "warn"` … 平均や分散が基準から 3σ 以内だが僅かな差異あり。再サンプル推奨。
-- `status: "fail"` … 大きな単位差（例：ミリ秒→秒）が検知される。`preproc.yaml` で `scale_hint` を確認し、変換前に正規化を適用してください。
+- `status: "fail"` … 大きな単位差（例：ミリ秒→秒）が検知される。`preproc_stats.json` の `options` を確認し、変換前に正規化を適用してください。
 
 `unit_invariance.test_cases` には検証に用いた代表列（`delta_seconds`, `latency_ms` など）とテスト内容が記録され、閾値は `configs/default.yaml` の `preprocess.unit_invariance` セクションで調整できます。
 
@@ -388,7 +381,7 @@ JWT_HMAC_KEY=... pnpm --filter @logserver/splitter-gui exec electron dist/main.j
   2. 左上の UID セレクタで対象ユーザを切替（MIMO 分離の観点）。
   3. ヒストグラムタブでは Δt 分布と Otsu 閾値を確認し、`ΔT Override` スライダで値を調整。
   4. `Preview Sessions` タブで変更後のセッション分割とラベルを確認。
-  5. 「Export」を押下すると、`dist/export/<timestamp>/` に NDJSON + `thresholds.json` + `meta.json`（`preproc.yaml` と同等の実行メタ付き）が生成されます。
+  5. 「Export」を押下すると、`dist/export/<timestamp>/` に NDJSON + `thresholds.json` + `meta.json`（`preproc_meta.json` と同等の実行メタ付き）が生成されます。
   6. エクスポート後は `pnpm --filter @logserver/splitter-gui exec playwright test` で GUI の単体・統合テストを再確認してください。
 - ΔT を変更するとプレビューが即時更新され、閾値一覧とセッション抜粋が再描画されます。
 - 「エクスポート」は CLI (`@logserver/session-splitter-cli`) と同一構成（NDJSON + thresholds JSON + meta.json）で出力します。

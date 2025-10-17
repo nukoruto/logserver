@@ -19,6 +19,7 @@ import {
   type RobustStats,
   type UpdateCfg
 } from '../src/index.js';
+import { chooseEpsilonMin } from '../src/epsilon.js';
 
 function createRow(uid: string, sessionId: string, epochSeconds: number, index: number): LogRow {
   return {
@@ -540,8 +541,10 @@ test('StreamingFeatureTransformer maintains prefix stability (causality)', () =>
   index = appendSession(rows, 'userB', 'sessB', 20_000, [5, 60, 5, 600], index);
   appendSession(rows, 'userC', 'sessC', 30_000, [1, 1, 1], index);
 
-  const fitted = fitRobustStats(rows, { epsilon: 0.5, epsilon_t: 0.05, grouping: 'uid_session', min_samples: 1 });
-  const options = { epsilon: 0.5, epsilonT: 0.05, clipMaxSeconds: 300, robustZClip: 4, minSamples: 1 };
+  const fitted = fitRobustStats(rows, { epsilon_t: 0.05, grouping: 'uid_session', min_samples: 1 });
+  const options = { epsilon: fitted.epsilon, epsilonT: 0.05, clipMaxSeconds: 300, robustZClip: 4, minSamples: 1 };
+  const expectedEpsilon = chooseEpsilonMin([30, 40, 50, 5, 60, 5, 600, 1, 1, 1]);
+  expectClose(fitted.epsilon, expectedEpsilon, 'auto epsilon (prefix stability)');
 
   const fullTransformer = new StreamingFeatureTransformer({ fitted, grouping: 'uid_session', ...options });
   const fullRows = rows.map((row) => fullTransformer.process({ ...row }));
@@ -560,20 +563,21 @@ test('StreamingFeatureTransformer matches thawed statistics replay', () => {
   index = appendSession(rows, 'userB', 's2', 2_000, [3, 4, 7, 1, 2, 5], index);
   index = appendSession(rows, 'userA', 's3', 3_500, [2, 2, 9, 3, 4], index);
 
+  const fitted = fitRobustStats(rows, {
+    epsilon_t: 1.0,
+    grouping: 'uid_session',
+    min_samples: 1
+  });
+
   const options = {
-    epsilon: 0.5,
+    epsilon: fitted.epsilon,
     epsilonT: 1.0,
     clipMaxSeconds: 120,
     robustZClip: 4,
     minSamples: 1
   };
-
-  const fitted = fitRobustStats(rows, {
-    epsilon: options.epsilon,
-    epsilon_t: options.epsilonT,
-    grouping: 'uid_session',
-    min_samples: options.minSamples
-  });
+  const replayExpectedEpsilon = chooseEpsilonMin([1, 5, 2, 6, 2, 3, 4, 7, 1, 2, 5, 2, 2, 9, 3, 4]);
+  expectClose(fitted.epsilon, replayExpectedEpsilon, 'auto epsilon (replay)');
 
   const transformerA = new StreamingFeatureTransformer({
     fitted,
