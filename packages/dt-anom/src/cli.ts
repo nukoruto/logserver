@@ -30,11 +30,6 @@ const parseIntArg = (value: string): number => {
   return parsed;
 };
 
-interface KOfNParams {
-  readonly k: number;
-  readonly n: number;
-}
-
 interface FitCommandOptions {
   readonly input: string[];
   readonly statsOut: string;
@@ -57,7 +52,7 @@ interface FitCommandOptions {
   readonly q: number;
   readonly calibWindow: number;
   readonly declusterR: number;
-  readonly kofn: KOfNParams;
+  readonly kofn: string;
   readonly H: number;
   readonly reestimateEvery: number;
   readonly minExceed: number;
@@ -75,6 +70,11 @@ interface ScoreCommandOptions {
   readonly stats: string;
   readonly meta: string;
   readonly audit: string;
+}
+
+interface KOfNParams {
+  readonly k: number;
+  readonly n: number;
 }
 
 const parseKOfN = (value: string): KOfNParams => {
@@ -154,7 +154,7 @@ program
     if (seeds.length === 0) {
       throw new Error('At least one seed must be provided');
     }
-    const kofnParsed = parseKOfN(cmdOpts.kofn);
+    const kofnParsed = parseKOfN(cmdOpts.kofn ?? '3/5');
     const budgetWeightMode = cmdOpts.budgetWeightMode ?? 'count';
     const result = await fitAnomalyModel({
       inputs: cmdOpts.input,
@@ -228,13 +228,11 @@ program
   });
 
 async function main(): Promise<void> {
-  try {
-    await program.parseAsync(process.argv);
-  } catch (error) {
-    const message = error instanceof Error ? error.message : String(error);
-    process.stderr.write(`${message}\n`);
-    process.exitCode = 1;
-  }
+  await program.parseAsync(process.argv);
 }
 
-await main();
+void main().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  process.stderr.write(`${message}\n`);
+  process.exitCode = 1;
+});

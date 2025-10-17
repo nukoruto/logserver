@@ -6,7 +6,8 @@ export interface QuantileSummary {
 }
 
 export function computeQuantiles(sortedValues: readonly number[], levels: readonly number[]): QuantileSummary[] {
-  return levels.map((p) => ({ p, value: quantileSorted(sortedValues, p) }));
+  const values = Array.from(sortedValues);
+  return levels.map((p) => ({ p, value: quantileSorted(values, p) }));
 }
 
 export function ensureSorted(values: readonly number[]): number[] {
