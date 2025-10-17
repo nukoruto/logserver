@@ -3,7 +3,12 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from trainer.logserver.features import choose_epsilon, robustZ
+from trainer.logserver.features import (
+    RobustDeltaStats,
+    choose_epsilon,
+    robustZ,
+    summarize_stats,
+)
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
 
 
@@ -125,4 +130,42 @@ def test_robust_z_unit_invariance_between_seconds_and_milliseconds() -> None:
     z_ms_quant = np.quantile(z_ms["z"].to_numpy(), quantiles)
     max_diff = np.max(np.abs(z_seconds_quant - z_ms_quant))
     assert max_diff <= 0.02
+
+
+def test_summarize_stats_returns_dataclasses() -> None:
+    df = pd.DataFrame(
+        {
+            "uid": ["alice", "alice", "bob", "bob"],
+            "delta_t": [0.2, 0.4, 0.3, 0.6],
+        }
+    )
+    z_df = robustZ(df)
+    summary = summarize_stats(z_df)
+
+    assert len(summary) == 2
+    assert all(isinstance(item, RobustDeltaStats) for item in summary)
+
+    alice_stats = summary[0]
+    alice_rows = z_df[z_df["uid"] == "alice"].iloc[0]
+    assert alice_stats.uid == "alice"
+    assert alice_stats.median_log_delta == pytest.approx(alice_rows["median_log_delta"])
+    assert alice_stats.mad_log_delta == pytest.approx(alice_rows["mad_log_delta"])
+    assert alice_stats.sigma_r == pytest.approx(alice_rows["sigma_r"])
+
+    bob_stats = summary[1]
+    assert bob_stats.uid == "bob"
+    assert bob_stats.sigma_r > 0
+
+
+def test_summarize_stats_requires_complete_columns() -> None:
+    df = pd.DataFrame(
+        {
+            "uid": ["u1"],
+            "median_log_delta": [0.1],
+            "mad_log_delta": [0.01],
+            "sigma_r": [0.02],
+        }
+    )
+    with pytest.raises(ValueError, match="Missing columns required for summary"):
+        summarize_stats(df.drop(columns=["mad_log_delta"]))
 
