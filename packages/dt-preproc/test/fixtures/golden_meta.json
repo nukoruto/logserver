@@ -25,6 +25,29 @@
     "clipMaxSeconds": 300,
     "robustScaleEpsilon": 1e-9,
     "robustZClip": 5,
-    "minSamples": 2
+    "minSamples": 2,
+    "quantileWindow": 10,
+    "quantiles": [
+      0.25,
+      0.5,
+      0.75
+    ],
+    "quantileFields": [
+      {
+        "probability": 0.25,
+        "field": "delta_quantile_0_25",
+        "alias": "delta_m25"
+      },
+      {
+        "probability": 0.5,
+        "field": "delta_quantile_0_5",
+        "alias": "delta_m50"
+      },
+      {
+        "probability": 0.75,
+        "field": "delta_quantile_0_75",
+        "alias": "delta_m75"
+      }
+    ]
   }
 }

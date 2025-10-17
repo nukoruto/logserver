@@ -13,6 +13,13 @@ import { lburst } from './math.js';
 const ROBUST_SCALE_FACTOR = 1.4826;
 const ROBUST_Z_FLOOR = 1e-12;
 const LOG_EPS_FLOOR = 1e-12;
+const DEFAULT_QUANTILES = [0.25, 0.5, 0.75] as const;
+
+export interface QuantileField {
+  probability: number;
+  field: string;
+  alias?: string;
+}
 
 export type LogRow = CsvRow;
 
@@ -79,6 +86,10 @@ export interface LogRowWithFeats extends LogRow {
   session_sequence: number;
   session_elapsed_seconds: number | null;
   is_session_start: boolean;
+  delta_quantiles?: Record<string, number | null>;
+  delta_m25?: number | null;
+  delta_m50?: number | null;
+  delta_m75?: number | null;
 }
 
 export interface FeatureOptions {
@@ -88,9 +99,13 @@ export interface FeatureOptions {
   robustScaleEpsilon: number;
   robustZClip: number;
   minSamples: number;
+  quantileWindow: number;
+  quantiles: readonly number[];
 }
 
-export interface NormalizedFeatureOptions extends FeatureOptions {}
+export interface NormalizedFeatureOptions extends FeatureOptions {
+  quantileFields: readonly QuantileField[];
+}
 
 export interface SerializedPreprocOptions {
   measurement_epsilon: number;
@@ -98,6 +113,8 @@ export interface SerializedPreprocOptions {
   clip_max_seconds: number;
   robust_z_clip: number;
   min_samples: number;
+  quantile_window: number;
+  quantiles: readonly number[];
 }
 
 export interface SerializedPreprocStats extends FrozenFittedStats {
@@ -109,6 +126,7 @@ export interface SerializedPreprocStats extends FrozenFittedStats {
 interface StreamingSessionState extends SessionState {
   sessionId: string;
   prevTimestamp: number | null;
+  quantiles: number[];
 }
 
 export interface StreamingTransformerOptions extends Partial<FeatureOptions> {
@@ -219,7 +237,9 @@ const DEFAULT_FEATURE_OPTIONS: FeatureOptions = {
   clipMaxSeconds: 300,
   robustScaleEpsilon: 1e-9,
   robustZClip: 5,
-  minSamples: 8
+  minSamples: 8,
+  quantileWindow: 10,
+  quantiles: DEFAULT_QUANTILES
 };
 
 export const DEFAULT_OPTIONS: FeatureOptions = { ...DEFAULT_FEATURE_OPTIONS };
@@ -236,6 +256,57 @@ function isFiniteNumber(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value);
 }
 
+function normalizeQuantile(probability: number): number {
+  if (!Number.isFinite(probability)) {
+    return 0.5;
+  }
+  if (probability <= 0) {
+    return 0;
+  }
+  if (probability >= 1) {
+    return 1;
+  }
+  return probability;
+}
+
+function quantileFieldName(probability: number): string {
+  const scaled = Math.round(probability * 1000) / 1000;
+  const safe = scaled.toString().replace(/[^0-9]/g, '_');
+  return `delta_quantile_${safe}`;
+}
+
+function quantileAlias(probability: number): string | undefined {
+  if (Math.abs(probability - 0.25) <= 1e-6) {
+    return 'delta_m25';
+  }
+  if (Math.abs(probability - 0.5) <= 1e-6) {
+    return 'delta_m50';
+  }
+  if (Math.abs(probability - 0.75) <= 1e-6) {
+    return 'delta_m75';
+  }
+  return undefined;
+}
+
+function dedupeQuantiles(quantiles: readonly number[]): number[] {
+  const seen = new Set<string>();
+  const result: number[] = [];
+  for (const raw of quantiles) {
+    const normalized = normalizeQuantile(raw);
+    const key = normalized.toFixed(6);
+    if (seen.has(key)) {
+      continue;
+    }
+    seen.add(key);
+    result.push(normalized);
+  }
+  return result;
+}
+
+function assignQuantileField(row: LogRowWithFeats, key: string, value: number | null): void {
+  (row as unknown as Record<string, number | null>)[key] = value;
+}
+
 function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): NormalizedFeatureOptions {
   const epsilon = Math.max(0, options.epsilon ?? DEFAULT_FEATURE_OPTIONS.epsilon);
   const epsilonT = Math.max(0, options.epsilonT ?? DEFAULT_FEATURE_OPTIONS.epsilonT);
@@ -248,6 +319,21 @@ function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): Normali
   const minSamples = Number.isFinite(minSamplesCandidate)
     ? Math.max(1, Math.floor(minSamplesCandidate))
     : DEFAULT_FEATURE_OPTIONS.minSamples;
+  const windowCandidate = options.quantileWindow ?? DEFAULT_FEATURE_OPTIONS.quantileWindow;
+  const quantileWindow = Number.isFinite(windowCandidate) && windowCandidate > 0
+    ? Math.max(1, Math.floor(windowCandidate))
+    : 0;
+  const quantileCandidate = Array.isArray(options.quantiles)
+    ? options.quantiles
+    : DEFAULT_FEATURE_OPTIONS.quantiles;
+  const quantiles = dedupeQuantiles(quantileCandidate);
+  const quantileFields: QuantileField[] = quantileWindow > 0
+    ? quantiles.map((probability) => ({
+        probability,
+        field: quantileFieldName(probability),
+        alias: quantileAlias(probability)
+      }))
+    : [];
 
   return {
     epsilon,
@@ -255,7 +341,10 @@ function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): Normali
     clipMaxSeconds,
     robustScaleEpsilon: robustScaleEpsilon > 0 ? robustScaleEpsilon : DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon,
     robustZClip,
-    minSamples
+    minSamples,
+    quantileWindow,
+    quantiles,
+    quantileFields
   };
 }
 
@@ -507,6 +596,8 @@ export function computeFeatureRows(
     deltaMad: null,
     deltaRobustScale: null
   };
+  const quantileDescriptors = normalized.quantileFields;
+  const quantileProbabilities = quantileDescriptors.map((descriptor) => descriptor.probability);
 
   forEachUser(rows, (_uid, userRows) => {
     const deltaResult = computeDeltas(userRows, {
@@ -515,6 +606,7 @@ export function computeFeatureRows(
     });
 
     const sessionState = new Map<string, SessionState>();
+    const quantileState = new Map<string, number[]>();
 
     for (const { row, deltaSeconds, timeLabel } of deltaResult.rows) {
       const baseRow = row;
@@ -530,6 +622,12 @@ export function computeFeatureRows(
         sessionState.set(sessionId, state);
       } else if (state.startTime === null && isFiniteNumber(baseRow.timestamp_epoch_seconds)) {
         state.startTime = baseRow.timestamp_epoch_seconds;
+      }
+
+      let quantileWindowValues = quantileState.get(sessionId);
+      if (!quantileWindowValues) {
+        quantileWindowValues = [];
+        quantileState.set(sessionId, quantileWindowValues);
       }
 
       const sequence = state.sequence;
@@ -624,6 +722,36 @@ export function computeFeatureRows(
         session_elapsed_seconds: elapsed,
         is_session_start: sequence === 0
       });
+
+      const featureRow = featureRows[featureRows.length - 1];
+
+      if (quantileDescriptors.length > 0 && normalized.quantileWindow > 0) {
+        const quantileRecord: Record<string, number | null> = {};
+        const probabilities = quantileProbabilities;
+        const hasHistory = quantileWindowValues.length > 0;
+        const computed = hasHistory ? rollingQuantilesR7(quantileWindowValues, probabilities) : [];
+        quantileDescriptors.forEach((descriptor, index) => {
+          const value = hasHistory ? computed[index] : null;
+          const normalizedValue = value ?? null;
+          quantileRecord[descriptor.field] = normalizedValue;
+          assignQuantileField(featureRow, descriptor.field, normalizedValue);
+          if (descriptor.alias) {
+            quantileRecord[descriptor.alias] = normalizedValue;
+            assignQuantileField(featureRow, descriptor.alias, normalizedValue);
+          }
+        });
+        featureRow.delta_quantiles = quantileRecord;
+        featureRow.delta_m25 = quantileRecord.delta_m25 ?? null;
+        featureRow.delta_m50 = quantileRecord.delta_m50 ?? null;
+        featureRow.delta_m75 = quantileRecord.delta_m75 ?? null;
+      }
+
+      if (quantileDescriptors.length > 0 && normalized.quantileWindow > 0 && timeLabel === 'measured' && clipped !== null) {
+        quantileWindowValues.push(clipped);
+        if (quantileWindowValues.length > normalized.quantileWindow) {
+          quantileWindowValues.splice(0, quantileWindowValues.length - normalized.quantileWindow);
+        }
+      }
     }
   });
 
@@ -995,6 +1123,8 @@ export class StreamingFeatureTransformer {
 
   private readonly logEps: number;
 
+  private readonly quantileProbabilities: readonly number[];
+
   private readonly stats: MutableFeatureStats = {
     total: 0,
     measured: 0,
@@ -1017,6 +1147,7 @@ export class StreamingFeatureTransformer {
     this.fitted = options.fitted;
     this.grouping = normalizeGrouping(options.grouping);
     this.logEps = Math.max(this.normalized.epsilon, this.fitted.epsilon, LOG_EPS_FLOOR);
+    this.quantileProbabilities = this.normalized.quantileFields.map((descriptor) => descriptor.probability);
   }
 
   private getState(uid: string, sessionId: string, timestamp: number | null): StreamingSessionState {
@@ -1024,6 +1155,9 @@ export class StreamingFeatureTransformer {
     if (existing && existing.sessionId === sessionId) {
       if (existing.startTime === null && isFiniteNumber(timestamp)) {
         existing.startTime = timestamp;
+      }
+      if (!Array.isArray(existing.quantiles)) {
+        existing.quantiles = [];
       }
       return existing;
     }
@@ -1033,7 +1167,8 @@ export class StreamingFeatureTransformer {
       sequence: 0,
       startTime: isFiniteNumber(timestamp) ? timestamp : null,
       prevTimestamp: null,
-      prevMeasuredDelta: null
+      prevMeasuredDelta: null,
+      quantiles: []
     };
     this.stateByUser.set(uid, state);
     return state;
@@ -1106,6 +1241,14 @@ export class StreamingFeatureTransformer {
 
     let deltaRobustZ: number | null = null;
     let deltaSeasonalZ: number | null = null;
+    const history = state.quantiles;
+    const hasQuantiles = this.normalized.quantileWindow > 0 && this.quantileProbabilities.length > 0;
+    const quantileFields = this.normalized.quantileFields;
+    const quantileRecord: Record<string, number | null> | null = hasQuantiles ? {} : null;
+    let computedQuantiles: number[] = [];
+    if (quantileRecord && history.length > 0) {
+      computedQuantiles = rollingQuantilesR7(history, this.quantileProbabilities);
+    }
 
     if (clipped !== null) {
       const key: GroupKey = this.grouping === 'uid_session'
@@ -1142,6 +1285,23 @@ export class StreamingFeatureTransformer {
       is_session_start: sequence === 0
     };
 
+    if (quantileRecord) {
+      quantileFields.forEach((descriptor, index) => {
+        const value = history.length > 0 ? computedQuantiles[index] ?? null : null;
+        const normalizedValue = value ?? null;
+        quantileRecord[descriptor.field] = normalizedValue;
+        assignQuantileField(featureRow, descriptor.field, normalizedValue);
+        if (descriptor.alias) {
+          quantileRecord[descriptor.alias] = normalizedValue;
+          assignQuantileField(featureRow, descriptor.alias, normalizedValue);
+        }
+      });
+      featureRow.delta_quantiles = quantileRecord;
+      featureRow.delta_m25 = quantileRecord.delta_m25 ?? null;
+      featureRow.delta_m50 = quantileRecord.delta_m50 ?? null;
+      featureRow.delta_m75 = quantileRecord.delta_m75 ?? null;
+    }
+
     state.sequence += 1;
     state.prevTimestamp = timestamp;
     if (timestamp !== null && state.startTime === null) {
@@ -1149,6 +1309,13 @@ export class StreamingFeatureTransformer {
     }
 
     this.stats.total += 1;
+
+    if (hasQuantiles && timeLabel === 'measured' && clipped !== null) {
+      history.push(clipped);
+      if (history.length > this.normalized.quantileWindow) {
+        history.splice(0, history.length - this.normalized.quantileWindow);
+      }
+    }
 
     return featureRow;
   }
