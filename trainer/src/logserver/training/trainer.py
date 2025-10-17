@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import json
+import os
 import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -17,9 +18,10 @@ from torch.utils.data import DataLoader
 
 from ..features.batching import (
     SessionDataset,
-    SessionExample,
+    SessionSlice,
     build_sessions,
     collate_examples,
+    create_array_session_loader,
 )
 from ..features.encoders import FeaturePack
 from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
@@ -37,7 +39,58 @@ class TrainerConfig:
     hidden_size: int = 64
     num_layers: int = 1
     dropout: float = 0.1
-    device: str = "cpu"
+    device: str = "auto"
+    num_workers: Optional[int] = None
+    prefetch_factor: Optional[int] = None
+    pin_memory: Optional[bool] = None
+    persistent_workers: Optional[bool] = None
+
+    def __post_init__(self) -> None:
+        profile = self.device.lower()
+        gpu_mode = os.getenv("GPU_MODE", "").lower()
+        preset = None
+        if profile in _GPU_PRESETS:
+            preset = _GPU_PRESETS[profile]
+        elif profile == "auto" and gpu_mode in _GPU_PRESETS:
+            preset = _GPU_PRESETS[gpu_mode]
+        if preset:
+            if profile == "auto":
+                self.device = preset["device"]
+            else:
+                self.device = preset["device"]
+            if self.num_workers is None:
+                self.num_workers = preset["num_workers"]
+            if self.prefetch_factor is None:
+                self.prefetch_factor = preset["prefetch_factor"]
+            if self.pin_memory is None:
+                self.pin_memory = preset["pin_memory"]
+            if self.persistent_workers is None:
+                self.persistent_workers = preset["persistent_workers"]
+        elif profile == "auto":
+            if torch.cuda.is_available():
+                self.device = "cuda:0"
+                if self.num_workers is None:
+                    self.num_workers = 4
+                if self.prefetch_factor is None:
+                    self.prefetch_factor = 2
+                if self.pin_memory is None:
+                    self.pin_memory = True
+                if self.persistent_workers is None:
+                    self.persistent_workers = True
+            else:
+                self.device = "cpu"
+        if self.num_workers is None:
+            self.num_workers = 0
+        if self.num_workers <= 0:
+            self.num_workers = 0
+            self.prefetch_factor = None
+            self.persistent_workers = False if self.persistent_workers is None else self.persistent_workers
+        elif self.prefetch_factor is None:
+            self.prefetch_factor = 2
+        if self.pin_memory is None:
+            self.pin_memory = self.device.startswith("cuda")
+        if self.persistent_workers is None:
+            self.persistent_workers = self.num_workers > 0
 
 
 @dataclass
@@ -47,24 +100,14 @@ class SessionSplit:
 
 
 def _set_seed(seed: int) -> None:
+    os.environ["PYTHONHASHSEED"] = str(seed)
     random.seed(seed)
     np.random.seed(seed)
     torch.manual_seed(seed)
-
-
-def _to_examples(sessions: List[Dict[str, np.ndarray]]) -> List[SessionExample]:
-    examples: List[SessionExample] = []
-    for session in sessions:
-        examples.append(
-            SessionExample(
-                event_ids=session["event_ids"].astype(np.int64),
-                numeric=session["numeric"].astype(np.float32),
-                target_event=session["target_event"].astype(np.int64),
-            )
-        )
-    return examples
-
-
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+    torch.backends.cudnn.deterministic = True
+    torch.backends.cudnn.benchmark = False
 def create_session_split(session_order: Sequence[str], config: TrainerConfig) -> SessionSplit:
     unique_sessions = list(dict.fromkeys(str(session) for session in session_order))
     if not unique_sessions:
@@ -87,20 +130,20 @@ def create_session_split(session_order: Sequence[str], config: TrainerConfig) ->
 
 
 def _split_sessions(
-    sessions: List[Dict[str, np.ndarray]],
+    slices: List[SessionSlice],
     session_keys: List[str],
     config: TrainerConfig,
     split: Optional[SessionSplit] = None,
-) -> Tuple[List[SessionExample], List[SessionExample]]:
+) -> Tuple[List[SessionSlice], List[SessionSlice]]:
     effective_split = split or create_session_split(session_keys, config)
-    mapping = {key: session for key, session in zip(session_keys, sessions)}
+    mapping = {slice_.key: slice_ for slice_ in slices}
     train_sessions = [mapping[key] for key in effective_split.train_ids if key in mapping]
     val_sessions = [mapping[key] for key in effective_split.val_ids if key in mapping]
     if not train_sessions and val_sessions:
         train_sessions, val_sessions = val_sessions, []
     if not train_sessions:
         train_sessions = list(mapping.values())
-    return _to_examples(train_sessions), _to_examples(val_sessions)
+    return train_sessions, val_sessions
 
 
 def _prepare_dataloaders(
@@ -109,15 +152,44 @@ def _prepare_dataloaders(
     config: TrainerConfig,
     numeric_keys: Sequence[str],
     split: Optional[SessionSplit] = None,
-) -> Tuple[DataLoader, DataLoader]:
-    sessions, session_keys = build_sessions(encoded, session_ids, numeric_keys)
-    train_examples, val_examples = _split_sessions(sessions, session_keys, config, split)
-    train_loader = DataLoader(SessionDataset(train_examples), batch_size=config.batch_size, shuffle=True, collate_fn=collate_examples)
-    if val_examples:
-        val_loader = DataLoader(SessionDataset(val_examples), batch_size=config.batch_size, shuffle=False, collate_fn=collate_examples)
-    else:
-        val_loader = DataLoader(SessionDataset(train_examples), batch_size=config.batch_size, shuffle=False, collate_fn=collate_examples)
-    return train_loader, val_loader
+) -> Tuple[DataLoader, DataLoader, List[str]]:
+    slices, session_keys, ordered_numeric = build_sessions(encoded, session_ids, numeric_keys)
+    train_slices, val_slices = _split_sessions(slices, session_keys, config, split)
+    loader = create_array_session_loader(encoded, ordered_numeric)
+    train_dataset = SessionDataset(train_slices, loader, shuffle=True, seed=config.seed)
+    eval_slices = val_slices if val_slices else train_slices
+    val_dataset = SessionDataset(eval_slices, loader, shuffle=False, seed=config.seed)
+
+    train_loader = _create_dataloader(train_dataset, config)
+    val_loader = _create_dataloader(val_dataset, config)
+    return train_loader, val_loader, ordered_numeric
+
+
+def _create_dataloader(dataset: SessionDataset, config: TrainerConfig) -> DataLoader:
+    kwargs: Dict[str, object] = {
+        "batch_size": config.batch_size,
+        "collate_fn": collate_examples,
+        "num_workers": config.num_workers,
+        "pin_memory": config.pin_memory,
+    }
+    if config.num_workers > 0:
+        if config.prefetch_factor is not None:
+            kwargs["prefetch_factor"] = config.prefetch_factor
+        kwargs["persistent_workers"] = config.persistent_workers
+        kwargs["worker_init_fn"] = _build_worker_init_fn(config.seed)
+    return DataLoader(dataset, **kwargs)
+
+
+def _build_worker_init_fn(seed: int):
+    def _init_fn(worker_id: int) -> None:
+        worker_seed = seed + worker_id
+        random.seed(worker_seed)
+        np.random.seed(worker_seed)
+        torch.manual_seed(worker_seed)
+        if torch.cuda.is_available():
+            torch.cuda.manual_seed(worker_seed)
+
+    return _init_fn
 
 
 def _compute_losses(
@@ -153,9 +225,11 @@ def train_model(
 ) -> Dict[str, List[float]]:
     _set_seed(config.seed)
     numeric_keys = feature_pack.numeric_features
-    train_loader, val_loader = _prepare_dataloaders(encoded, session_ids, config, numeric_keys, split)
+    train_loader, val_loader, ordered_numeric = _prepare_dataloaders(
+        encoded, session_ids, config, numeric_keys, split
+    )
     try:
-        delta_index = numeric_keys.index("delta_t")
+        delta_index = ordered_numeric.index("delta_t")
     except ValueError as error:
         raise RuntimeError("Feature pack must include delta_t in numeric features") from error
 
@@ -166,7 +240,7 @@ def train_model(
             hidden_size=config.hidden_size,
             num_layers=config.num_layers,
             dropout=config.dropout,
-            numeric_dim=len(numeric_keys),
+            numeric_dim=len(ordered_numeric),
         )
     ).to(config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
@@ -216,7 +290,14 @@ def train_model(
         if val_loss < best_val:
             best_val = val_loss
             patience = config.early_stopping_patience
-            _persist_artifacts(model, feature_pack, history, output_dir, config)
+            _persist_artifacts(
+                model,
+                feature_pack,
+                history,
+                output_dir,
+                config,
+                ordered_numeric,
+            )
         else:
             patience -= 1
             if patience <= 0:
@@ -225,7 +306,14 @@ def train_model(
     return history
 
 
-def _persist_artifacts(model: DeltaAwareLSTM, feature_pack: FeaturePack, history: Dict[str, List[float]], output_dir: Path, config: TrainerConfig) -> None:
+def _persist_artifacts(
+    model: DeltaAwareLSTM,
+    feature_pack: FeaturePack,
+    history: Dict[str, List[float]],
+    output_dir: Path,
+    config: TrainerConfig,
+    numeric_keys: Sequence[str],
+) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = output_dir / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
@@ -239,7 +327,14 @@ def _persist_artifacts(model: DeltaAwareLSTM, feature_pack: FeaturePack, history
             "hidden_size": config.hidden_size,
             "num_layers": config.num_layers,
             "dropout": config.dropout,
+            "device": config.device,
+            "num_workers": config.num_workers,
+            "prefetch_factor": config.prefetch_factor,
+            "pin_memory": config.pin_memory,
+            "persistent_workers": config.persistent_workers,
+            "numeric_features": list(numeric_keys),
         }, handle, indent=2)
+    _write_repro_metadata(run_dir, config)
     latest = output_dir / "latest"
     if latest.exists() and latest.is_symlink():
         latest.unlink()
@@ -248,3 +343,59 @@ def _persist_artifacts(model: DeltaAwareLSTM, feature_pack: FeaturePack, history
     except OSError:
         with (output_dir / "latest.txt").open("w", encoding="utf-8") as handle:
             handle.write(str(run_dir))
+
+
+def _write_repro_metadata(run_dir: Path, config: TrainerConfig) -> None:
+    import platform
+    import subprocess
+
+    metadata = {
+        "seed": config.seed,
+        "device": config.device,
+        "num_workers": config.num_workers,
+        "prefetch_factor": config.prefetch_factor,
+        "pin_memory": config.pin_memory,
+        "persistent_workers": config.persistent_workers,
+        "python_version": platform.python_version(),
+        "numpy_version": np.__version__,
+        "torch_version": torch.__version__,
+    }
+    try:
+        commit = subprocess.check_output(["git", "rev-parse", "HEAD"], cwd=run_dir.parent, text=True).strip()
+        metadata["git_commit"] = commit
+    except (OSError, subprocess.CalledProcessError):
+        metadata["git_commit"] = "unknown"
+    with (run_dir / "repro.json").open("w", encoding="utf-8") as handle:
+        json.dump(metadata, handle, indent=2)
+
+
+_GPU_PRESETS = {
+    "rtx6000": {
+        "device": "cuda:0",
+        "num_workers": 8,
+        "prefetch_factor": 4,
+        "pin_memory": True,
+        "persistent_workers": True,
+    },
+    "ada6000": {
+        "device": "cuda:0",
+        "num_workers": 8,
+        "prefetch_factor": 4,
+        "pin_memory": True,
+        "persistent_workers": True,
+    },
+    "rtx4060": {
+        "device": "cuda:0",
+        "num_workers": 4,
+        "prefetch_factor": 2,
+        "pin_memory": True,
+        "persistent_workers": True,
+    },
+    "4060": {
+        "device": "cuda:0",
+        "num_workers": 4,
+        "prefetch_factor": 2,
+        "pin_memory": True,
+        "persistent_workers": True,
+    },
+}

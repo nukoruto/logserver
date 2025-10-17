@@ -204,6 +204,9 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 `trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_quantile_0_25`（`delta_m25`）, `delta_quantile_0_5`（`delta_m50`）, `delta_quantile_0_75`（`delta_m75`）を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
+- `TrainerConfig.device` は `auto` が既定で、`GPU_MODE=ada6000`（RTX 6000 Ada）または `GPU_MODE=4060`（RTX 4060）を指定すると、自動で `cuda:0` と最適化済みの `num_workers` / `prefetch_factor` / `pin_memory` / `persistent_workers` を適用します。`GPU_MODE` を未設定か、対応表に存在しない値の場合は CUDA 利用可否を判定し `cuda:0` または `cpu` を選択します。
+- DataLoader は IterableDataset ベースで、メモリ常駐の numpy 配列だけでなく `numpy.memmap` やスライス呼び出し可能オブジェクトから必要なセッションのみを読み出してバッチ化します。学習実行後は `model.pt` / `features.json` / `model_config.json` に加えて乱数種・DataLoader パラメタ・Git コミットを記録した `repro.json` が生成され、再現性監査を支援します。
+
 # 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
 cd collector && node scripts/check-ntp.js
 ```
