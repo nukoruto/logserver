@@ -6,6 +6,11 @@ import { buildAnomalySummary } from '../sim/persistence/simWriter';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
 import type { PersistSimulationResult } from '../sim/persistence/simWriter';
+import type {
+  TimeDeviationOptions,
+  TimeDeviationDiagnostics,
+  TimeDeviationDetectionResult,
+} from '../sim/detector/timeDeviationDetector';
 
 type StrategyName = 'protocolViolation' | 'timeDeviation' | 'authenticationBypass';
 
@@ -25,6 +30,9 @@ const DEFAULT_EVENT_COUNT = 64;
 const DEFAULT_SESSION_SPACING_SECONDS = 180;
 const DEFAULT_MAX_STEPS = 64;
 const DEFAULT_ANOMALY_RATE = 0.2;
+const DEFAULT_TIME_DEVIATION_METHOD = 'quantile';
+const DEFAULT_TIME_DEVIATION_QUANTILE = 0.99;
+const DEFAULT_TIME_DEVIATION_MIN_SAMPLES = 5;
 
 interface EventBlueprint {
   method: string;
@@ -126,6 +134,7 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   scenarioPath?: string | null;
   scenarioFile?: string | null;
   startTime?: Date | string | null;
+  timeDeviation?: Partial<TimeDeviationOptions> | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -141,8 +150,11 @@ export interface SimulationParameters extends Record<string, unknown> {
   max_steps: number;
   time_deviation_detector: {
     method: string;
-    quantile: number;
+    quantile: number | null;
     min_samples: number;
+    fallback_threshold_seconds: number | null;
+    threshold_seconds: number | null;
+    diagnostics?: TimeDeviationDiagnostics | null;
   };
   protocol_validator: {
     enabled: boolean;
@@ -184,8 +196,9 @@ interface DefaultParameterInput {
   persist: boolean;
   maxSteps: number;
   timeDeviationMethod: string;
-  timeDeviationQuantile: number;
+  timeDeviationQuantile: number | null;
   timeDeviationMinSamples: number;
+  timeDeviationFallback: number | null;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -442,8 +455,10 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   max_steps: input.maxSteps,
   time_deviation_detector: {
     method: input.timeDeviationMethod,
-    quantile: input.timeDeviationQuantile,
+    quantile: Number.isFinite(input.timeDeviationQuantile) ? input.timeDeviationQuantile : null,
     min_samples: input.timeDeviationMinSamples,
+    fallback_threshold_seconds: input.timeDeviationFallback,
+    threshold_seconds: null,
   },
   protocol_validator: {
     enabled: true,
@@ -470,6 +485,39 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const baseStartTime = parseStartTime(options.startTime ?? null);
   const seedResolution = resolveSeed(options.seed);
   const resolvedSeed = seedResolution.value;
+  const timeDeviationInput = (options.timeDeviation ?? null) as Partial<TimeDeviationOptions> | null;
+  const resolvedTimeDeviationMethod =
+    typeof timeDeviationInput?.method === 'string' && timeDeviationInput.method
+      ? timeDeviationInput.method
+      : DEFAULT_TIME_DEVIATION_METHOD;
+  const rawQuantile = Number((timeDeviationInput?.quantile ?? null) as number | string | null);
+  const resolvedTimeDeviationQuantile = Number.isFinite(rawQuantile)
+    ? rawQuantile
+    : DEFAULT_TIME_DEVIATION_QUANTILE;
+  const resolvedTimeDeviationMinSamples =
+    Number.isInteger(timeDeviationInput?.minSamples) && (timeDeviationInput?.minSamples as number) > 0
+      ? (timeDeviationInput?.minSamples as number)
+      : DEFAULT_TIME_DEVIATION_MIN_SAMPLES;
+  const resolvedTimeDeviationFallback =
+    timeDeviationInput?.fallbackThresholdSeconds !== undefined
+      ? parseNonNegativeNumber(timeDeviationInput?.fallbackThresholdSeconds, null)
+      : null;
+  const resolvedTimeDeviationThreshold =
+    timeDeviationInput?.thresholdSeconds !== undefined
+      ? parseNonNegativeNumber(timeDeviationInput?.thresholdSeconds, null)
+      : null;
+  const resolvedTimeDeviationOptions: TimeDeviationOptions = {
+    ...(timeDeviationInput ?? {}),
+    method: resolvedTimeDeviationMethod,
+    quantile: resolvedTimeDeviationQuantile,
+    minSamples: resolvedTimeDeviationMinSamples,
+    fallbackThresholdSeconds: resolvedTimeDeviationFallback,
+    thresholdSeconds: resolvedTimeDeviationThreshold,
+  };
+  const parameterQuantile =
+    resolvedTimeDeviationMethod === 'quantile' && Number.isFinite(resolvedTimeDeviationQuantile)
+      ? resolvedTimeDeviationQuantile
+      : null;
   const parameters = defaultParameters({
     count,
     anomalies,
@@ -481,9 +529,10 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     sessionSpacingSeconds,
     persist,
     maxSteps,
-    timeDeviationMethod: 'quantile',
-    timeDeviationQuantile: 0.99,
-    timeDeviationMinSamples: 5,
+    timeDeviationMethod: resolvedTimeDeviationMethod,
+    timeDeviationQuantile: parameterQuantile,
+    timeDeviationMinSamples: resolvedTimeDeviationMinSamples,
+    timeDeviationFallback: resolvedTimeDeviationFallback,
   });
 
   const selectedStrategies = buildStrategyOverrides(anomalies);
@@ -511,6 +560,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const sessionIds = new Set<string>();
   let sessionIndex = 0;
   let sessionStartTime = new Date(baseStartTime.getTime());
+  let lastTimeDeviationResult: TimeDeviationDetectionResult | null = null;
 
   while (events.length < count) {
     const sessionSeed = `${resolvedSeed}:${sessionIndex}`;
@@ -539,8 +589,12 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     });
 
     const protocolAnnotated = protocolValidator.validateProtocol(decorated);
-    const timeAnnotated = timeDeviationDetector.detectTimeDeviation(protocolAnnotated);
-    const labeled = labelSequence(timeAnnotated);
+    const timeDeviationResult = timeDeviationDetector.detectTimeDeviation(
+      protocolAnnotated,
+      resolvedTimeDeviationOptions,
+    );
+    lastTimeDeviationResult = timeDeviationResult;
+    const labeled = labelSequence(timeDeviationResult.events);
 
     for (const event of labeled) {
       events.push(event);
@@ -564,6 +618,11 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const trimmedEvents = events.slice(0, count);
   const generatedAt = new Date().toISOString();
 
+  if (lastTimeDeviationResult) {
+    parameters.time_deviation_detector.threshold_seconds = lastTimeDeviationResult.thresholdSeconds;
+    parameters.time_deviation_detector.diagnostics = lastTimeDeviationResult.diagnostics;
+  }
+
   let persistenceResult: PersistSimulationResult | null = null;
   if (persist && trimmedEvents.length > 0) {
     persistenceResult = await persistSimulationRun({
@@ -576,6 +635,15 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       manifestFileName: options.manifestFileName as string | undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
+      extraMetadata: lastTimeDeviationResult
+        ? {
+            time_deviation: {
+              method: parameters.time_deviation_detector.method,
+              threshold_seconds: lastTimeDeviationResult.thresholdSeconds,
+              diagnostics: lastTimeDeviationResult.diagnostics,
+            },
+          }
+        : undefined,
     });
   }
 
@@ -613,6 +681,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     anomalies: summary.anomalies,
     files: response.files || null,
     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
+    time_deviation_detector: parameters.time_deviation_detector,
   });
 
   return response;
