@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve as resolvePath } from 'node:path';
+import { basename, dirname, join } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { stderr } from 'node:process';
 import { format } from 'fast-csv';
@@ -30,26 +30,9 @@ interface AggregateParseStats {
   schemaValidated: boolean;
 }
 
-interface FitMeta {
-  version: number;
-  generated_at: string;
-  stats_file: string;
-  grouping: 'uid' | 'uid_session';
-  options: SerializedPreprocOptions;
-  input_files: string[];
-  parse: {
-    total_rows: number;
-    valid_rows: number;
-    invalid_rows: number;
-    invalid_reasons: Record<string, number>;
-    schema_validated: boolean;
-  };
-}
-
 const FIT_SCHEMA = z.object({
   inputs: z.array(z.string().min(1)).nonempty(),
   grouping: z.enum(['uid', 'uid_session']),
-  epsilon: z.number().min(0),
   epsilonT: z.number().min(0),
   clipMaxSeconds: z.number().positive(),
   robustZClip: z.number().positive(),
@@ -65,7 +48,6 @@ const TRANSFORM_SCHEMA = z.object({
   inputs: z.array(z.string().min(1)).nonempty(),
   stats: z.string().min(1),
   output: z.string().min(1),
-  epsilon: z.number().min(0).optional(),
   epsilonT: z.number().min(0).optional(),
   clipMaxSeconds: z.number().positive().optional(),
   robustZClip: z.number().positive().optional(),
@@ -146,16 +128,6 @@ function mergeParseStats(target: AggregateParseStats, source: CsvParseStats): vo
     const current = target.invalidReasons.get(reason) ?? 0;
     target.invalidReasons.set(reason, current + count);
   }
-}
-
-function formatAggregate(stats: AggregateParseStats): FitMeta['parse'] {
-  return {
-    total_rows: stats.totalRows,
-    valid_rows: stats.validRows,
-    invalid_rows: stats.invalidRows,
-    invalid_reasons: Object.fromEntries(stats.invalidReasons.entries()),
-    schema_validated: stats.schemaValidated
-  };
 }
 
 function hasGlob(pattern: string): boolean {
@@ -308,23 +280,31 @@ function serializeYaml(value: unknown, indent = 0): string {
   return `${indentation}null`;
 }
 
-async function writeMeta(path: string | undefined, meta: FitMeta, pretty: boolean): Promise<void> {
+async function writeMeta(path: string | undefined, epsilonValue: number, pretty: boolean): Promise<void> {
   if (!path) {
     return;
   }
   await ensureParent(path);
+  const payload = {
+    algo_ver: '5.0-spec',
+    epsilon: 'min_half',
+    epsilon_value: epsilonValue
+  };
   const content = detectYaml(path)
-    ? `${serializeYaml(meta)}\n`
-    : `${JSON.stringify(meta, null, pretty ? 2 : 0)}\n`;
+    ? `${serializeYaml(payload)}\n`
+    : `${JSON.stringify(payload, null, pretty ? 2 : 0)}\n`;
   await writeFile(path, content, 'utf8');
 }
 
-function buildOptionsPayload(parsed: z.infer<typeof FIT_SCHEMA>): SerializedPreprocOptions {
+function buildOptionsPayload(
+  parsed: z.infer<typeof FIT_SCHEMA>,
+  measurementEpsilon: number
+): SerializedPreprocOptions {
   const quantileList = parsed.quantiles && parsed.quantiles.length > 0
     ? Array.from(parsed.quantiles)
     : [...DEFAULT_FEATURE_OPTIONS.quantiles];
   return {
-    measurement_epsilon: parsed.epsilon,
+    measurement_epsilon: measurementEpsilon,
     epsilon_t: parsed.epsilonT,
     clip_max_seconds: parsed.clipMaxSeconds,
     robust_z_clip: parsed.robustZClip,
@@ -338,6 +318,7 @@ function deriveTransformOptions(
   parsed: z.infer<typeof TRANSFORM_SCHEMA>,
   stats: SerializedPreprocStats
 ): StreamingTransformerOptions {
+  const thawed = thawFittedStats(stats);
   const stored = stats.options;
   const grouping = stats.grouping ?? 'uid';
   const storedWindow = stored?.quantile_window;
@@ -353,9 +334,9 @@ function deriveTransformOptions(
     ? Array.from(storedQuantiles)
     : [...DEFAULT_FEATURE_OPTIONS.quantiles];
   return {
-    fitted: thawFittedStats(stats),
+    fitted: thawed,
     grouping,
-    epsilon: parsed.epsilon ?? stored?.measurement_epsilon ?? DEFAULT_FEATURE_OPTIONS.epsilon,
+    epsilon: thawed.epsilon,
     epsilonT: parsed.epsilonT ?? stored?.epsilon_t ?? DEFAULT_FEATURE_OPTIONS.epsilonT,
     clipMaxSeconds: parsed.clipMaxSeconds ?? stored?.clip_max_seconds ?? DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
     robustZClip: parsed.robustZClip ?? stored?.robust_z_clip ?? DEFAULT_FEATURE_OPTIONS.robustZClip,
@@ -427,13 +408,13 @@ async function runFit(argv: unknown): Promise<void> {
     mergeParseStats(aggregate, parser.getStats());
   }
 
-  const options = buildOptionsPayload(parsed);
   const fitted = fitRobustStats(allRows, {
-    epsilon: options.measurement_epsilon,
-    epsilon_t: options.epsilon_t,
+    epsilon_t: parsed.epsilonT,
     grouping: parsed.grouping,
-    min_samples: options.min_samples
+    min_samples: parsed.minSamples
   });
+
+  const options = buildOptionsPayload(parsed, fitted.epsilon);
 
   const frozen = freezeFittedStats(fitted) as SerializedPreprocStats;
   const payload = buildStatsPayload(frozen, options, parsed.grouping);
@@ -442,17 +423,7 @@ async function runFit(argv: unknown): Promise<void> {
   const statsJson = `${JSON.stringify(payload, null, parsed.pretty ? 2 : 0)}\n`;
   await writeFile(parsed.out, statsJson, 'utf8');
 
-  const meta: FitMeta = {
-    version: 1,
-    generated_at: new Date().toISOString(),
-    stats_file: resolvePath(parsed.out),
-    grouping: parsed.grouping,
-    options,
-    input_files: inputPaths.map((path) => resolvePath(path)),
-    parse: formatAggregate(aggregate)
-  };
-
-  await writeMeta(parsed.meta, meta, parsed.pretty);
+  await writeMeta(parsed.meta, fitted.epsilon, parsed.pretty);
 }
 
 async function runTransform(argv: unknown): Promise<void> {
@@ -514,11 +485,6 @@ async function main(): Promise<void> {
             default: 'uid',
             describe: 'Grouping strategy for robust statistics'
           })
-          .option('epsilon', {
-            type: 'number',
-            default: DEFAULT_FEATURE_OPTIONS.epsilon,
-            describe: 'Measurement resolution epsilon (seconds)'
-          })
           .option('epsilon-t', {
             type: 'number',
             default: DEFAULT_FEATURE_OPTIONS.epsilonT,
@@ -572,7 +538,6 @@ async function main(): Promise<void> {
         const args = {
           inputs: (argv.in as unknown[]).map(String),
           grouping: argv.grouping as 'uid' | 'uid_session',
-          epsilon: toNumber(argv.epsilon),
           epsilonT: toNumber(argv.epsilonT ?? argv['epsilon-t']),
           clipMaxSeconds: toNumber(argv.clipMax ?? argv['clip-max']),
           robustZClip: toNumber(argv.robustZClip ?? argv['robust-z-clip']),
@@ -606,10 +571,6 @@ async function main(): Promise<void> {
             type: 'string',
             demandOption: true,
             describe: 'Output file, directory, or pattern (use * to substitute file names)'
-          })
-          .option('epsilon', {
-            type: 'number',
-            describe: 'Override measurement resolution epsilon (seconds)'
           })
           .option('epsilon-t', {
             type: 'number',
@@ -652,7 +613,6 @@ async function main(): Promise<void> {
           inputs: (argv.in as unknown[]).map(String),
           stats: String(argv.stats),
           output: String(argv.out),
-          epsilon: argv.epsilon !== undefined ? toNumber(argv.epsilon) : undefined,
           epsilonT: argv.epsilonT !== undefined ? toNumber(argv.epsilonT) : argv['epsilon-t'] !== undefined ? toNumber(argv['epsilon-t']) : undefined,
           clipMaxSeconds: argv.clipMax !== undefined ? toNumber(argv.clipMax) : argv['clip-max'] !== undefined ? toNumber(argv['clip-max']) : undefined,
           robustZClip: argv.robustZClip !== undefined ? toNumber(argv.robustZClip) : argv['robust-z-clip'] !== undefined ? toNumber(argv['robust-z-clip']) : undefined,
