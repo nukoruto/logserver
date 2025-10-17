@@ -54,6 +54,8 @@ const FIT_SCHEMA = z.object({
   clipMaxSeconds: z.number().positive(),
   robustZClip: z.number().positive(),
   minSamples: z.number().positive(),
+  window: z.number().min(0),
+  quantiles: z.array(z.number()).optional(),
   out: z.string().min(1),
   meta: z.string().min(1).optional(),
   pretty: z.boolean()
@@ -67,6 +69,8 @@ const TRANSFORM_SCHEMA = z.object({
   epsilonT: z.number().min(0).optional(),
   clipMaxSeconds: z.number().positive().optional(),
   robustZClip: z.number().positive().optional(),
+  window: z.number().min(0).optional(),
+  quantiles: z.array(z.number()).optional(),
   validateSchema: z.boolean(),
   pretty: z.boolean()
 });
@@ -82,6 +86,45 @@ function toNumber(value: unknown): number {
     }
   }
   throw new TypeError('Invalid numeric argument');
+}
+
+function parseQuantileValues(value: unknown): number[] {
+  if (value === undefined || value === null) {
+    return [];
+  }
+  const bucket: number[] = [];
+  const rawItems = Array.isArray(value) ? value : [value];
+  for (const item of rawItems) {
+    if (typeof item === 'number' && Number.isFinite(item)) {
+      bucket.push(item);
+      continue;
+    }
+    if (typeof item === 'string') {
+      const pieces = item.split(',');
+      for (const piece of pieces) {
+        const trimmed = piece.trim();
+        if (!trimmed) {
+          continue;
+        }
+        const parsed = Number(trimmed);
+        if (!Number.isFinite(parsed)) {
+          throw new TypeError(`Invalid quantile value '${trimmed}'`);
+        }
+        bucket.push(parsed);
+      }
+      continue;
+    }
+    throw new TypeError('Invalid quantile argument');
+  }
+  return bucket;
+}
+
+function resolveQuantileArgs(value: unknown, fallback: readonly number[]): number[] {
+  const parsed = parseQuantileValues(value);
+  if (parsed.length === 0) {
+    return [...fallback];
+  }
+  return parsed;
 }
 
 function createAggregateParseStats(): AggregateParseStats {
@@ -161,8 +204,26 @@ async function ensureParent(path: string): Promise<void> {
   await mkdir(parent, { recursive: true });
 }
 
-function toCsvRecord(row: LogRowWithFeats): Record<string, unknown> {
-  return {
+function resolveQuantileColumns(
+  fields: ReadonlyArray<{ field: string; alias?: string | undefined }>
+): string[] {
+  const columns: string[] = [];
+  const seen = new Set<string>();
+  for (const descriptor of fields) {
+    if (descriptor.field && !seen.has(descriptor.field)) {
+      columns.push(descriptor.field);
+      seen.add(descriptor.field);
+    }
+    if (descriptor.alias && !seen.has(descriptor.alias)) {
+      columns.push(descriptor.alias);
+      seen.add(descriptor.alias);
+    }
+  }
+  return columns;
+}
+
+function toCsvRecord(row: LogRowWithFeats, quantileColumns: readonly string[]): Record<string, unknown> {
+  const base: Record<string, unknown> = {
     timestamp_utc: row.timestamp_utc,
     timestamp_epoch_seconds: row.timestamp_epoch_seconds,
     uid: row.uid,
@@ -184,6 +245,14 @@ function toCsvRecord(row: LogRowWithFeats): Record<string, unknown> {
     session_elapsed_seconds: row.session_elapsed_seconds ?? '',
     is_session_start: row.is_session_start ? 1 : 0
   };
+
+  for (const column of quantileColumns) {
+    const dynamicRow = row as unknown as Record<string, unknown>;
+    const value = dynamicRow[column];
+    base[column] = value ?? '';
+  }
+
+  return base;
 }
 
 function detectYaml(path: string | undefined): boolean {
@@ -251,12 +320,17 @@ async function writeMeta(path: string | undefined, meta: FitMeta, pretty: boolea
 }
 
 function buildOptionsPayload(parsed: z.infer<typeof FIT_SCHEMA>): SerializedPreprocOptions {
+  const quantileList = parsed.quantiles && parsed.quantiles.length > 0
+    ? Array.from(parsed.quantiles)
+    : [...DEFAULT_FEATURE_OPTIONS.quantiles];
   return {
     measurement_epsilon: parsed.epsilon,
     epsilon_t: parsed.epsilonT,
     clip_max_seconds: parsed.clipMaxSeconds,
     robust_z_clip: parsed.robustZClip,
-    min_samples: Math.max(1, Math.floor(parsed.minSamples))
+    min_samples: Math.max(1, Math.floor(parsed.minSamples)),
+    quantile_window: Math.max(0, Math.floor(parsed.window)),
+    quantiles: quantileList
   };
 }
 
@@ -266,6 +340,18 @@ function deriveTransformOptions(
 ): StreamingTransformerOptions {
   const stored = stats.options;
   const grouping = stats.grouping ?? 'uid';
+  const storedWindow = stored?.quantile_window;
+  const storedQuantiles = stored?.quantiles;
+  const effectiveWindow = parsed.window !== undefined
+    ? Math.max(0, Math.floor(parsed.window))
+    : Number.isFinite(storedWindow)
+    ? Math.max(0, Math.floor(storedWindow as number))
+    : DEFAULT_FEATURE_OPTIONS.quantileWindow;
+  const effectiveQuantiles = parsed.quantiles && parsed.quantiles.length > 0
+    ? Array.from(parsed.quantiles)
+    : storedQuantiles && storedQuantiles.length > 0
+    ? Array.from(storedQuantiles)
+    : [...DEFAULT_FEATURE_OPTIONS.quantiles];
   return {
     fitted: thawFittedStats(stats),
     grouping,
@@ -273,7 +359,9 @@ function deriveTransformOptions(
     epsilonT: parsed.epsilonT ?? stored?.epsilon_t ?? DEFAULT_FEATURE_OPTIONS.epsilonT,
     clipMaxSeconds: parsed.clipMaxSeconds ?? stored?.clip_max_seconds ?? DEFAULT_FEATURE_OPTIONS.clipMaxSeconds,
     robustZClip: parsed.robustZClip ?? stored?.robust_z_clip ?? DEFAULT_FEATURE_OPTIONS.robustZClip,
-    minSamples: stored?.min_samples ?? DEFAULT_FEATURE_OPTIONS.minSamples
+    minSamples: stored?.min_samples ?? DEFAULT_FEATURE_OPTIONS.minSamples,
+    quantileWindow: effectiveWindow,
+    quantiles: effectiveQuantiles
   };
 }
 
@@ -378,6 +466,7 @@ async function runTransform(argv: unknown): Promise<void> {
   const statsPayload = JSON.parse(statsText) as SerializedPreprocStats;
   const transformerOptions = deriveTransformOptions(parsed, statsPayload);
   const transformer = new StreamingFeatureTransformer(transformerOptions);
+  const quantileColumns = resolveQuantileColumns(transformer.getOptions().quantileFields);
 
   const outputPaths = await resolveOutputPaths(inputPaths, parsed.output);
   if (outputPaths.length !== inputPaths.length) {
@@ -397,7 +486,7 @@ async function runTransform(argv: unknown): Promise<void> {
 
     for await (const row of parser) {
       const featureRow = transformer.process(row);
-      csvStream.write(toCsvRecord(featureRow));
+      csvStream.write(toCsvRecord(featureRow, quantileColumns));
     }
 
     csvStream.end();
@@ -450,6 +539,16 @@ async function main(): Promise<void> {
             default: DEFAULT_FEATURE_OPTIONS.minSamples,
             describe: 'Minimum samples required for per-group robust stats'
           })
+          .option('window', {
+            type: 'number',
+            default: DEFAULT_FEATURE_OPTIONS.quantileWindow,
+            describe: 'Rolling window size for Δt quantile features'
+          })
+          .option('quantiles', {
+            type: 'string',
+            default: DEFAULT_FEATURE_OPTIONS.quantiles.join(','),
+            describe: 'Comma-separated quantile probabilities (0-1) for Δt features'
+          })
           .option('out', {
             type: 'string',
             demandOption: true,
@@ -465,6 +564,11 @@ async function main(): Promise<void> {
             describe: 'Pretty-print JSON outputs'
           }),
       async (argv) => {
+        const windowSize = Math.max(
+          0,
+          Math.floor(toNumber(argv.window ?? DEFAULT_FEATURE_OPTIONS.quantileWindow))
+        );
+        const quantiles = resolveQuantileArgs(argv.quantiles, DEFAULT_FEATURE_OPTIONS.quantiles);
         const args = {
           inputs: (argv.in as unknown[]).map(String),
           grouping: argv.grouping as 'uid' | 'uid_session',
@@ -473,6 +577,8 @@ async function main(): Promise<void> {
           clipMaxSeconds: toNumber(argv.clipMax ?? argv['clip-max']),
           robustZClip: toNumber(argv.robustZClip ?? argv['robust-z-clip']),
           minSamples: toNumber(argv.minSamples ?? argv['min-samples']),
+          window: windowSize,
+          quantiles,
           out: String(argv.out),
           meta: typeof argv.meta === 'string' ? argv.meta : undefined,
           pretty: Boolean(argv.pretty)
@@ -517,6 +623,14 @@ async function main(): Promise<void> {
             type: 'number',
             describe: 'Override robust z-score clipping limit'
           })
+          .option('window', {
+            type: 'number',
+            describe: 'Override rolling window size for Δt quantile features'
+          })
+          .option('quantiles', {
+            type: 'string',
+            describe: 'Override Δt quantile probabilities (comma separated)'
+          })
           .option('validate-schema', {
             type: 'boolean',
             default: true,
@@ -528,6 +642,12 @@ async function main(): Promise<void> {
             describe: 'Unused placeholder for interface consistency'
           }),
       async (argv) => {
+        const windowOverride =
+          argv.window !== undefined ? Math.max(0, Math.floor(toNumber(argv.window))) : undefined;
+        const quantileOverride =
+          argv.quantiles !== undefined
+            ? resolveQuantileArgs(argv.quantiles, DEFAULT_FEATURE_OPTIONS.quantiles)
+            : undefined;
         const args = {
           inputs: (argv.in as unknown[]).map(String),
           stats: String(argv.stats),
@@ -536,6 +656,8 @@ async function main(): Promise<void> {
           epsilonT: argv.epsilonT !== undefined ? toNumber(argv.epsilonT) : argv['epsilon-t'] !== undefined ? toNumber(argv['epsilon-t']) : undefined,
           clipMaxSeconds: argv.clipMax !== undefined ? toNumber(argv.clipMax) : argv['clip-max'] !== undefined ? toNumber(argv['clip-max']) : undefined,
           robustZClip: argv.robustZClip !== undefined ? toNumber(argv.robustZClip) : argv['robust-z-clip'] !== undefined ? toNumber(argv['robust-z-clip']) : undefined,
+          window: windowOverride,
+          quantiles: quantileOverride,
           validateSchema: argv.validateSchema !== undefined ? Boolean(argv.validateSchema) : true,
           pretty: Boolean(argv.pretty)
         };

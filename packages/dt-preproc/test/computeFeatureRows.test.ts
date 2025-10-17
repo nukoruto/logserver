@@ -65,3 +65,51 @@ test('computeFeatureRows annotates symmetric log burst for consecutive measured 
   expect(featureRows[6].session_id).toBe('session-b');
   expect(featureRows[6].delta_log_burst).toBeNull();
 });
+
+test('computeFeatureRows emits causal rolling quantiles without NaN', () => {
+  const rows: LogRow[] = [
+    makeRow('session-c', baseSeconds, 0),
+    makeRow('session-c', baseSeconds + 10, 1),
+    makeRow('session-c', baseSeconds + 25, 2),
+    makeRow('session-c', baseSeconds + 55, 3),
+    makeRow('session-c', baseSeconds + 90, 4)
+  ];
+
+  const { rows: featureRows, options } = computeFeatureRows(rows, {
+    epsilon: 0.0005,
+    epsilonT: 0.05,
+    clipMaxSeconds: 300,
+    quantileWindow: 2,
+    quantiles: [0.25, 0.5, 0.75]
+  });
+
+  expect(options.quantileFields.map((field) => field.field)).toEqual([
+    'delta_quantile_0_25',
+    'delta_quantile_0_5',
+    'delta_quantile_0_75'
+  ]);
+
+  expect(featureRows[0].delta_m25).toBeNull();
+  expect(featureRows[1].delta_m25).toBeNull();
+  expect(featureRows[1].delta_m50).toBeNull();
+  expect(featureRows[1].delta_m75).toBeNull();
+
+  expect(featureRows[2].delta_m25).toBeCloseTo(10, 5);
+  expect(featureRows[2].delta_m50).toBeCloseTo(10, 5);
+  expect(featureRows[2].delta_m75).toBeCloseTo(10, 5);
+
+  expect(featureRows[3].delta_quantiles?.delta_quantile_0_25).toBeCloseTo(11.25, 5);
+  expect(featureRows[3].delta_quantiles?.delta_quantile_0_5).toBeCloseTo(12.5, 5);
+  expect(featureRows[3].delta_quantiles?.delta_quantile_0_75).toBeCloseTo(13.75, 5);
+
+  expect(featureRows[4].delta_m25).toBeCloseTo(18.75, 5);
+  expect(featureRows[4].delta_m50).toBeCloseTo(22.5, 5);
+  expect(featureRows[4].delta_m75).toBeCloseTo(26.25, 5);
+
+  const quantileValues = featureRows[4].delta_quantiles ?? {};
+  for (const value of Object.values(quantileValues)) {
+    if (value !== null) {
+      expect(Number.isNaN(value)).toBe(false);
+    }
+  }
+});

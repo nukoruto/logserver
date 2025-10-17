@@ -202,7 +202,7 @@ python -m trainer.scripts.threshold --config trainer/configs/default.yaml --on-e
 # 4) 説明レポート（ケース単位）
 python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
-`trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_q{25,50,75}` を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
+`trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_quantile_0_25`（`delta_m25`）, `delta_quantile_0_5`（`delta_m50`）, `delta_quantile_0_75`（`delta_m75`）を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
 # 5) NTP オフセットの手動計測（chronyc/ntpstat の動作確認）
 cd collector && node scripts/check-ntp.js
@@ -234,6 +234,8 @@ pnpm exec dt-preproc fit \
   --epsilon-t 0.05 \
   --clip-max 300 \
   --robust-z-clip 5 \
+  --window 10 \
+  --quantiles 0.25,0.5,0.75 \
   --out stats/preproc_stats.json \
   --meta stats/preproc.yaml
 
@@ -241,6 +243,8 @@ pnpm exec dt-preproc fit \
 pnpm exec dt-preproc transform \
   --in data/val/*.csv \
   --stats stats/preproc_stats.json \
+  --window 10 \
+  --quantiles 0.25,0.5,0.75 \
   --out data/val_feat/*.csv
 
 # 4) 監査レポートと単位不変性テストを含む前処理ジョブ
@@ -273,6 +277,8 @@ pnpm exec dt-preproc fit \
   --epsilon-t 0.05 \
   --clip-max 300 \
   --robust-z-clip 5 \
+  --window 10 \
+  --quantiles 0.25,0.5,0.75 \
   --out stats/preproc_stats.json \
   --meta stats/preproc.yaml
 
@@ -280,10 +286,14 @@ pnpm exec dt-preproc fit \
 pnpm exec dt-preproc transform \
   --in data/val/*.csv \
   --stats stats/preproc_stats.json \
+  --window 10 \
+  --quantiles 0.25,0.5,0.75 \
   --out data/val_feat/*.csv
+
+※ `transform` で `--window` / `--quantiles` を省略した場合は、`fit` 時に保存した設定が自動的に再利用されます。
 ```
 
-`fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパスに実行オプション・入力リスト・CSV パース統計を YAML/JSON 形式で出力します。`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z` など）を追記した CSV を生成します。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
+`fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパスに実行オプション・入力リスト・CSV パース統計を YAML/JSON 形式で出力します（`options.quantile_window` と `options.quantiles` も記録）。`transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z`, `delta_quantile_0_25` など）を追記した CSV を生成します。履歴が無い初期行は空欄（空文字）で埋め、NaN を出力しません。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
 
 #### `preproc.yaml` のフィールド
 
@@ -331,6 +341,7 @@ node -r ts-node/register/transpile-only scripts/simulate.ts \
 
 - TypeScript 製の Δt 特徴量生成 CLI を `packages/dt-preproc` に追加。`@logserver/csv-schema` による検証を通過した行のみを採用し、UID 単位で Δt を算出してクリッピング（`--clip-max`）、Δt ロバストスケーリング（median/MAD）、セッション内シーケンス番号・経過秒を付与します。
 - `--ignore-uids` で除外する UID を CSV 形式で指定可能。特徴統計（Δt 中央値、MAD、測定・unknown 比率、クリップ件数など）は `--stats` で JSON 保存できます。
+- `--window` で因果窓幅（既定 10）、`--quantiles` で R7 定義の分位点（既定 0.25, 0.5, 0.75）を制御し、出力 CSV には `delta_quantile_{prob}` と `delta_m{25,50,75}` の両列を追加します（履歴不足の行は空欄で埋め、NaN を生成しません）。
 - CLI 実行前に `pnpm --filter @logserver/dt-preproc build` で `dist/` を生成してください。
 
 ```bash
