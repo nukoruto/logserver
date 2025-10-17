@@ -59,7 +59,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  
-- Δt 計算: Δt_t = timestamp_t - timestamp_t-1（秒）  
+- Δt 計算: Δt_t = timestamp_t - timestamp_t-1（秒）、有効サンプル集合の最小値を min Δt_measured とすると測定許容値 ε は ε = max(1e-6, min(0.5 × min Δt_measured, 1e-2)) で固定
 - カテゴリ: 事前定義語彙でエンコード（埋め込み利用）  
 - 数値特徴: 標準化（学習データの平均・分散を保存して再利用）  
 - 入力テンソル: 時刻 t の特徴ベクトル = [event_embed, Δt, latency, status, …]  
@@ -114,12 +114,18 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
   Score_total(t) = Score(t) + Score_Δ(t)
 
 ### 11.2 閾値設計
-- 平均・分散方式:  
-  θ = μ_normal + k × σ_normal（k は 2 または 3 など）  
-- 分位点方式:  
-  θ = Q_p(Score_normal)（p は 0.99 など）  
-- セッション判定（多数決/積分）:  
+- 平均・分散方式:
+  θ = μ_normal + k × σ_normal（k は 2 または 3 など）
+- 分位点方式:
+  θ = Q_p(Score_normal)（p は 0.99 など）
+- SPOT 式（極値理論）:
+  τ = u + (β / ξ) × ((p_ref / q_star)^ξ - 1)、|ξ| → 0 の極限は τ = u + β × ln(p_ref / q_star)、p_ref = 基準尾確率、q_star = 監視対象の尾確率
+- 参照確率:
+  p_ref^*(y) = p_ref × exp(-y / β) （ξ → 0 極限）
+- セッション判定（多数決/積分）:
   A(session) = 1[ Σ_t 1( Score_total(t) > θ ) ≥ m ]
+- 比ヒステリシス:
+  アラーム保持指標 s_evt = Δt_current / τ_current とし、H > 1 のとき解除条件は s_evt ≤ 1 / H
 
 ## 12. 実験計画（ハイレベル）
 1. 正常/異常ログ生成 → スナップショット固定（seed、バージョン）  

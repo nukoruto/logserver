@@ -300,6 +300,7 @@ pnpm exec dt-preproc transform \
 - `algo_ver`: Δt 前処理アルゴリズムの仕様バージョン。
 - `epsilon`: 推定方式（`min_half` 固定）。
 - `epsilon_value`: Δt>0 の最小値の半分を 1e-6〜1e-2 にクリップした値（秒）。
+  - 式: ε = max(1e-6, min(0.5 × min Δt_measured, 1e-2))
 
 `transform` サブコマンドは `fit` で保存した統計とオプションを読み込み、入力 CSV をストリーミング処理して Δt 系特徴量列（`delta_seconds`, `delta_robust_z`, `delta_quantile_0_25` など）を追記した CSV を生成します。履歴が無い初期行は空欄（空文字）で埋め、NaN を出力しません。同じ統計ファイルを再利用する限り、出力 CSV/メタは完全に決定的です。
 
@@ -475,6 +476,8 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 
 - **分位点法**：`τ = Quantile_q(S_normal)`。未知ドメインでも堅牢。
 - **EVT-POT**：高分位のテールに一般化パレート分布（GPD）を当てはめ、確率保証のある `τ` を算出。
+- **SPOT**：`τ = u + (β / ξ) × ((p_ref / q_star)^ξ - 1)`、`|ξ| → 0` では `τ = u + β × ln(p_ref / q_star)` に漸近し、`p_ref^*(y) = p_ref × exp(-y / β)` の指数極限で監視尾確率を再評価。
+- **比ヒステリシス**：監視比 `s_evt = Δt_current / τ_current` が `1 / H` 以下になるまでアラームを保持（`H > 1`）。
 - **粒度**：イベント単位 / セッション単位（集約関数：max, mean, topk-mean など）。
 - **低サンプル時のバックオフ**：`await estimateThresholdsByUser(..., { min_events, backoff, concurrency, shard_dir })` で min_events (<50 など) 未満の UID を `user_agent_type` 単位→全体分布へ階層的にフォールバックし、`backoff_level` をメタに記録。
 - **スケールアウト**：`concurrency` は WorkerThreads 数（CPU コア数と同値が既定）、`shard_dir` はストリーミング集計用の一時ディレクトリを明示指定（未指定時は `os.tmpdir()` に自動作成・自動削除）。

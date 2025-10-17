@@ -246,6 +246,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   if (!globalFallback) {
     throw new Error('Global fallback quantile (*,*) missing in stats');
   }
+  const globalQuantile = globalFallback;
   function resolveQuantile(uid: string, opCategory: string): QuantileRuntimeEntry {
     const direct = quantileMap.get(`${uid}||${opCategory}`);
     if (direct) {
@@ -255,7 +256,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
     if (user) {
       return user;
     }
-    return globalFallback;
+    return globalQuantile;
   }
   const spotEntries = stats.spot;
   const spotMap = new Map<string, typeof spotEntries[number]>();
@@ -275,6 +276,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   if (!spotGlobal) {
     throw new Error('Global SPOT entry missing in stats');
   }
+  const globalSpot = spotGlobal;
   function resolveSpot(uid: string, opCategory: string) {
     const direct = spotMap.get(`${uid}||${opCategory}`);
     if (direct) {
@@ -284,7 +286,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
     if (user) {
       return user;
     }
-    return spotGlobal;
+    return globalSpot;
   }
   const hysteresisH = meta.H;
   if (!(Number.isFinite(hysteresisH) && hysteresisH > 1)) {
