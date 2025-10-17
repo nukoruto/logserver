@@ -1,1 +1,37 @@
-﻿data:\n  raw_dir: data/raw\n  interim_dir: data/interim\n  processed_dir: data/processed\n  sample_dir: data/sample\nsession:\n  idle_timeout: 1800\n  tz: UTC\nfeatures:\n  event_vocab: 512\n  embedding_dim: 64\n  dt_method: inter_arrival\n  latency_clip_ms: 30000\nmodel:\n  type: lstm_delta\n  hidden_size: 64\n  num_layers: 1\n  dropout: 0.1\ntraining:\n  batch_size: 64\n  max_epochs: 20\n  learning_rate: 0.001\n  seed: 42\n  validation_split: 0.1\n  early_stopping_patience: 3\nscoring:\n  window: session\n  smoothing: moving_average\n  smoothing_window: 5\nthreshold:\n  method: quantile\n  quantile: 0.995\nlogging:\n  level: INFO\n  dir: runs\n
+# Default training configuration
+# Aligns with README section 11 for reproducible experiments.
+data:
+  raw_dir: data/raw
+  interim_dir: data/interim
+  processed_dir: data/processed
+  sample_dir: data/sample
+session:
+  idle_timeout: 1800
+  tz: UTC
+features:
+  event_vocab: 512
+  embedding_dim: 64
+  dt_method: inter_arrival
+  latency_clip_ms: 30000
+model:
+  type: lstm_delta
+  hidden_size: 64
+  num_layers: 1
+  dropout: 0.1
+training:
+  batch_size: 64
+  max_epochs: 20
+  learning_rate: 0.001
+  seed: 42
+  validation_split: 0.1
+  early_stopping_patience: 3
+scoring:
+  window: session
+  smoothing: moving_average
+  smoothing_window: 5
+threshold:
+  method: quantile
+  quantile: 0.995
+logging:
+  level: INFO
+  dir: runs
