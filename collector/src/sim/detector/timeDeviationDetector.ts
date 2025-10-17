@@ -11,6 +11,9 @@ export interface TimeDeviationOptions extends Record<string, unknown> {
   thresholdSeconds?: number | string | null;
   lowerThresholdSeconds?: number | string | null;
   baselineSequence?: readonly SimulationEvent[];
+  voteWindow?: number | string | null;
+  voteThreshold?: number | string | null;
+  hysteresisHold?: number | string | null;
 }
 
 export interface TimeDeviationEvent extends SimulationEvent {
@@ -19,6 +22,7 @@ export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationThresholdLowerSeconds?: number;
   timeDeviationScore?: number;
   timeDeviationFlag?: boolean;
+  timeDeviationRawFlag?: boolean;
   tau_hi?: number;
   tau_lo?: number;
   s_Q?: number;
@@ -77,6 +81,11 @@ export interface TimeDeviationDiagnostics {
     exceedanceCount: number;
     sampleCount: number;
   } | null;
+  postProcessing?: {
+    voteWindow: number;
+    voteThreshold: number;
+    hysteresisHold: number;
+  };
 }
 
 export interface TimeDeviationDetectionResult {
@@ -85,6 +94,10 @@ export interface TimeDeviationDetectionResult {
   thresholdLowerSeconds: number;
   diagnostics: TimeDeviationDiagnostics;
 }
+
+export const DEFAULT_VOTE_WINDOW = 1;
+export const DEFAULT_VOTE_THRESHOLD = 1;
+export const DEFAULT_HYSTERESIS_HOLD = 0;
 
 const DEFAULT_OPTIONS: Required<
   Pick<
@@ -95,6 +108,9 @@ const DEFAULT_OPTIONS: Required<
     | 'quantileLower'
     | 'minSamples'
     | 'fallbackThresholdSeconds'
+    | 'voteWindow'
+    | 'voteThreshold'
+    | 'hysteresisHold'
     | 'fallbackLowerThresholdSeconds'
   >
 > = {
@@ -104,6 +120,9 @@ const DEFAULT_OPTIONS: Required<
   quantileLower: 0.01,
   minSamples: 5,
   fallbackThresholdSeconds: null,
+  voteWindow: DEFAULT_VOTE_WINDOW,
+  voteThreshold: DEFAULT_VOTE_THRESHOLD,
+  hysteresisHold: DEFAULT_HYSTERESIS_HOLD,
   fallbackLowerThresholdSeconds: null,
 };
 
@@ -241,6 +260,113 @@ const parseOptionalFiniteNumber = (value: unknown): number | null => {
   }
   const numeric = Number(value);
   return isFiniteNumber(numeric) ? numeric : null;
+};
+
+interface PostProcessingConfig {
+  voteWindow: number;
+  voteThreshold: number;
+  hysteresisHold: number;
+}
+
+const resolvePostProcessingConfig = (options: TimeDeviationOptions): PostProcessingConfig => {
+  const voteWindowCandidate = parseOptionalFiniteNumber(options.voteWindow);
+  const voteThresholdCandidate = parseOptionalFiniteNumber(options.voteThreshold);
+  const hysteresisCandidate = parseOptionalFiniteNumber(options.hysteresisHold);
+
+  let voteWindow = DEFAULT_VOTE_WINDOW;
+  if (typeof voteWindowCandidate === 'number' && Number.isFinite(voteWindowCandidate)) {
+    const truncated = Math.trunc(voteWindowCandidate);
+    if (truncated >= 1) {
+      voteWindow = truncated;
+    }
+  } else if (typeof options.voteWindow === 'number' && Number.isFinite(options.voteWindow)) {
+    const truncated = Math.trunc(options.voteWindow);
+    if (truncated >= 1) {
+      voteWindow = truncated;
+    }
+  }
+
+  let voteThreshold = DEFAULT_VOTE_THRESHOLD;
+  if (typeof voteThresholdCandidate === 'number' && Number.isFinite(voteThresholdCandidate)) {
+    const truncated = Math.trunc(voteThresholdCandidate);
+    if (truncated >= 1) {
+      voteThreshold = truncated;
+    }
+  } else if (typeof options.voteThreshold === 'number' && Number.isFinite(options.voteThreshold)) {
+    const truncated = Math.trunc(options.voteThreshold);
+    if (truncated >= 1) {
+      voteThreshold = truncated;
+    }
+  }
+
+  voteThreshold = Math.min(Math.max(voteThreshold, 1), voteWindow);
+
+  let hysteresisHold = DEFAULT_HYSTERESIS_HOLD;
+  if (typeof hysteresisCandidate === 'number' && Number.isFinite(hysteresisCandidate)) {
+    const truncated = Math.trunc(hysteresisCandidate);
+    if (truncated >= 0) {
+      hysteresisHold = truncated;
+    }
+  } else if (typeof options.hysteresisHold === 'number' && Number.isFinite(options.hysteresisHold)) {
+    const truncated = Math.trunc(options.hysteresisHold);
+    if (truncated >= 0) {
+      hysteresisHold = truncated;
+    }
+  }
+
+  return {
+    voteWindow,
+    voteThreshold,
+    hysteresisHold,
+  };
+};
+
+const applyVotingAndHysteresis = (
+  events: TimeDeviationEvent[],
+  options: TimeDeviationOptions,
+): PostProcessingConfig => {
+  const config = resolvePostProcessingConfig(options);
+  if (!Array.isArray(events) || events.length === 0) {
+    return config;
+  }
+
+  const buffer: boolean[] = [];
+  let voteCount = 0;
+  let holdRemaining = 0;
+
+  for (let index = 0; index < events.length; index += 1) {
+    const event = events[index];
+    const raw = event.timeDeviationRawFlag ?? (event.timeDeviationFlag ?? false);
+    event.timeDeviationRawFlag = raw;
+
+    buffer.push(raw);
+    if (raw) {
+      voteCount += 1;
+    }
+    if (buffer.length > config.voteWindow) {
+      const removed = buffer.shift();
+      if (removed) {
+        voteCount -= 1;
+      }
+    }
+
+    const triggered = voteCount >= config.voteThreshold && buffer.length > 0;
+
+    if (triggered) {
+      event.timeDeviationFlag = true;
+      holdRemaining = config.hysteresisHold;
+      continue;
+    }
+
+    if (holdRemaining > 0) {
+      event.timeDeviationFlag = true;
+      holdRemaining -= 1;
+    } else {
+      event.timeDeviationFlag = false;
+    }
+  }
+
+  return config;
 };
 
 const resolveQuantileValue = (value: unknown, fallback: number): number => {
@@ -959,6 +1085,7 @@ export const detectTimeDeviation = (
       timeDeviationThresholdLowerSeconds: tauLo,
       timeDeviationScore: score,
       timeDeviationFlag: upperBreach || lowerBreach,
+      timeDeviationRawFlag: upperBreach || lowerBreach,
       tau_hi: tauHi,
       tau_lo: tauLo,
       s_Q: sQ,
@@ -969,6 +1096,13 @@ export const detectTimeDeviation = (
       timeDeviationCalibrationTauTSeconds: calibration?.tauTSeconds ?? null,
     });
   }
+
+  const postProcessing = applyVotingAndHysteresis(decorated, mergedOptions);
+  diagnostics.postProcessing = {
+    voteWindow: postProcessing.voteWindow,
+    voteThreshold: postProcessing.voteThreshold,
+    hysteresisHold: postProcessing.hysteresisHold,
+  };
 
   return {
     events: decorated,
