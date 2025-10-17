@@ -10,5 +10,7 @@ export function computeQuantiles(sortedValues: readonly number[], levels: readon
 }
 
 export function ensureSorted(values: readonly number[]): number[] {
-  return [...values].sort((a, b) => a - b);
+  const copy = values.slice();
+  copy.sort((a, b) => a - b);
+  return copy;
 }

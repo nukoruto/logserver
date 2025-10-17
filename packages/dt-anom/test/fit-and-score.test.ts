@@ -44,13 +44,12 @@ describe('dt-anom pipeline', () => {
       spotQuantileCandidates: [0.9, 0.95, 0.99],
       minTailCount: 2,
       flagTailProbability: 1e-3,
-      algoVer: '1.2.0',
       alpha: 0.6,
       q: 0.995,
       calibWindow: 500,
       declusterR: 3,
       kofn: [1, 3],
-      hysteresisGamma: 1.6,
+      H: 1.3,
       reestimateEvery: 4,
       minExceed: 2,
       poolStrategy: 'per-user',
@@ -72,7 +71,9 @@ describe('dt-anom pipeline', () => {
     expect(globalSpot?.estimator).toBeDefined();
     expect(Array.isArray(globalSpot?.warnings)).toBe(true);
     expect(meta.input_files).toEqual([inputPath]);
-    expect(meta.algo_ver).toBe('1.2.0');
+    expect(meta.algo_ver).toBe('5.0-spec');
+    expect(stats.algo_ver).toBe('5.0-spec');
+    expect(meta.H).toBeCloseTo(1.3, 10);
     expect(meta.seeds).toEqual([42]);
     expect(meta.grouping.user).toBe('uid');
     expect(meta.spot.domain).toBe('log_dt');
@@ -116,34 +117,32 @@ describe('dt-anom pipeline', () => {
     expect(lines[0]).toContain('tau_hi');
     expect(lines[0]).toContain('alarm_reason');
     expect(lines[0]).toContain('spot_theta_ext');
-    expect(lines[0]).toContain('spot_tau_down');
     expect(lines[0]).toContain('spot_alarm_kofn');
     expect(lines[0]).toContain('p_upper_quantile');
     expect(lines[0]).toContain('p_upper_spot');
-    expect(lines[0]).toContain('p_two_sided');
-    expect(lines[0]).toContain('p_alarm');
+    expect(lines[0]).toContain('p_lower');
+    expect(lines[0]).toContain('s_evt');
+    expect(lines[0]).toContain('neglog10_p');
     expect(lines.length).toBe(9);
     const header = lines[0].split(',');
     const alarmIndex = header.indexOf('alarm');
     const tauHiIndex = header.indexOf('tau_hi');
     const tauLoIndex = header.indexOf('tau_lo');
     const tauDynamicIndex = header.indexOf('spot_tau_t');
-    const tauDownIndex = header.indexOf('spot_tau_down');
     const spotAlarmIndex = header.indexOf('spot_alarm_kofn');
     const spotEstimatorIndex = header.indexOf('spot_estimator');
     const spotWarningsIndex = header.indexOf('spot_warnings');
-    const pTwoSidedIndex = header.indexOf('p_two_sided');
-    const pAlarmIndex = header.indexOf('p_alarm');
     const pUpperSpotIndex = header.indexOf('p_upper_spot');
+    const sEvtIndex = header.indexOf('s_evt');
+    const neglogIndex = header.indexOf('neglog10_p');
     expect(alarmIndex).toBeGreaterThanOrEqual(0);
     expect(tauDynamicIndex).toBeGreaterThanOrEqual(0);
-    expect(tauDownIndex).toBeGreaterThanOrEqual(0);
     expect(spotAlarmIndex).toBeGreaterThanOrEqual(0);
     expect(spotEstimatorIndex).toBeGreaterThanOrEqual(0);
     expect(spotWarningsIndex).toBeGreaterThanOrEqual(0);
-    expect(pTwoSidedIndex).toBeGreaterThanOrEqual(0);
-    expect(pAlarmIndex).toBeGreaterThanOrEqual(0);
     expect(pUpperSpotIndex).toBeGreaterThanOrEqual(0);
+    expect(sEvtIndex).toBeGreaterThanOrEqual(0);
+    expect(neglogIndex).toBeGreaterThanOrEqual(0);
     const dataRows = lines.slice(1).map((line) => line.split(','));
     const uidIndex = header.indexOf('uid');
     const categoryIndex = header.indexOf('op_category');
@@ -172,29 +171,20 @@ describe('dt-anom pipeline', () => {
       const tauLo = Number(flaggedRow[tauLoIndex]);
       const dtValue = Number(flaggedRow[header.indexOf('dt_sec')]);
       const reason = flaggedRow[header.indexOf('alarm_reason')];
+      const sEvtValue = Number(flaggedRow[sEvtIndex]);
+      const neglogValue = Number(flaggedRow[neglogIndex]);
+      const pUpperSpotValue = Number(flaggedRow[pUpperSpotIndex]);
       expect(Number.isFinite(tauHi)).toBe(true);
       expect(Number.isFinite(tauLo)).toBe(true);
-      const pTwoSided = Number(flaggedRow[pTwoSidedIndex]);
-      const pAlarmValue = Number(flaggedRow[pAlarmIndex]);
-      const allocationMatch = meta.budget.allocations.find(
-        (entry) => entry.uid === flaggedRow[uidIndex] && entry.op_category === flaggedRow[categoryIndex]
-      );
+      expect(sEvtValue).toBeGreaterThanOrEqual(1);
+      expect(neglogValue).toBeGreaterThan(0);
+      expect(flaggedRow[spotAlarmIndex]).toBe('1');
       expect(flaggedRow[spotEstimatorIndex].length).toBeGreaterThan(0);
-      if (allocationMatch) {
-        expect(pAlarmValue).toBeCloseTo(allocationMatch.q_alloc, 8);
-      }
-      if (reason === 'quantile_upper' || reason === 'both') {
-        expect(pTwoSided).toBeLessThan(pAlarmValue);
-        expect(dtValue > tauHi).toBe(true);
-      } else if (reason === 'quantile_lower') {
-        expect(pTwoSided).toBeLessThan(pAlarmValue);
-        expect(dtValue < tauLo).toBe(true);
-      } else if (reason === 'spot_upper') {
-        expect(flaggedRow[spotAlarmIndex]).toBe('1');
-        const tauDown = Number(flaggedRow[tauDownIndex]);
-        expect(tauDown).toBeLessThanOrEqual(Number(flaggedRow[tauDynamicIndex]));
-        const pUpperSpot = Number(flaggedRow[pUpperSpotIndex]);
-        expect(pUpperSpot).toBeGreaterThan(0);
+      expect(pUpperSpotValue).toBeGreaterThan(0);
+      if (reason === 'both') {
+        expect(dtValue > tauHi || dtValue < tauLo).toBe(true);
+      } else {
+        expect(reason).toBe('spot_upper');
       }
     }
     const auditContent = await readFile(auditPath, 'utf8');
@@ -204,16 +194,15 @@ describe('dt-anom pipeline', () => {
     const rowAudit = parsedAudit.find((entry) => entry.metadata?.spot_domain !== undefined);
     expect(rowAudit).toBeTruthy();
     if (rowAudit) {
-      expect(rowAudit.metadata).toHaveProperty('p_two_sided');
       expect(rowAudit.metadata).toHaveProperty('p_upper_spot');
       expect(rowAudit.metadata).toHaveProperty('spot_estimator');
       expect(rowAudit.metadata).toHaveProperty('spot_warnings');
+      expect(rowAudit.metadata).toHaveProperty('s_evt');
     }
     const reestimateEvent = parsedAudit.find((entry) => entry.metadata?.event === 'reestimate');
     expect(reestimateEvent).toBeTruthy();
     if (reestimateEvent) {
       expect(reestimateEvent.metadata).toHaveProperty('p_upper_spot');
-      expect(reestimateEvent.metadata).toHaveProperty('p_two_sided');
       expect(reestimateEvent.metadata).toHaveProperty('diagnostics');
     }
   });

@@ -1,7 +1,6 @@
 import { createReadStream, createWriteStream } from 'node:fs';
 import { parse, format } from 'fast-csv';
 import { readAnomalyStats, readAnomalyMeta } from './io.js';
-import { computeTailProbability, negativeLog10 } from './tailprob.js';
 import { SpotAuditLogger } from './audit.js';
 import { toFiniteNumber } from './utils.js';
 import {
@@ -9,7 +8,10 @@ import {
   type SpotCalibrateResult,
   type SpotSample,
   type SpotCalibrationDiagnostics,
-  type SpotEstimatorType
+  type SpotEstimatorType,
+  spotThreshold,
+  pValueRef,
+  gpSurvival
 } from './spot.js';
 import type { QuantileGroupEntry, SpotGroupEntry } from './schema.js';
 
@@ -82,7 +84,6 @@ export interface ScoreOptions {
   readonly statsPath: string;
   readonly metaPath: string;
   readonly auditPath: string;
-  readonly overrideFlagTailProbability?: number;
 }
 
 export interface ScoreSummary {
@@ -117,30 +118,20 @@ interface SpotRuntimeState {
   exceedSamples: SpotSample[];
 }
 
-function computeStreamingTau(params: SpotRuntimeParams, lastTau: number, xiEps: number): number {
-  const ratioNumerator = Math.max(params.pRef, 1e-12);
-  const ratioDenominator = Math.max(params.qStar, 1e-12);
-  const ratio = ratioNumerator / ratioDenominator;
-  let tauCandidate: number;
-  if (Math.abs(params.xi) <= xiEps) {
-    tauCandidate = params.u + params.beta * Math.log(Math.max(ratio, 1e-12));
-  } else {
-    const powered = Math.pow(Math.max(ratio, 1e-12), params.xi);
-    tauCandidate = params.u + (params.beta / params.xi) * (powered - 1);
-  }
-  if (!Number.isFinite(tauCandidate)) {
-    tauCandidate = params.u;
-  }
+function computeStreamingTau(params: SpotRuntimeParams, lastTau: number): number {
+  const tauCandidate = spotThreshold(params.u, params.xi, params.beta, params.pRef, params.qStar);
+  let nextTau = Number.isFinite(tauCandidate) ? tauCandidate : params.u;
+  nextTau = Math.max(nextTau, params.u);
   if (params.xi < 0) {
     const upperBound = params.u - params.beta / params.xi;
-    const clippedCandidate = Math.min(tauCandidate, upperBound);
+    const clippedCandidate = Math.min(nextTau, upperBound);
     const clippedLast = Math.min(lastTau, upperBound);
     return Math.max(clippedCandidate, clippedLast);
   }
-  return Math.max(tauCandidate, lastTau);
+  return Math.max(nextTau, lastTau);
 }
 
-function createRuntimeState(entry: SpotGroupEntry, xiEps: number): SpotRuntimeState {
+function createRuntimeState(entry: SpotGroupEntry): SpotRuntimeState {
   const params: SpotRuntimeParams = {
     domain: entry.domain,
     u: entry.u,
@@ -153,7 +144,7 @@ function createRuntimeState(entry: SpotGroupEntry, xiEps: number): SpotRuntimeSt
     calibrationSize: entry.calib_N,
     meanResidual: 0
   };
-  const initialTau = computeStreamingTau(params, params.u, xiEps);
+  const initialTau = computeStreamingTau(params, params.u);
   const estimator = entry.estimator ?? 'mle';
   const warnings = entry.warnings ? [...entry.warnings] : [];
   const diagnostics: SpotCalibrationDiagnostics = {
@@ -229,8 +220,6 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   const stats = await readAnomalyStats(options.statsPath);
   const meta = await readAnomalyMeta(options.metaPath);
   const baseColumn = stats.base_column;
-  const globalFlagTailProbability = meta.scoring.flag_tail_probability;
-  const overrideFlagTailProbability = options.overrideFlagTailProbability;
   interface QuantileRuntimeEntry {
     readonly entry: QuantileGroupEntry;
     readonly cdfPoints: EmpiricalCdfPoint[];
@@ -297,41 +286,9 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
     }
     return spotGlobal;
   }
-  const budgetSpec = meta.budget;
-  const budgetDirect = new Map<string, number>();
-  const budgetUser = new Map<string, number>();
-  let budgetGlobal: number | undefined;
-  if (budgetSpec) {
-    for (const allocation of budgetSpec.allocations) {
-      const key = `${allocation.uid}||${allocation.op_category}`;
-      if (allocation.uid === '__global__' && allocation.op_category === '__global__') {
-        budgetGlobal = allocation.q_alloc;
-        continue;
-      }
-      if (allocation.op_category === '__all__') {
-        budgetUser.set(allocation.uid, allocation.q_alloc);
-        continue;
-      }
-      budgetDirect.set(key, allocation.q_alloc);
-    }
-  }
-  function resolveBudget(uid: string, opCategory: string): number | undefined {
-    if (!budgetSpec) {
-      return undefined;
-    }
-    const direct = budgetDirect.get(`${uid}||${opCategory}`);
-    if (direct !== undefined) {
-      return direct;
-    }
-    const userValue = budgetUser.get(uid);
-    if (userValue !== undefined) {
-      return userValue;
-    }
-    return budgetGlobal;
-  }
-  const hysteresisGamma = meta.hysteresis_gamma;
-  if (!(Number.isFinite(hysteresisGamma) && hysteresisGamma > 1)) {
-    throw new Error('hysteresis_gamma must be greater than 1');
+  const hysteresisH = meta.H;
+  if (!(Number.isFinite(hysteresisH) && hysteresisH > 1)) {
+    throw new Error('H must be greater than 1');
   }
   const [kVotes, windowSize] = meta.kofn;
   if (!(windowSize >= 1 && kVotes >= 1 && kVotes <= windowSize)) {
@@ -365,26 +322,31 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
           throw new Error(`Missing uid/op_category at row ${processed}`);
         }
         const value = toFiniteNumber(row[baseColumn], baseColumn);
-        const dtSec = toFiniteNumber(row.dt_sec, 'dt_sec');
         const quantile = resolveQuantile(uid, opCategory);
         const tauHi = quantile.entry.tau_hi;
         const tauLo = quantile.entry.tau_lo;
         const cdfValue = evaluateEmpiricalCdf(quantile.cdfPoints, value);
         const pLowerQuantile = clampProbability(cdfValue);
         const pUpperQuantile = clampProbability(1 - cdfValue);
+        const pLowerCombined = clampProbability(pLowerQuantile);
         const spotEntry = resolveSpot(uid, opCategory);
+        if (!spotEntry) {
+          throw new Error(`Missing SPOT parameters for ${uid}/${opCategory}`);
+        }
         const stateKey = `${spotEntry.uid}||${spotEntry.op_category}`;
         let state = spotStates.get(stateKey);
         if (!state) {
-          state = createRuntimeState(spotEntry, xiEps);
+          state = createRuntimeState(spotEntry);
           spotStates.set(stateKey, state);
         }
         const domainColumn = state.params.domain;
         const domainValue = toFiniteNumber(row[domainColumn], domainColumn);
-        const tau = computeStreamingTau(state.params, state.lastTau, xiEps);
-        state.lastTau = tau;
-        const tauDown = tau / hysteresisGamma;
-        const exceed = domainValue >= tau;
+        const tauDomain = computeStreamingTau(state.params, state.lastTau);
+        state.lastTau = tauDomain;
+        const tauDelta = Math.max(Math.exp(tauDomain), 1e-12);
+        const delta = Math.max(value, 0);
+        const sEvt = delta / tauDelta;
+        const exceed = sEvt > 1;
         state.window.push(exceed ? 1 : 0);
         state.windowSum += exceed ? 1 : 0;
         if (state.window.length > windowSize) {
@@ -394,7 +356,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
           }
         }
         if (state.alarmLatched) {
-          if (domainValue <= tauDown) {
+          if (sEvt <= 1 / hysteresisH) {
             state.alarmLatched = false;
             state.window = [];
             state.windowSum = 0;
@@ -403,33 +365,12 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
           state.alarmLatched = true;
         }
         const spotAlarm = state.alarmLatched;
-        const tail = computeTailProbability(domainValue, {
-          threshold: state.params.u,
-          xi: state.params.xi,
-          beta: state.params.beta
-        });
-        const spotSurvival = tail.survival;
-        const pUpperSpot = clampProbability(state.params.qStar * spotSurvival);
-        const pUpperCombined = clampProbability(Math.min(pUpperQuantile, pUpperSpot));
-        const pLowerCombined = clampProbability(pLowerQuantile);
-        const pTwoSided = clampProbability(2 * Math.min(pUpperCombined, pLowerCombined));
-        let pAlarm = overrideFlagTailProbability ?? resolveBudget(uid, opCategory) ?? globalFlagTailProbability;
-        if (!Number.isFinite(pAlarm) || pAlarm <= 0) {
-          pAlarm = globalFlagTailProbability;
-        }
-        const probabilityAlarm = pTwoSided < pAlarm;
-        const spotProbBreach = pUpperSpot < pAlarm;
-        const score = negativeLog10(pUpperCombined);
+        const excess = Math.max(domainValue - state.params.u, 0);
+        const spotSurvival = gpSurvival(excess, state.params.xi, state.params.beta);
+        const pUpperSpot = clampProbability(pValueRef(excess, state.params.xi, state.params.beta, state.params.pRef));
+        const score = -Math.log10(Math.max(pUpperSpot, 1e-300));
         const spotTauClassic = state.params.beta / Math.max(1 - state.params.xi, 1e-6);
         const spotThetaClassic = state.params.u + spotTauClassic;
-        let sEvt: number;
-        if (state.params.domain === 'log_dt') {
-          sEvt = Math.exp(domainValue - tau);
-        } else {
-          const numerator = Math.max(dtSec, 1e-9);
-          const denom = Math.max(Math.exp(tau), 1e-9);
-          sEvt = numerator / denom;
-        }
         const spotPref = domainValue >= state.params.u ? 'upper' : 'lower';
         const quantileUpperBreach = value > tauHi;
         const quantileLowerBreach = value < tauLo;
@@ -441,13 +382,10 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
         } else if (quantileLowerBreach) {
           alarmReason = 'quantile_lower';
         }
-        if (spotAlarm || spotProbBreach) {
-          alarmReason = alarmReason === '' || alarmReason === 'spot_upper' ? 'spot_upper' : 'both';
+        if (spotAlarm) {
+          alarmReason = alarmReason === '' ? 'spot_upper' : 'both';
         }
-        if (alarmReason === '' && probabilityAlarm) {
-          alarmReason = spotProbBreach ? 'spot_upper' : 'quantile_upper';
-        }
-        const alarmTriggered = probabilityAlarm || spotAlarm || spotProbBreach;
+        const alarmTriggered = spotAlarm;
         if (alarmTriggered) {
           flagged += 1;
         }
@@ -474,17 +412,13 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
         next.spot_beta = state.params.beta.toFixed(6);
         next.spot_pref = spotPref;
         next.spot_theta = spotThetaClassic.toFixed(6);
-        next.spot_tau_t = tau.toFixed(6);
-        next.spot_tau_down = tauDown.toFixed(6);
+        next.spot_tau_t = tauDelta.toFixed(6);
         next.spot_tau_classic = spotTauClassic.toFixed(6);
-        next.s_EVT = sEvt.toFixed(6);
+        next.s_evt = sEvt.toFixed(6);
         next.p_upper_quantile = pUpperQuantile.toExponential(6);
         next.p_upper_spot = pUpperSpot.toExponential(6);
-        next.p_upper = pUpperCombined.toExponential(6);
         next.p_lower = pLowerCombined.toExponential(6);
-        next.p_two_sided = pTwoSided.toExponential(6);
-        next.neglog10_p = negativeLog10(pTwoSided).toFixed(6);
-        next.p_alarm = pAlarm.toExponential(6);
+        next.neglog10_p = score.toFixed(6);
         next.spot_theta_ext = state.params.theta.toFixed(6);
         next.spot_p_ref = state.params.pRef.toExponential(6);
         next.spot_q_star = state.params.qStar.toExponential(6);
@@ -498,7 +432,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
           row: processed,
           value,
           threshold: state.params.u,
-          tailProbability: pUpperCombined,
+          tailProbability: pUpperSpot,
           score,
           flagged: alarmTriggered,
           metadata: {
@@ -508,20 +442,18 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
             tau_hi: tauHi,
             tau_lo: tauLo,
             spot_domain: state.params.domain,
-            spot_tau: tau,
-            spot_tau_down: tauDown,
+            spot_tau_domain: tauDomain,
+            spot_tau: tauDelta,
             spot_alarm_kofn: spotAlarm,
             extremal_index: state.params.theta,
             k_of_n: [kVotes, windowSize],
             alarm_reason: alarmReason,
             p_upper_quantile: pUpperQuantile,
             p_upper_spot: pUpperSpot,
-            p_upper: pUpperCombined,
             p_lower: pLowerCombined,
-            p_two_sided: pTwoSided,
-            p_alarm: pAlarm,
             spot_survival: spotSurvival,
-            flag_tail_probability: pAlarm,
+            s_evt: sEvt,
+            H: hysteresisH,
             spot_estimator: state.estimator,
             spot_warnings: state.warnings
           }
@@ -569,7 +501,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
               };
             } else {
               applyCalibrateResult(state, recalibrated);
-              const updatedTau = computeStreamingTau(state.params, state.lastTau, xiEps);
+              const updatedTau = computeStreamingTau(state.params, state.lastTau);
               state.lastTau = updatedTau;
               state.window = [];
               state.windowSum = 0;
@@ -603,7 +535,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
               row: processed,
               value,
               threshold: state.params.u,
-              tailProbability: pUpperCombined,
+              tailProbability: pUpperSpot,
               score,
               flagged: alarmTriggered,
               metadata: {
@@ -633,8 +565,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
                 },
                 spot_survival: spotSurvival,
                 p_upper_spot: pUpperSpot,
-                p_two_sided: pTwoSided,
-                flag_tail_probability: pAlarm
+                s_evt: sEvt
               }
             });
           }
@@ -643,7 +574,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
             row: processed,
             value,
             threshold: state.params.u,
-            tailProbability: pUpperCombined,
+            tailProbability: pUpperSpot,
             score,
             flagged: alarmTriggered,
             metadata: {
@@ -653,8 +584,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
               samples_used: reestimateFailure.sampleCount,
               estimator: reestimateFailure.diagnostics.estimator,
               warnings: reestimateFailure.diagnostics.warnings,
-              error: reestimateFailure.diagnostics.error,
-              flag_tail_probability: pAlarm
+              error: reestimateFailure.diagnostics.error
             }
           });
         }

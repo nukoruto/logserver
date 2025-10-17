@@ -18,6 +18,8 @@ import {
 import { nowIso, parseQuantileLevels, computeHashHex } from './utils.js';
 import { createRunningMoments, finalizeStd, updateRunningMoments } from './utils.js';
 
+const ALGO_VERSION = '5.0-spec';
+
 type BudgetWeightMode = 'count' | 'uniform';
 
 export interface FitOptions {
@@ -38,13 +40,12 @@ export interface FitOptions {
   readonly spotQuantileCandidates: readonly number[];
   readonly minTailCount: number;
   readonly flagTailProbability: number;
-  readonly algoVer: string;
   readonly alpha: number;
   readonly q: number;
   readonly calibWindow: number;
   readonly declusterR: number;
   readonly kofn: readonly [number, number];
-  readonly hysteresisGamma: number;
+  readonly H: number;
   readonly reestimateEvery: number;
   readonly minExceed: number;
   readonly poolStrategy: string;
@@ -118,8 +119,8 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
   if (options.spotDomain !== 'log_dt' && options.spotDomain !== 'z_deseas') {
     throw new Error('spotDomain must be log_dt or z_deseas');
   }
-  if (!Number.isFinite(options.hysteresisGamma) || options.hysteresisGamma <= 1) {
-    throw new Error('hysteresisGamma must be greater than 1');
+  if (!Number.isFinite(options.H) || options.H <= 1) {
+    throw new Error('H must be greater than 1');
   }
   if (options.spotCalibStart || options.spotCalibEnd) {
     if (!options.spotCalibStart || !options.spotCalibEnd) {
@@ -480,6 +481,7 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
   const stats: AnomalyStats = anomalyStatsSchema.parse({
     version: 1,
     generated_at: nowIso(),
+    algo_ver: ALGO_VERSION,
     base_column: options.baseColumn,
     quantile_levels: quantileLevels,
     global_quantiles: globalQuantiles,
@@ -518,13 +520,13 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
       weight_sum: weightSum,
       allocations: budgetAllocations
     },
-    algo_ver: options.algoVer,
+    algo_ver: ALGO_VERSION,
     alpha: options.alpha,
     q: options.q,
     calib_window: options.calibWindow,
     decluster_r: options.declusterR,
     kofn: [options.kofn[0], options.kofn[1]],
-    hysteresis_gamma: options.hysteresisGamma,
+    H: options.H,
     reestimate_every: options.reestimateEvery,
     min_exceed: options.minExceed,
     pool_strategy: options.poolStrategy,
