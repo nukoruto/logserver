@@ -24,8 +24,13 @@ describe('chooseEpsilonMin', () => {
     expect(epsilon).toBeCloseTo(0.006, 12);
   });
 
-  it('falls back to default when no valid deltas exist', () => {
+  it('returns the lower bound when the halved minimum hits it exactly', () => {
+    const epsilon = chooseEpsilonMin([2e-6, 1, 5]);
+    expect(epsilon).toBeCloseTo(1e-6, 12);
+  });
+
+  it('falls back to the specification lower limit when no valid deltas exist', () => {
     const epsilon = chooseEpsilonMin([Number.NaN, Number.POSITIVE_INFINITY, -1, 0]);
-    expect(epsilon).toBeCloseTo(1e-3, 12);
+    expect(epsilon).toBeCloseTo(1e-6, 12);
   });
 });
