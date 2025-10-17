@@ -302,4 +302,53 @@ describe('detectTimeDeviation', () => {
     expect(flagged?.timeDeviationCalibrationXi ?? 0).toBeCloseTo(calibration?.xi ?? 0, 6);
     expect(flagged?.timeDeviationCalibrationBeta ?? 0).toBeCloseTo(calibration?.beta ?? 0, 6);
   });
+
+  it('K-of-N投票で連続バーストのみ最終フラグを立て、rawフラグとの差分を保持する', () => {
+    const baseline = buildSequence([1, 1, 1, 1, 1, 1, 1]);
+    const target = buildSequence([1, 5, 5, 1, 5, 1, 5]);
+
+    const result = detectTimeDeviation(target, {
+      baselineSequence: baseline,
+      quantile: 0.9,
+      voteWindow: 4,
+      voteThreshold: 3,
+    });
+
+    const deltas = result.events.map((event) => event.timeDeviationObservedDeltaSeconds ?? 0).slice(1);
+    const rawFlags = result.events.map((event) => event.timeDeviationRawFlag === true).slice(1);
+    const finalFlags = result.events.map((event) => event.timeDeviationFlag === true).slice(1);
+
+    expect(deltas).toEqual([1, 5, 5, 1, 5, 1, 5]);
+    expect(rawFlags).toEqual([false, true, true, false, true, false, true]);
+    expect(finalFlags).toEqual([false, false, false, false, true, false, false]);
+    expect(result.diagnostics.postProcessing).toEqual({
+      voteWindow: 4,
+      voteThreshold: 3,
+      hysteresisHold: 0,
+    });
+  });
+
+  it('ヒステリシス保持で検知後に指定数のイベントまでフラグを維持する', () => {
+    const baseline = buildSequence([1, 1, 1, 1, 1, 1]);
+    const target = buildSequence([1, 5, 5, 1, 1, 1]);
+
+    const result = detectTimeDeviation(target, {
+      baselineSequence: baseline,
+      quantile: 0.9,
+      voteWindow: 2,
+      voteThreshold: 2,
+      hysteresisHold: 2,
+    });
+
+    const rawFlags = result.events.map((event) => event.timeDeviationRawFlag === true).slice(1);
+    const finalFlags = result.events.map((event) => event.timeDeviationFlag === true).slice(1);
+
+    expect(rawFlags).toEqual([false, true, true, false, false, false]);
+    expect(finalFlags).toEqual([false, false, true, true, true, false]);
+    expect(result.diagnostics.postProcessing).toEqual({
+      voteWindow: 2,
+      voteThreshold: 2,
+      hysteresisHold: 2,
+    });
+  });
 });

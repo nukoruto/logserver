@@ -11,6 +11,9 @@ export interface TimeDeviationOptions extends Record<string, unknown> {
   thresholdSeconds?: number | string | null;
   lowerThresholdSeconds?: number | string | null;
   baselineSequence?: readonly SimulationEvent[];
+  voteWindow?: number | string | null;
+  voteThreshold?: number | string | null;
+  hysteresisHold?: number | string | null;
 }
 
 export interface TimeDeviationEvent extends SimulationEvent {
@@ -19,6 +22,7 @@ export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationThresholdLowerSeconds?: number;
   timeDeviationScore?: number;
   timeDeviationFlag?: boolean;
+  timeDeviationRawFlag?: boolean;
   tau_hi?: number;
   tau_lo?: number;
   s_Q?: number;
@@ -77,6 +81,11 @@ export interface TimeDeviationDiagnostics {
     exceedanceCount: number;
     sampleCount: number;
   } | null;
+  postProcessing?: {
+    voteWindow: number;
+    voteThreshold: number;
+    hysteresisHold: number;
+  };
 }
 
 export interface TimeDeviationDetectionResult {
@@ -93,6 +102,10 @@ export function detectTimeDeviation(
 
 export function extractDeltaSeries(sequence: readonly SimulationEvent[]): number[];
 export function resolveThreshold(values: readonly number[], options: TimeDeviationOptions): number;
+
+export const DEFAULT_VOTE_WINDOW: number;
+export const DEFAULT_VOTE_THRESHOLD: number;
+export const DEFAULT_HYSTERESIS_HOLD: number;
 
 declare const timeDeviationDetector: {
   detectTimeDeviation: typeof detectTimeDeviation;

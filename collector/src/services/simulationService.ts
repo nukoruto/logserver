@@ -17,6 +17,11 @@ import type {
   TimeDeviationDiagnostics,
   TimeDeviationDetectionResult,
 } from '../sim/detector/timeDeviationDetector';
+import {
+  DEFAULT_VOTE_WINDOW,
+  DEFAULT_VOTE_THRESHOLD,
+  DEFAULT_HYSTERESIS_HOLD,
+} from '../sim/detector/timeDeviationDetector';
 
 type StrategyName = 'protocolViolation' | 'timeDeviation' | 'authenticationBypass';
 
@@ -176,6 +181,11 @@ export interface SimulationParameters extends Record<string, unknown> {
     threshold_seconds: number | null;
     diagnostics?: TimeDeviationDiagnostics | null;
     calibration?: TimeDeviationDiagnostics['spot'] | null;
+    post_process: {
+      vote_window: number;
+      vote_threshold: number;
+      hysteresis_hold: number;
+    };
   };
   protocol_validator: {
     enabled: boolean;
@@ -221,6 +231,9 @@ interface DefaultParameterInput {
   timeDeviationQuantile: number | null;
   timeDeviationMinSamples: number;
   timeDeviationFallback: number | null;
+  timeDeviationVoteWindow: number;
+  timeDeviationVoteThreshold: number;
+  timeDeviationHysteresisHold: number;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -272,6 +285,20 @@ const parseNonNegativeNumber = (candidate: unknown, fallback: number | null): nu
   const value = Number(candidate);
   if (Number.isFinite(value) && value >= 0) {
     return value;
+  }
+  return fallback;
+};
+
+const parseIntegerWithMin = (candidate: unknown, fallback: number, minimum: number): number => {
+  if (candidate === null || candidate === undefined || candidate === '') {
+    return fallback;
+  }
+  const value = Number(candidate);
+  if (Number.isFinite(value)) {
+    const truncated = Math.trunc(value);
+    if (truncated >= minimum) {
+      return truncated;
+    }
   }
   return fallback;
 };
@@ -492,6 +519,11 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
     fallback_threshold_seconds: input.timeDeviationFallback,
     threshold_seconds: null,
     calibration: null,
+    post_process: {
+      vote_window: input.timeDeviationVoteWindow,
+      vote_threshold: input.timeDeviationVoteThreshold,
+      hysteresis_hold: input.timeDeviationHysteresisHold,
+    },
   },
   protocol_validator: {
     enabled: true,
@@ -539,6 +571,25 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeDeviationInput?.thresholdSeconds !== undefined
       ? parseNonNegativeNumber(timeDeviationInput?.thresholdSeconds, null)
       : null;
+  const resolvedTimeDeviationVoteWindow = parseIntegerWithMin(
+    (timeDeviationInput?.voteWindow as number | string | null | undefined) ?? undefined,
+    DEFAULT_VOTE_WINDOW,
+    1,
+  );
+  const resolvedTimeDeviationVoteThresholdRaw = parseIntegerWithMin(
+    (timeDeviationInput?.voteThreshold as number | string | null | undefined) ?? undefined,
+    DEFAULT_VOTE_THRESHOLD,
+    1,
+  );
+  const resolvedTimeDeviationVoteThreshold = Math.min(
+    Math.max(resolvedTimeDeviationVoteThresholdRaw, 1),
+    resolvedTimeDeviationVoteWindow,
+  );
+  const resolvedTimeDeviationHysteresisHold = parseIntegerWithMin(
+    (timeDeviationInput?.hysteresisHold as number | string | null | undefined) ?? undefined,
+    DEFAULT_HYSTERESIS_HOLD,
+    0,
+  );
   const resolvedTimeDeviationOptions: TimeDeviationOptions = {
     ...(timeDeviationInput ?? {}),
     method: resolvedTimeDeviationMethod,
@@ -546,6 +597,9 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     minSamples: resolvedTimeDeviationMinSamples,
     fallbackThresholdSeconds: resolvedTimeDeviationFallback,
     thresholdSeconds: resolvedTimeDeviationThreshold,
+    voteWindow: resolvedTimeDeviationVoteWindow,
+    voteThreshold: resolvedTimeDeviationVoteThreshold,
+    hysteresisHold: resolvedTimeDeviationHysteresisHold,
   };
   const parameterQuantile =
     resolvedTimeDeviationMethod === 'quantile' && Number.isFinite(resolvedTimeDeviationQuantile)
@@ -574,6 +628,9 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeDeviationQuantile: parameterQuantile,
     timeDeviationMinSamples: resolvedTimeDeviationMinSamples,
     timeDeviationFallback: resolvedTimeDeviationFallback,
+    timeDeviationVoteWindow: resolvedTimeDeviationVoteWindow,
+    timeDeviationVoteThreshold: resolvedTimeDeviationVoteThreshold,
+    timeDeviationHysteresisHold: resolvedTimeDeviationHysteresisHold,
   });
 
   const selectedStrategies = buildStrategyOverrides(anomalies);
@@ -696,6 +753,11 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
                     sample_count: lastTimeDeviationResult.diagnostics.spot.sampleCount,
                   }
                 : null,
+              post_process: {
+                vote_window: parameters.time_deviation_detector.post_process.vote_window,
+                vote_threshold: parameters.time_deviation_detector.post_process.vote_threshold,
+                hysteresis_hold: parameters.time_deviation_detector.post_process.hysteresis_hold,
+              },
             },
           }
         : undefined,
