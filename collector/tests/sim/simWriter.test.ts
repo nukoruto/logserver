@@ -7,6 +7,8 @@ import {
   augmentRows,
   formatCsvAugmented,
 } from '../../src/sim/persistence/simWriter';
+import type { SimulationEvent } from '../../src/services/simulationService';
+import { resolveThreshold, type TimeDeviationOptions } from '../../src/sim/detector/timeDeviationDetector';
 
 describe('simWriter.persistSimulationRun', () => {
   let tempDir: string;
@@ -166,6 +168,70 @@ describe('simWriter.persistSimulationRun', () => {
     expect(deltaStats.stddev).toBeLessThan(1.09);
     expect(deltaStats.min).toBeCloseTo(1.5, 5);
     expect(deltaStats.max).toBeCloseTo(4.0, 5);
+  });
+
+  it('SPOT メタデータを Δt 統計とマニフェストに保持する', async () => {
+    const tailBaseline = [0.5, 0.7, 1.2, 1.6, 3.8, 0.6, 0.9, 4.5, 0.4, 2.3, 0.3, 5.1];
+    const calibrationOptions: TimeDeviationOptions = {
+      method: 'spot',
+      quantile: 0.9,
+      spotTailFraction: 0.25,
+      spotTargetProbability: 0.05,
+      spotMinTailCount: 3,
+    };
+    const optionsCopy: TimeDeviationOptions = { ...calibrationOptions };
+    resolveThreshold(tailBaseline, optionsCopy);
+    const meta = optionsCopy.spotMetadata;
+    expect(meta).toBeDefined();
+    if (!meta) {
+      throw new Error('expected SPOT metadata for manifest test');
+    }
+
+    const events: SimulationEvent[] = tailBaseline.map((delta, index) => ({
+      timestamp: `2024-07-01T00:00:${`${index}`.padStart(2, '0')}.000Z`,
+      session_id: 'sess-spot',
+      user_id: 'user-spot',
+      event: `evt-${index}`,
+      deltaSeconds: delta,
+      timeDeviationFlag: delta > meta.tauT,
+      timeDeviationThresholdSeconds: meta.tauT,
+      timeDeviationSpotTauTSeconds: meta.tauT,
+      timeDeviationSpotUSeconds: meta.u,
+      timeDeviationSpotXi: meta.xi,
+      timeDeviationSpotBeta: meta.beta,
+      timeDeviationSpotPRef: meta.pRef,
+      timeDeviationSpotQStar: meta.qStar,
+      timeDeviationSpotTailCount: meta.tailCount,
+      timeDeviationSpotSampleCount: meta.sampleCount,
+    }));
+
+    const stats = summarizeDeltas(events);
+    expect(stats.spot).toBeDefined();
+    const spot = stats.spot as Record<string, unknown>;
+    expect(spot.method).toBe('spot');
+    expect(Number(spot.u_seconds)).toBeCloseTo(meta.u, 9);
+    expect(Number(spot.tau_t_seconds)).toBeCloseTo(meta.tauT, 9);
+    expect(Number(spot.p_ref)).toBeCloseTo(meta.pRef, 9);
+    expect(Number(spot.q_star)).toBeCloseTo(meta.qStar, 9);
+    expect(Number(spot.tail_count)).toBe(meta.tailCount);
+    expect(Number(spot.sample_count)).toBe(meta.sampleCount);
+
+    const result = await persistSimulationRun({
+      events,
+      runId: 'spot-meta-test',
+      outputDir: tempDir,
+      scenarioId: 'spot-scenario',
+    });
+
+    const manifestRaw = await fs.readFile(result.manifestPath, 'utf8');
+    const manifest = JSON.parse(manifestRaw);
+    expect(manifest.delta_seconds.spot).toBeDefined();
+    const manifestSpot = manifest.delta_seconds.spot as Record<string, unknown>;
+    expect(manifestSpot.method).toBe('spot');
+    expect(Number(manifestSpot.tau_t_seconds)).toBeCloseTo(meta.tauT, 9);
+    expect(Number(manifestSpot.u_seconds)).toBeCloseTo(meta.u, 9);
+    expect(Number(manifestSpot.p_ref)).toBeCloseTo(meta.pRef, 9);
+    expect(Number(manifestSpot.q_star)).toBeCloseTo(meta.qStar, 9);
   });
 
   it('runId を自動正規化し、Δt が存在しない場合でも統計を返す', async () => {

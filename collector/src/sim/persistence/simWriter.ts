@@ -240,14 +240,48 @@ const extractDeltaSeconds = (event: SimulationEvent): number | null => {
   return null;
 };
 
+const resolveSpotSummary = (events: readonly SimulationEvent[]): Record<string, unknown> | null => {
+  for (const event of events) {
+    if (!event || typeof event !== 'object') {
+      continue;
+    }
+    const record = event as Record<string, unknown>;
+    const tau = Number(record.timeDeviationSpotTauTSeconds);
+    const u = Number(record.timeDeviationSpotUSeconds);
+    if (!Number.isFinite(tau) || !Number.isFinite(u)) {
+      continue;
+    }
+    const xi = Number(record.timeDeviationSpotXi);
+    const beta = Number(record.timeDeviationSpotBeta);
+    const pRef = Number(record.timeDeviationSpotPRef);
+    const qStar = Number(record.timeDeviationSpotQStar);
+    const tailCount = Number(record.timeDeviationSpotTailCount);
+    const sampleCount = Number(record.timeDeviationSpotSampleCount);
+    return {
+      method: 'spot',
+      u_seconds: u,
+      xi: Number.isFinite(xi) ? xi : null,
+      beta: Number.isFinite(beta) ? beta : null,
+      p_ref: Number.isFinite(pRef) ? pRef : null,
+      q_star: Number.isFinite(qStar) ? qStar : null,
+      tau_t_seconds: tau,
+      tail_count: Number.isFinite(tailCount) ? Math.trunc(tailCount) : null,
+      sample_count: Number.isFinite(sampleCount) ? Math.trunc(sampleCount) : null,
+    };
+  }
+  return null;
+};
+
 export const summarizeDeltas = (events: readonly SimulationEvent[]): Record<string, unknown> => {
   const deltas = events
     .map((event) => extractDeltaSeconds(event))
     .filter((value): value is number => value !== null)
     .sort((a, b) => a - b);
 
+  const spot = resolveSpotSummary(events);
+
   if (deltas.length === 0) {
-    return {
+    const summary: Record<string, unknown> = {
       count: 0,
       mean: null,
       median: null,
@@ -255,6 +289,10 @@ export const summarizeDeltas = (events: readonly SimulationEvent[]): Record<stri
       min: null,
       max: null,
     };
+    if (spot) {
+      summary.spot = spot;
+    }
+    return summary;
   }
 
   const sum = deltas.reduce((acc, value) => acc + value, 0);
@@ -266,7 +304,7 @@ export const summarizeDeltas = (events: readonly SimulationEvent[]): Record<stri
     ? (deltas[middle - 1] + deltas[middle]) / 2
     : deltas[middle];
 
-  return {
+  const summary: Record<string, unknown> = {
     count: deltas.length,
     mean,
     median,
@@ -274,6 +312,10 @@ export const summarizeDeltas = (events: readonly SimulationEvent[]): Record<stri
     min: deltas[0],
     max: deltas[deltas.length - 1],
   };
+  if (spot) {
+    summary.spot = spot;
+  }
+  return summary;
 };
 
 export const buildAnomalySummary = (events: readonly SimulationEvent[]): Record<string, number> => {

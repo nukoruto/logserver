@@ -1,5 +1,18 @@
 import type { SimulationEvent } from '../../services/simulationService';
 
+export interface SpotCalibrationMetadata {
+  readonly method: 'spot';
+  readonly sampleCount: number;
+  readonly tailCount: number;
+  readonly u: number;
+  readonly xi: number;
+  readonly beta: number;
+  readonly pRef: number;
+  readonly qStar: number;
+  readonly tauT: number;
+  readonly meanExcess: number;
+}
+
 export interface TimeDeviationOptions extends Record<string, unknown> {
   method?: 'quantile' | 'fixed' | 'spot' | string;
   quantile?: number;
@@ -7,6 +20,11 @@ export interface TimeDeviationOptions extends Record<string, unknown> {
   fallbackThresholdSeconds?: number | string | null;
   thresholdSeconds?: number | string | null;
   baselineSequence?: readonly SimulationEvent[];
+  spotTailFraction?: number;
+  spotTargetProbability?: number;
+  spotMinTailCount?: number;
+  spotXiEpsilon?: number;
+  spotMetadata?: SpotCalibrationMetadata | null;
 }
 
 export interface TimeDeviationEvent extends SimulationEvent {
@@ -14,6 +32,14 @@ export interface TimeDeviationEvent extends SimulationEvent {
   timeDeviationThresholdSeconds?: number;
   timeDeviationScore?: number;
   timeDeviationFlag?: boolean;
+  timeDeviationSpotUSeconds?: number;
+  timeDeviationSpotXi?: number;
+  timeDeviationSpotBeta?: number;
+  timeDeviationSpotPRef?: number;
+  timeDeviationSpotQStar?: number;
+  timeDeviationSpotTauTSeconds?: number;
+  timeDeviationSpotTailCount?: number;
+  timeDeviationSpotSampleCount?: number;
 }
 
 export function detectTimeDeviation(

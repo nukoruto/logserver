@@ -95,6 +95,14 @@ export interface SimulationEvent extends Record<string, unknown> {
   timeDeviationObservedDeltaSeconds?: number;
   timeDeviationThresholdSeconds?: number;
   timeDeviationScore?: number;
+  timeDeviationSpotUSeconds?: number;
+  timeDeviationSpotXi?: number;
+  timeDeviationSpotBeta?: number;
+  timeDeviationSpotPRef?: number;
+  timeDeviationSpotQStar?: number;
+  timeDeviationSpotTauTSeconds?: number;
+  timeDeviationSpotTailCount?: number;
+  timeDeviationSpotSampleCount?: number;
   [key: string]: unknown;
 }
 
@@ -402,6 +410,30 @@ const decorateEvent = ({
     record.timeDeviationScore = Number.isFinite(event.timeDeviationScore)
       ? Number(event.timeDeviationScore)
       : undefined;
+    if (Number.isFinite(event.timeDeviationSpotUSeconds)) {
+      record.timeDeviationSpotUSeconds = Number(event.timeDeviationSpotUSeconds);
+    }
+    if (Number.isFinite(event.timeDeviationSpotXi)) {
+      record.timeDeviationSpotXi = Number(event.timeDeviationSpotXi);
+    }
+    if (Number.isFinite(event.timeDeviationSpotBeta)) {
+      record.timeDeviationSpotBeta = Number(event.timeDeviationSpotBeta);
+    }
+    if (Number.isFinite(event.timeDeviationSpotPRef)) {
+      record.timeDeviationSpotPRef = Number(event.timeDeviationSpotPRef);
+    }
+    if (Number.isFinite(event.timeDeviationSpotQStar)) {
+      record.timeDeviationSpotQStar = Number(event.timeDeviationSpotQStar);
+    }
+    if (Number.isFinite(event.timeDeviationSpotTauTSeconds)) {
+      record.timeDeviationSpotTauTSeconds = Number(event.timeDeviationSpotTauTSeconds);
+    }
+    if (Number.isFinite(event.timeDeviationSpotTailCount)) {
+      record.timeDeviationSpotTailCount = Number(event.timeDeviationSpotTailCount);
+    }
+    if (Number.isFinite(event.timeDeviationSpotSampleCount)) {
+      record.timeDeviationSpotSampleCount = Number(event.timeDeviationSpotSampleCount);
+    }
   }
 
   if (anomalyTag) {
