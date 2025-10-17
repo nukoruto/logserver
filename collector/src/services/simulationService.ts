@@ -2,7 +2,13 @@ import * as crypto from 'node:crypto';
 import config from '../config';
 import logger from '../utils/logger';
 import sim from '../sim';
-import { buildAnomalySummary } from '../sim/persistence/simWriter';
+import {
+  buildAnomalySummary,
+  DEFAULT_FEATURE_AUGMENTER,
+  resolveFeatureAugmenterOptions,
+  cloneFeatureAugmenterOptions,
+} from '../sim/persistence/simWriter';
+import type { FeatureAugmenterOptions } from '../sim/persistence/simWriter';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
 import type { PersistSimulationResult } from '../sim/persistence/simWriter';
@@ -15,6 +21,8 @@ import type {
 type StrategyName = 'protocolViolation' | 'timeDeviation' | 'authenticationBypass';
 
 type StrategyOverrides = Record<StrategyName, { weight: number }>;
+
+type NumericBounds = { min: number; max: number };
 
 const {
   scenario,
@@ -135,6 +143,8 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   scenarioFile?: string | null;
   startTime?: Date | string | null;
   timeDeviation?: Partial<TimeDeviationOptions> | null;
+  featureAugmenter?: Partial<FeatureAugmenterOptions> | Record<string, unknown> | null;
+  feature_augmenter?: Partial<FeatureAugmenterOptions> | Record<string, unknown> | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -148,6 +158,16 @@ export interface SimulationParameters extends Record<string, unknown> {
   session_spacing_seconds: number;
   persist: boolean;
   max_steps: number;
+  feature_augmenter: {
+    window_size: number;
+    quantiles: number[];
+    clip_bounds: {
+      z: NumericBounds;
+      z_robust: NumericBounds;
+      z_hourly: NumericBounds;
+      log_burst_z: NumericBounds;
+    };
+  };
   time_deviation_detector: {
     method: string;
     quantile: number | null;
@@ -195,6 +215,7 @@ interface DefaultParameterInput {
   sessionSpacingSeconds: number;
   persist: boolean;
   maxSteps: number;
+  featureAugmenter: FeatureAugmenterOptions;
   timeDeviationMethod: string;
   timeDeviationQuantile: number | null;
   timeDeviationMinSamples: number;
@@ -453,6 +474,16 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   session_spacing_seconds: input.sessionSpacingSeconds,
   persist: input.persist,
   max_steps: input.maxSteps,
+  feature_augmenter: {
+    window_size: input.featureAugmenter.windowSize,
+    quantiles: [...input.featureAugmenter.quantiles],
+    clip_bounds: {
+      z: { ...input.featureAugmenter.clipBounds.z },
+      z_robust: { ...input.featureAugmenter.clipBounds.z_robust },
+      z_hourly: { ...input.featureAugmenter.clipBounds.z_hourly },
+      log_burst_z: { ...input.featureAugmenter.clipBounds.log_burst_z },
+    },
+  },
   time_deviation_detector: {
     method: input.timeDeviationMethod,
     quantile: Number.isFinite(input.timeDeviationQuantile) ? input.timeDeviationQuantile : null,
@@ -518,6 +549,13 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     resolvedTimeDeviationMethod === 'quantile' && Number.isFinite(resolvedTimeDeviationQuantile)
       ? resolvedTimeDeviationQuantile
       : null;
+  const featureAugmenterInput = (options.featureAugmenter ?? options.feature_augmenter ?? null) as
+    | Partial<FeatureAugmenterOptions>
+    | Record<string, unknown>
+    | null;
+  const resolvedFeatureAugmenter = featureAugmenterInput && typeof featureAugmenterInput === 'object'
+    ? resolveFeatureAugmenterOptions(featureAugmenterInput as Record<string, unknown>)
+    : cloneFeatureAugmenterOptions(DEFAULT_FEATURE_AUGMENTER);
   const parameters = defaultParameters({
     count,
     anomalies,
@@ -529,6 +567,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     sessionSpacingSeconds,
     persist,
     maxSteps,
+    featureAugmenter: resolvedFeatureAugmenter,
     timeDeviationMethod: resolvedTimeDeviationMethod,
     timeDeviationQuantile: parameterQuantile,
     timeDeviationMinSamples: resolvedTimeDeviationMinSamples,
@@ -554,6 +593,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     scenario_path: scenarioPath,
     run_id: options.runId || null,
     time_deviation_detector: parameters.time_deviation_detector,
+    feature_augmenter: parameters.feature_augmenter,
   });
 
   const events: SimulationEvent[] = [];
@@ -682,6 +722,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     files: response.files || null,
     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
     time_deviation_detector: parameters.time_deviation_detector,
+    feature_augmenter: parameters.feature_augmenter,
   });
 
   return response;
