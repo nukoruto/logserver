@@ -40,6 +40,14 @@ OPTIONAL_COLUMNS = {
 
 
 DEFAULT_CHUNK_SIZE = 100_000
+def _is_empty_metadata(value: object) -> bool:
+    if value is None:
+        return True
+    if isinstance(value, float) and np.isnan(value):
+        return True
+    if isinstance(value, dict):
+        return len(value) == 0
+    return False
 
 
 @dataclass
@@ -356,6 +364,35 @@ def sessionize(
         output_dir,
         use_pyarrow=config.use_pyarrow,
     )
+    output_dir.mkdir(parents=True, exist_ok=True)
+    parquet_path = output_dir / "events.parquet"
+    csv_path = output_dir / "events.csv"
+    parquet_written = False
+    parquet_error: Optional[BaseException] = None
+    parquet_frame = df
+    if "metadata" in df.columns and df["metadata"].apply(_is_empty_metadata).all():
+        parquet_frame = df.drop(columns=["metadata"])  # drop empty struct column for parquet compatibility
+    try:
+        parquet_frame.to_parquet(parquet_path, index=False)
+        parquet_written = True
+    except (ImportError, ValueError) as exc:
+        parquet_error = exc
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "sessionize_output",
+                    "output_dir": str(output_dir),
+                    "rows": int(len(df)),
+                    "columns": list(df.columns),
+                    "parquet_path": str(parquet_path),
+                    "parquet_status": "failed",
+                    "fallback": "csv",
+                    "reason": exc.__class__.__name__,
+                },
+                ensure_ascii=False,
+            )
+        )
+    df.to_csv(csv_path, index=False)
     payload = {
         "event": "sessionize_output",
         "output_dir": str(output_dir),

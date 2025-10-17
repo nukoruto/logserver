@@ -25,9 +25,19 @@ def _write_config(path: Path, processed_dir: Path) -> None:
     content = {
         "data": {"processed_dir": str(processed_dir)},
         "scoring": {"smoothing": "none"},
-        "threshold": {"method": "quantile", "quantile": 0.5},
+        "threshold": {
+            "method": "quantile",
+            "quantile": 0.5,
+            "target_alpha": 0.5,
+            "normal_reference": "reference.csv",
+        },
     }
     path.write_text(json.dumps(content), encoding="utf-8")
+
+
+def _write_reference(path: Path, scores: list[float]) -> None:
+    df = pd.DataFrame({"anomaly_score": scores})
+    df.to_csv(path, index=False)
 
 
 def test_compute_threshold_handles_nan_skip() -> None:
@@ -42,6 +52,8 @@ def test_run_success_writes_outputs(tmp_path: Path) -> None:
     processed_dir.mkdir()
     scores_path = processed_dir / "scores.csv"
     _write_scores(scores_path, [0.1, 0.9])
+    reference_path = processed_dir / "reference.csv"
+    _write_reference(reference_path, [0.05, 0.1, 0.2])
     config_path = tmp_path / "config.yaml"
     _write_config(config_path, processed_dir)
 
@@ -57,6 +69,7 @@ def test_run_success_writes_outputs(tmp_path: Path) -> None:
     assert saved_meta["status"] == "ok"
     assert saved_meta["anomaly_label_applied"] is True
     assert pytest.approx(saved_meta["threshold"], rel=1e-6) == 0.5
+    assert saved_meta["reference_fpr"] == 0.0
     with scores_path.open("rb") as handle:
         expected_hash = hashlib.sha256(handle.read()).hexdigest()
     assert saved_meta["data_sha256"] == expected_hash
@@ -128,13 +141,15 @@ def test_run_dump_eval_and_hist(tmp_path: Path) -> None:
     processed_dir.mkdir()
     scores_path = processed_dir / "scores.csv"
     _write_scores(scores_path, [0.1, 0.9, 0.8, 0.2], annotations=[0, 1, 1, 0])
+    reference_path = processed_dir / "reference.csv"
+    _write_reference(reference_path, [0.05, 0.08, 0.12, 0.15])
     config_path = tmp_path / "config.yaml"
     _write_config(config_path, processed_dir)
 
     eval_path = processed_dir / "boundary_eval.json"
     hist_path = processed_dir / "hist.json"
 
-    threshold_script.run(
+    payload = threshold_script.run(
         config_path,
         on_error="abort",
         dump_eval_path=eval_path,
@@ -159,6 +174,7 @@ def test_run_dump_eval_and_hist(tmp_path: Path) -> None:
     assert len(hist_payload["counts"]) == 4
     assert len(hist_payload["bin_edges"]) == 5
     assert hist_payload["summary"]["count"] == 4
+    assert payload["reference_fpr"] == 0.0
 
 
 def test_run_dump_eval_missing_annotation(tmp_path: Path) -> None:

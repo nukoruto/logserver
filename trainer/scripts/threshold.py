@@ -12,7 +12,10 @@ import numpy as np
 import pandas as pd
 import yaml
 
-from trainer.logserver.eval import compute_boundary_metrics
+from trainer.logserver.eval import (
+    compute_binary_classification_metrics,
+    compute_boundary_metrics,
+)
 from trainer.logserver.scoring.threshold import (
     ThresholdConfig,
     apply_threshold,
@@ -20,6 +23,8 @@ from trainer.logserver.scoring.threshold import (
 )
 
 LOGGER = logging.getLogger("trainer.scripts.threshold")
+
+DEFAULT_REFERENCE_FILENAME = "scores_reference_normal.csv"
 
 
 def _configure_logging() -> None:
@@ -130,9 +135,18 @@ def run(
     scores_hash = _sha256(scores_path)
     df = pd.read_csv(scores_path)
 
+    target_alpha = threshold_cfg.get("target_alpha")
+    quantile_value = float(threshold_cfg.get("quantile", 0.995))
+    if target_alpha is None:
+        target_alpha = 1.0 - quantile_value
     threshold_config = ThresholdConfig(
         method=threshold_cfg.get("method", "quantile"),
-        quantile=float(threshold_cfg.get("quantile", 0.995)),
+        quantile=quantile_value,
+        target_alpha=float(target_alpha),
+        max_relative_deviation=float(threshold_cfg.get("max_relative_deviation", 0.2)),
+        fallback_methods=tuple(threshold_cfg.get("fallback_methods", ("quantile_adjust", "spot"))),
+        spot_tail_fraction=float(threshold_cfg.get("spot_tail_fraction", 0.02)),
+        min_tail_samples=int(threshold_cfg.get("min_tail_samples", 30)),
     )
     threshold, meta = threshold_fn(df["anomaly_score"].tolist(), threshold_config)
 
@@ -145,6 +159,12 @@ def run(
     }
 
     status = payload.get("status")
+
+    reference_name = threshold_cfg.get("normal_reference", DEFAULT_REFERENCE_FILENAME)
+    reference_path = Path(reference_name)
+    if not reference_path.is_absolute():
+        reference_path = processed_dir / reference_path
+    payload["reference_dataset"] = str(reference_path)
 
     if dump_hist_path is not None:
         hist_payload = _build_histogram_payload(df["anomaly_score"], hist_bins)
@@ -166,6 +186,7 @@ def run(
 
     annotation_column = _detect_annotation_column(df)
     eval_payload: Optional[Dict[str, object]] = None
+    reference_payload: Optional[Dict[str, object]] = None
 
     def _cleanup_partial() -> None:
         for final_path, partial_path in outputs.items():
@@ -186,6 +207,25 @@ def run(
             df_with_labels["anomaly_label"] = labels
             df_with_labels.to_csv(labels_partial, index=False)
             payload["anomaly_label_applied"] = True
+
+            if reference_path.exists():
+                reference_payload = _evaluate_reference_fpr(
+                    reference_path,
+                    threshold,
+                    apply_threshold_fn,
+                )
+                if reference_payload is not None:
+                    payload["reference_fpr"] = reference_payload["metrics"].get("fpr")
+                    payload["reference_fpr_counts"] = reference_payload["counts"]
+            else:
+                _emit(
+                    "reference_fpr_skipped",
+                    {
+                        "reason": "reference_missing",
+                        "path": str(reference_path),
+                    },
+                    level=logging.WARNING,
+                )
 
             if dump_eval_path is not None:
                 if annotation_column is None:
@@ -237,6 +277,42 @@ def run(
     if dump_eval_path is not None and eval_payload is not None:
         _write_json_with_policy(dump_eval_path, eval_payload, keep_partial=on_error == "keep-partial")
 
+    if reference_payload is not None:
+        _emit("reference_fpr_evaluated", reference_payload)
+
+    return payload
+
+
+def _evaluate_reference_fpr(
+    reference_path: Path,
+    threshold: float,
+    apply_threshold_fn: Callable[[Iterable[float], float], Iterable[int]],
+) -> Optional[Dict[str, object]]:
+    try:
+        df_reference = pd.read_csv(reference_path)
+    except FileNotFoundError:
+        return None
+
+    if "anomaly_score" not in df_reference.columns:
+        return {
+            "status": "skipped",
+            "reason": "missing_anomaly_score_column",
+            "path": str(reference_path),
+        }
+
+    scores = df_reference["anomaly_score"].tolist()
+    predicted = list(apply_threshold_fn(scores, threshold))
+    actual = [0 for _ in predicted]
+    metrics = compute_binary_classification_metrics(predicted, actual)
+    counts = metrics.get("counts", {})
+    payload = {
+        "status": "ok",
+        "path": str(reference_path),
+        "samples": len(scores),
+        "threshold": threshold,
+        "counts": counts,
+        "metrics": metrics.get("metrics", {}),
+    }
     return payload
 
 

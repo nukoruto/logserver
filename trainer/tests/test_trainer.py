@@ -1,4 +1,5 @@
 ﻿# -*- coding: utf-8 -*-
+import json
 from pathlib import Path
 
 import pandas as pd
@@ -26,6 +27,8 @@ def test_train_model_produces_artifacts(tmp_path: Path) -> None:
     train_model(encoded, session_ids, pack, tmp_path, config, split=split)
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
+    repro = list(tmp_path.glob("*/repro.json"))
+    assert repro, "repro.json not generated"
 
 
 def test_train_model_with_response_bytes(tmp_path: Path) -> None:
@@ -48,3 +51,9 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
     train_model(encoded, session_ids, pack, tmp_path, config, split=split)
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
+    metadata_files = list(tmp_path.glob("*/model_config.json"))
+    assert metadata_files, "model_config.json not found"
+    with metadata_files[0].open("r", encoding="utf-8") as handle:
+        model_config = json.load(handle)
+    assert "num_workers" in model_config
+    assert "pin_memory" in model_config
