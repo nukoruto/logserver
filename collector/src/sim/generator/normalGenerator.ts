@@ -343,6 +343,43 @@ const resolveTerminalStates = (
   return terminals;
 };
 
+const OFFSET_PATTERN = /(Z|[+-]\d{2}:?\d{2})$/;
+
+const parseOffsetFromString = (value: string): number | null => {
+  const match = value.trim().match(OFFSET_PATTERN);
+  if (!match) {
+    return null;
+  }
+  const token = match[1];
+  if (token === 'Z') {
+    return 0;
+  }
+  const sign = token.startsWith('-') ? -1 : 1;
+  const digits = token.replace(/[+\-]/, '').replace(':', '');
+  const hours = Number(digits.slice(0, 2));
+  const minutes = Number(digits.slice(2) || '0');
+  if (!Number.isFinite(hours) || !Number.isFinite(minutes)) {
+    return null;
+  }
+  return sign * (hours * 60 + minutes);
+};
+
+const deriveOffsetMinutes = (value: Date | string | undefined): number => {
+  if (typeof value === 'string' && value.length > 0) {
+    const parsed = parseOffsetFromString(value);
+    if (parsed !== null) {
+      return parsed;
+    }
+  }
+  if (value instanceof Date) {
+    const offset = -value.getTimezoneOffset();
+    if (Number.isFinite(offset)) {
+      return offset;
+    }
+  }
+  return 0;
+};
+
 const ensureDate = (value: Date | string | undefined): Date => {
   if (!value) {
     return new Date();
@@ -355,6 +392,26 @@ const ensureDate = (value: Date | string | undefined): Date => {
     throw new Error('Invalid startTime provided to generateNormalSequence');
   }
   return parsed;
+};
+
+const padNumber = (value: number, length = 2): string => value.toString().padStart(length, '0');
+
+const formatTimestampWithOffset = (utcMillis: number, offsetMinutes: number): string => {
+  const localMillis = utcMillis + offsetMinutes * 60_000;
+  const date = new Date(localMillis);
+  const year = date.getUTCFullYear();
+  const month = padNumber(date.getUTCMonth() + 1);
+  const day = padNumber(date.getUTCDate());
+  const hours = padNumber(date.getUTCHours());
+  const minutes = padNumber(date.getUTCMinutes());
+  const seconds = padNumber(date.getUTCSeconds());
+  const milliseconds = padNumber(date.getUTCMilliseconds(), 3);
+  const sign = offsetMinutes >= 0 ? '+' : '-';
+  const absoluteMinutes = Math.abs(offsetMinutes);
+  const offsetHours = padNumber(Math.floor(absoluteMinutes / 60));
+  const offsetMins = padNumber(absoluteMinutes % 60);
+  const suffix = offsetMinutes === 0 ? 'Z' : `${sign}${offsetHours}:${offsetMins}`;
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${suffix}`;
 };
 
 export const generateNormalSequence = (
@@ -372,10 +429,12 @@ export const generateNormalSequence = (
     : DEFAULT_MAX_STEPS;
   const defaultDeltaSpec = normalizeDeltaSpec(scenario.defaultDeltaSeconds as unknown, DEFAULT_DELTA_SPEC);
 
-  const startTime = ensureDate(options.startTime as Date | string | undefined);
+  const startInput = options.startTime as Date | string | undefined;
+  const offsetMinutes = deriveOffsetMinutes(startInput);
+  const startTime = ensureDate(startInput);
   const sequence: NormalEvent[] = [];
   let currentState = initialState;
-  let currentTime = new Date(startTime.getTime());
+  let currentUtcMillis = startTime.getTime();
   let steps = 0;
 
   while (steps < maxSteps) {
@@ -390,13 +449,16 @@ export const generateNormalSequence = (
     }
 
     const deltaSeconds = sampleDeltaSeconds(chosen, randomFn, defaultDeltaSpec);
-    currentTime = new Date(currentTime.getTime() + deltaSeconds * 1000);
+    currentUtcMillis += deltaSeconds * 1000;
+    const timestampUtc = new Date(currentUtcMillis).toISOString();
+    const timestampLocal = formatTimestampWithOffset(currentUtcMillis, offsetMinutes);
 
     const eventRecord: NormalEvent = {
       from: String(chosen.from),
       to: String(chosen.to),
       event: String(chosen.event),
-      timestamp: currentTime.toISOString(),
+      timestamp: timestampLocal,
+      timestamp_utc: timestampUtc,
       deltaSeconds,
       probability: Number(chosen.normalizedProbability),
       anomaly: false,
@@ -404,6 +466,15 @@ export const generateNormalSequence = (
 
     if (chosen.metadata && typeof chosen.metadata === 'object') {
       eventRecord.metadata = { ...(chosen.metadata as Record<string, unknown>) };
+    }
+
+    const offsetSeconds = offsetMinutes * 60;
+    if (!eventRecord.metadata || typeof eventRecord.metadata !== 'object') {
+      eventRecord.metadata = {};
+    }
+    const metadataRecord = eventRecord.metadata as Record<string, unknown>;
+    if (!('timezone_offset_seconds' in metadataRecord)) {
+      metadataRecord.timezone_offset_seconds = offsetSeconds;
     }
 
     sequence.push(eventRecord);

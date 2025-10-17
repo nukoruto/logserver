@@ -1,6 +1,26 @@
 import { loadScenario } from '../../src/sim/scenario';
 import { generateNormalSequence } from '../../src/sim/generator/normalGenerator';
 
+const padNumber = (value: number, length = 2): string => value.toString().padStart(length, '0');
+
+const formatLocalFromUtc = (utcMillis: number, offsetSeconds: number): string => {
+  const localMillis = utcMillis + offsetSeconds * 1000;
+  const date = new Date(localMillis);
+  const year = date.getUTCFullYear();
+  const month = padNumber(date.getUTCMonth() + 1);
+  const day = padNumber(date.getUTCDate());
+  const hours = padNumber(date.getUTCHours());
+  const minutes = padNumber(date.getUTCMinutes());
+  const seconds = padNumber(date.getUTCSeconds());
+  const milliseconds = padNumber(date.getUTCMilliseconds(), 3);
+  const sign = offsetSeconds >= 0 ? '+' : '-';
+  const absolute = Math.abs(offsetSeconds);
+  const offsetHours = padNumber(Math.floor(absolute / 3600));
+  const offsetMinutes = padNumber(Math.floor((absolute % 3600) / 60));
+  const suffix = offsetSeconds === 0 ? 'Z' : `${sign}${offsetHours}:${offsetMinutes}`;
+  return `${year}-${month}-${day}T${hours}:${minutes}:${seconds}.${milliseconds}${suffix}`;
+};
+
 describe('generateNormalSequence', () => {
   const scenario = loadScenario();
 
@@ -24,7 +44,9 @@ describe('generateNormalSequence', () => {
     sequence.forEach((event: any) => {
       expect(transitions.has(`${event.from}->${event.to}`)).toBe(true);
       expect(typeof event.timestamp).toBe('string');
+      expect(typeof event.timestamp_utc).toBe('string');
       expect(new Date(event.timestamp).getTime()).toBeGreaterThanOrEqual(new Date(previousTimestamp).getTime());
+      expect(new Date(event.timestamp_utc).getTime()).toBeGreaterThanOrEqual(new Date(previousTimestamp).getTime());
       expect(event.deltaSeconds).toBeGreaterThanOrEqual(0);
       expect(event.probability).toBeGreaterThan(0);
       expect(event.probability).toBeLessThanOrEqual(1);
@@ -35,6 +57,19 @@ describe('generateNormalSequence', () => {
     const last = sequence[sequence.length - 1];
     expect(last.to).toBe('completed');
     expect(last.event).toBe('logout');
+  });
+
+  it('ローカル時刻とUTCがオフセット込みで保持される', () => {
+    const startTime = '2024-01-01T09:00:00+09:00';
+    const sequence = generateNormalSequence({ scenario, seed: 'offset-check', startTime, maxSteps: 2 });
+    expect(sequence.length).toBeGreaterThan(0);
+    const first = sequence[0];
+    expect(first.timestamp?.endsWith('+09:00')).toBe(true);
+    expect(first.timestamp_utc?.endsWith('Z')).toBe(true);
+    const offsetSeconds = Number(first.metadata?.timezone_offset_seconds);
+    expect(offsetSeconds).toBe(9 * 3600);
+    const reconstructed = formatLocalFromUtc(new Date(first.timestamp_utc as string).getTime(), offsetSeconds);
+    expect(first.timestamp).toBe(reconstructed);
   });
 
   it('同一seedと開始時刻で系列が再現可能', () => {
