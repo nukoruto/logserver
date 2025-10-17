@@ -8,9 +8,9 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
-import pandas as pd
 import yaml
 
+from trainer.logserver.dataio.processed import load_processed_events
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
 from trainer.logserver.training.trainer import (
     SessionSplit,
@@ -66,7 +66,7 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
     logging.basicConfig(level=getattr(logging, str(log_level).upper(), logging.INFO))
 
     processed_dir = Path(data_cfg.get("processed_dir", "data/processed"))
-    df = pd.read_parquet(processed_dir / "events.parquet")
+    df = load_processed_events(processed_dir)
     session_ids = df["session_id"].astype(str).tolist()
 
     trainer_config = TrainerConfig(

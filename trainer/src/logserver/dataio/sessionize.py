@@ -3,12 +3,16 @@
 
 from __future__ import annotations
 
+import json
+import logging
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Iterable, List, Optional
 
 import numpy as np
 import pandas as pd
+
+logger = logging.getLogger(__name__)
 
 REQUIRED_COLUMNS = {"timestamp", "event", "uid"}
 ALTERNATE_TIMESTAMP_COLUMNS = ("timestamp_utc",)
@@ -184,11 +188,55 @@ def sessionize(
     output_dir.mkdir(parents=True, exist_ok=True)
     parquet_path = output_dir / "events.parquet"
     csv_path = output_dir / "events.csv"
+    parquet_written = False
+    parquet_error: Optional[BaseException] = None
     try:
         df.to_parquet(parquet_path, index=False)
-    except (ImportError, ValueError):
-        parquet_path = None
+        parquet_written = True
+    except (ImportError, ValueError) as exc:
+        parquet_error = exc
+        logger.warning(
+            json.dumps(
+                {
+                    "event": "sessionize_output",
+                    "output_dir": str(output_dir),
+                    "rows": int(len(df)),
+                    "columns": list(df.columns),
+                    "parquet_path": str(parquet_path),
+                    "parquet_status": "failed",
+                    "fallback": "csv",
+                    "reason": exc.__class__.__name__,
+                },
+                ensure_ascii=False,
+            )
+        )
     df.to_csv(csv_path, index=False)
+    payload = {
+        "event": "sessionize_output",
+        "output_dir": str(output_dir),
+        "rows": int(len(df)),
+        "columns": list(df.columns),
+        "csv_path": str(csv_path),
+        "csv_status": "written",
+    }
+    if parquet_written:
+        payload.update(
+            {
+                "parquet_path": str(parquet_path),
+                "parquet_status": "written",
+            }
+        )
+    else:
+        payload.update(
+            {
+                "parquet_path": str(parquet_path),
+                "parquet_status": "unavailable",
+                "fallback": "csv",
+            }
+        )
+        if parquet_error is not None:
+            payload["reason"] = parquet_error.__class__.__name__
+    logger.info(json.dumps(payload, ensure_ascii=False))
     return df
 
 
