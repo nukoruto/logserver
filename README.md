@@ -325,6 +325,24 @@ pnpm exec dt-preproc transform \
   --out data/val_feat/*.csv
 
 ※ `transform` で `--window` / `--quantiles` を省略した場合は、`fit` 時に保存した設定が自動的に再利用されます。
+
+### 5.4 RFC4180 → テンソル データローダ CLI
+
+`trainer.logserver.dataio.dataloader` は、前処理済み CSV をセッション単位に再構築し、`pack_padded_sequence` と因果マスクを備えたテンソルへ変換する内部ユーティリティです。
+
+- 既定グループキーは `sid_final`。列が無ければ `generated_session_id` → `session_id` の順でフォールバックし、それでも不足する場合は UID ごとの Δt（Otsu + knee）から新しいセッション ID を合成します。
+- 特徴ベクトルは `[cat_id, z_clipped, lburst, m25, m50, m75, z_deseas, dt_sec, t_i]` を固定順で連結し、`cat_id` 列が無い場合は `op_category` を辞書順で整数化します。
+- 各セッション末尾には `session_end` フラグを立て、BPTT 切断時でもセッション境界を跨がないことを保証します。因果マスクは未来イベントを必ず遮断し、過去情報のみが参照されます。
+- CLI 実行時は stdout に JSON ログを出力し、`torch.save` 形式で `categorical_padded`、`numeric_padded`、PackedSequence、`causal_mask` を保存します。同一 CSV（並び順が異なっても可）からは常に同一テンソルが得られます。
+
+```bash
+python -m trainer.logserver.dataio.dataloader \
+  --input data/processed/events.csv \
+  --output outputs/train/packed_sessions.pt \
+  --device cuda:0
+```
+
+`pytest -k dataloader` でユニットテストを実行できます。Δt 閾値推定は Δt>0 のサンプルのみを用い、未来情報を利用しません。
 ```
 
 `fit` サブコマンドは `preproc_stats.json` に `freezeFittedStats` の結果を保存し、`--meta` で指定したパス（例：`stats/preproc_meta.json`）にアルゴリズム情報を出力します。メタファイルは JSON/YAML のいずれにも対応し、内容は下記 3 フィールドのみです。
