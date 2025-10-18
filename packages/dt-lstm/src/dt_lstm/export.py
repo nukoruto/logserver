@@ -227,12 +227,32 @@ def export_bundle(
     return payload
 
 
+def _is_within(path: Path, base: Path) -> bool:
+    try:
+        path.relative_to(base)
+    except ValueError:
+        return False
+    return True
+
+
 def _safe_extract_all(archive: tarfile.TarFile, destination: Path) -> None:
     dest = destination.resolve()
     for member in archive.getmembers():
         member_path = dest / member.name
-        if not str(member_path.resolve()).startswith(str(dest)):
+        resolved_member_path = member_path.resolve(strict=False)
+        if not _is_within(resolved_member_path, dest):
             raise ExportError("アーカイブに無効なパスが含まれています")
+
+        if member.issym() or member.islnk():
+            link_target = Path(member.linkname)
+            if link_target.is_absolute():
+                resolved_link_target = link_target.resolve(strict=False)
+            else:
+                resolved_link_target = (member_path.parent / link_target).resolve(strict=False)
+
+            if not _is_within(resolved_link_target, dest):
+                raise ExportError("アーカイブに無効なリンクが含まれています")
+
     archive.extractall(dest)
 
 
