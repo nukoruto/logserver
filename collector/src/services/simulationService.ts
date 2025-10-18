@@ -752,6 +752,9 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       seed: sessionSeed,
       startTime: sessionStartTime,
       maxSteps,
+      sessionId: sessionIdentifiers.sessionId,
+      uid: sessionIdentifiers.uid ?? sessionIdentifiers.userId,
+      namespace: 'normal-sequence',
     }) as NormalEvent[];
 
     let mutatedSequence: SimulationEvent[] = baseSequence as SimulationEvent[];

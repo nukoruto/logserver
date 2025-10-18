@@ -1,5 +1,9 @@
 import type { SimulationEvent } from '../../services/simulationService';
 import { DEFAULT_DELTA_EPSILON } from './normalGenerator';
+import {
+  createSessionCategoryPrng,
+  type CategoryPrngFactory,
+} from './prng';
 
 export type StrategyConfig = Record<string, unknown>;
 
@@ -31,10 +35,11 @@ interface StrategyEntry {
 interface MutationContext {
   events: SimulationEvent[];
   options: NormalizedOptions;
-  randomFn: () => number;
+  rngFactory: CategoryPrngFactory;
   markField: string | null;
   deltaMap: WeakMap<SimulationEvent, number>;
   session: SessionContext | null;
+  attempt: number;
 }
 
 interface NormalizedOptions extends AnomalyInjectionOptions {
@@ -143,36 +148,6 @@ const deepMerge = <T extends Record<string, unknown>>(base: T, overrides: Record
   return result as T;
 };
 
-const normalizeSeed = (seed: unknown): number | null => {
-  if (seed === undefined || seed === null) {
-    return null;
-  }
-  if (typeof seed === 'number' && Number.isFinite(seed)) {
-    return seed >>> 0;
-  }
-  if (typeof seed === 'string' && seed.length > 0) {
-    let hash = 0;
-    for (let index = 0; index < seed.length; index += 1) {
-      hash = (hash << 5) - hash + seed.charCodeAt(index);
-      hash |= 0;
-    }
-    return hash >>> 0;
-  }
-  return null;
-};
-
-const createPrng = (seed: unknown): (() => number) => {
-  const normalizedSeed = normalizeSeed(seed);
-  if (normalizedSeed === null) {
-    return Math.random;
-  }
-  let state = normalizedSeed || 1;
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 0x100000000;
-  };
-};
-
 const parseTimestamp = (value: unknown): Date | null => {
   if (!value) {
     return null;
@@ -189,31 +164,6 @@ const formatTimestamp = (date: Date | null): string | null => {
     return null;
   }
   return date.toISOString();
-};
-
-const toIdString = (value: unknown, fallback: string): string => {
-  if (typeof value === 'string' && value.length > 0) {
-    return value;
-  }
-  return fallback;
-};
-
-const resolvePropagationSeed = (
-  session: SessionContext | null,
-  event: SimulationEvent,
-  index: number,
-  globalSeed: number | string | null,
-): string => {
-  const sessionId = toIdString(session?.sessionId ?? event.session_id, 'sess-unknown');
-  const uid = toIdString(session?.uid ?? event.uid ?? event.user_id, 'uid-unknown');
-  const baseSeed = `${sessionId}|${uid}|${index}`;
-  const seedPrefix =
-    typeof globalSeed === 'string' && globalSeed.length > 0
-      ? String(globalSeed)
-      : typeof globalSeed === 'number' && Number.isFinite(globalSeed)
-        ? String(globalSeed)
-        : 'time-deviation';
-  return `${seedPrefix}|${baseSeed}`;
 };
 
 const normalizePropagationWeight = (value: unknown): number => {
@@ -243,10 +193,7 @@ const normalizeTimeDeviationMode = (value: unknown): TimeDeviationMode | null =>
 
 const selectPropagationMode = (
   config: Record<string, unknown>,
-  events: SimulationEvent[],
-  options: NormalizedOptions,
-  session: SessionContext | null,
-  index: number,
+  rng: () => number,
 ): { mode: 'propagate' | 'local'; weight: number } => {
   const explicitMode =
     normalizeTimeDeviationMode(config.mode) ||
@@ -259,8 +206,6 @@ const selectPropagationMode = (
   const propagateWeight = normalizePropagationWeight(
     config.propagateWeight ?? weights.propagate ?? (config as Record<string, unknown>).propagateProbability,
   );
-  const seed = resolvePropagationSeed(session, events[index], index, options.seed);
-  const rng = createPrng(seed);
   const roll = rng();
   return {
     mode: roll < propagateWeight ? 'propagate' : 'local',
@@ -374,7 +319,7 @@ const buildStrategyEntries = (options: NormalizedOptions): StrategyEntry[] => {
   return entries;
 };
 
-const selectStrategyKey = (entries: readonly StrategyEntry[], randomFn: () => number): string | null => {
+const selectStrategyKey = (entries: readonly StrategyEntry[], rng: () => number): string | null => {
   if (!Array.isArray(entries) || entries.length === 0) {
     return null;
   }
@@ -382,7 +327,7 @@ const selectStrategyKey = (entries: readonly StrategyEntry[], randomFn: () => nu
   if (!Number.isFinite(totalWeight) || totalWeight <= 0) {
     return null;
   }
-  const roll = randomFn() * totalWeight;
+  const roll = rng() * totalWeight;
   let cumulative = 0;
   for (const entry of entries) {
     cumulative += entry.weight;
@@ -443,7 +388,7 @@ const synchronizeDeltas = (
   }
 };
 
-const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap }: MutationContext): boolean => {
+const applyProtocolViolation = ({ events, options, rngFactory, markField, deltaMap, attempt }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length === 0) {
     return false;
   }
@@ -463,8 +408,9 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
     return false;
   }
 
+  const rng = rngFactory(`anomaly|protocolViolation|attempt-${attempt}`);
   const shouldLoop =
-    config.enableLogoutLoginLoop !== false && randomFn() < Number(config.logoutLoginLoopProbability || 0);
+    config.enableLogoutLoginLoop !== false && rng() < Number(config.logoutLoginLoopProbability || 0);
 
   if (shouldLoop && loginIndex < events.length) {
     const baseEvent = events[loginIndex];
@@ -503,7 +449,7 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
   const preLoginEvents = Array.isArray(config.preLoginEvents) && config.preLoginEvents.length > 0
     ? (config.preLoginEvents as unknown[]).map((item) => String(item))
     : ['edit', 'view'];
-  const selected = preLoginEvents[Math.floor(randomFn() * preLoginEvents.length)] || 'edit';
+  const selected = preLoginEvents[Math.floor(rng() * preLoginEvents.length)] || 'edit';
   const insertOffsetSeconds = Number(config.insertOffsetSeconds);
   const insertDeltaSeconds = Number(config.insertDeltaSeconds);
   const offsetSeconds = Number.isFinite(insertOffsetSeconds) ? insertOffsetSeconds : -5;
@@ -528,7 +474,7 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
   return true;
 };
 
-const applyTimeDeviation = ({ events, options, randomFn, markField, session }: MutationContext): boolean => {
+const applyTimeDeviation = ({ events, options, rngFactory, markField, attempt }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length < 2) {
     return false;
   }
@@ -544,7 +490,8 @@ const applyTimeDeviation = ({ events, options, randomFn, markField, session }: M
   if (candidateIndices.length === 0) {
     return false;
   }
-  const chosenIndex = candidateIndices[Math.floor(randomFn() * candidateIndices.length)];
+  const rng = rngFactory(`anomaly|timeDeviation|attempt-${attempt}`);
+  const chosenIndex = candidateIndices[Math.floor(rng() * candidateIndices.length)];
   const target = events[chosenIndex];
   const previous = events[chosenIndex - 1];
   const previousTimestamp = parseTimestamp(previous.timestamp);
@@ -553,7 +500,7 @@ const applyTimeDeviation = ({ events, options, randomFn, markField, session }: M
   }
 
   const longProbability = Number(config.longProbability);
-  const useLongGap = Number.isFinite(longProbability) ? randomFn() < longProbability : randomFn() < 0.5;
+  const useLongGap = Number.isFinite(longProbability) ? rng() < longProbability : rng() < 0.5;
   const longGap = Number(config.longGapSeconds);
   const shortGap = Number(config.shortGapSeconds);
   const desiredDelta = useLongGap
@@ -564,7 +511,10 @@ const applyTimeDeviation = ({ events, options, randomFn, markField, session }: M
   const currentTimestamp = parseTimestamp(target.timestamp) || newTimestamp;
   const deltaShift = newTimestamp.getTime() - currentTimestamp.getTime();
 
-  const propagationSelection = selectPropagationMode(config, events, options, session ?? null, chosenIndex);
+  const propagationRng = rngFactory(
+    `anomaly|timeDeviation|propagation|index-${chosenIndex}|attempt-${attempt}`,
+  );
+  const propagationSelection = selectPropagationMode(config, propagationRng);
   const propagationMode = propagationSelection.mode;
   const propagateWeight = propagationSelection.weight;
 
@@ -601,7 +551,7 @@ const applyTimeDeviation = ({ events, options, randomFn, markField, session }: M
   return true;
 };
 
-const applyAuthenticationBypass = ({ events, options, randomFn, markField }: MutationContext): boolean => {
+const applyAuthenticationBypass = ({ events, options, rngFactory, markField, attempt }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length === 0) {
     return false;
   }
@@ -627,17 +577,18 @@ const applyAuthenticationBypass = ({ events, options, randomFn, markField }: Mut
       return unauthorizedEvents.has(String(event.event).toLowerCase());
     });
 
+  const rng = rngFactory(`anomaly|authBypass|attempt-${attempt}`);
   const selectedEntry =
     candidates.length > 0
-      ? candidates[Math.floor(randomFn() * candidates.length)]
-      : { event: events[Math.floor(randomFn() * events.length)], index: Math.floor(randomFn() * events.length) };
+      ? candidates[Math.floor(rng() * candidates.length)]
+      : { event: events[Math.floor(rng() * events.length)], index: Math.floor(rng() * events.length) };
 
   if (!selectedEntry || !selectedEntry.event) {
     return false;
   }
 
   const target = selectedEntry.event;
-  const suffix = Math.floor(randomFn() * 0xfffff).toString(16);
+  const suffix = Math.floor(rng() * 0xfffff).toString(16);
   const invalidSessionPrefix = String(config.invalidSessionPrefix || 'invalid-session');
   const invalidUserPrefix = String(config.invalidUserPrefix || 'spoofed-user');
 
@@ -704,7 +655,12 @@ export const injectAnomaly = (
     mergedOptions.maxAnomalies = userOptions.maxAnomalies as number | null;
   }
 
-  const randomFn = createPrng(mergedOptions.seed);
+  const rngFactory = createSessionCategoryPrng({
+    seed: mergedOptions.seed ?? null,
+    sessionId: mergedOptions.session?.sessionId ?? null,
+    uid: mergedOptions.session?.uid ?? mergedOptions.session?.userId ?? null,
+    namespace: 'anomaly',
+  });
   const deltaMap = new WeakMap<SimulationEvent, number>();
   const mutated = cloneSequence(sequence, deltaMap);
 
@@ -723,10 +679,11 @@ export const injectAnomaly = (
   const context: MutationContext = {
     events: mutated,
     options: mergedOptions,
-    randomFn,
+    rngFactory,
     markField: mergedOptions.markField,
     deltaMap,
     session: mergedOptions.session ?? null,
+    attempt: 0,
   };
 
   let appliedCount = 0;
@@ -734,7 +691,11 @@ export const injectAnomaly = (
   const maxAttempts = Math.max(desiredCount * 5, 10);
   while (appliedCount < desiredCount && attempts < maxAttempts) {
     attempts += 1;
-    const strategyKey = selectStrategyKey(strategyEntries, randomFn);
+    context.attempt = attempts;
+    const strategyKey = selectStrategyKey(
+      strategyEntries,
+      rngFactory(`anomaly|strategy|attempt-${attempts}`),
+    );
     if (!strategyKey) {
       break;
     }

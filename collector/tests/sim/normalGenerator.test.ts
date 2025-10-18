@@ -49,7 +49,13 @@ describe('generateNormalSequence', () => {
 
   it('生成された系列が正常フローと確率遷移を順守する', () => {
     const startTime = '2024-01-01T00:00:00.000Z';
-    const sequence = generateNormalSequence({ scenario, seed: 'fsm-normal', startTime });
+    const sequence = generateNormalSequence({
+      scenario,
+      seed: 'fsm-normal',
+      startTime,
+      sessionId: 'sess-fsm',
+      uid: 'uid-fsm',
+    });
 
     expect(sequence.length).toBeGreaterThan(0);
 
@@ -84,7 +90,14 @@ describe('generateNormalSequence', () => {
 
   it('ローカル時刻とUTCがオフセット込みで保持される', () => {
     const startTime = '2024-01-01T09:00:00+09:00';
-    const sequence = generateNormalSequence({ scenario, seed: 'offset-check', startTime, maxSteps: 2 });
+    const sequence = generateNormalSequence({
+      scenario,
+      seed: 'offset-check',
+      startTime,
+      maxSteps: 2,
+      sessionId: 'sess-offset',
+      uid: 'uid-offset',
+    });
     expect(sequence.length).toBeGreaterThan(0);
     const first = sequence[0];
     expect(first.timestamp?.endsWith('+09:00')).toBe(true);
@@ -97,8 +110,20 @@ describe('generateNormalSequence', () => {
 
   it('同一seedと開始時刻で系列が再現可能', () => {
     const startTime = '2024-01-01T00:00:00.000Z';
-    const seqA = generateNormalSequence({ scenario, seed: 42, startTime });
-    const seqB = generateNormalSequence({ scenario, seed: 42, startTime });
+    const seqA = generateNormalSequence({
+      scenario,
+      seed: 42,
+      startTime,
+      sessionId: 'sess-deterministic',
+      uid: 'uid-deterministic',
+    });
+    const seqB = generateNormalSequence({
+      scenario,
+      seed: 42,
+      startTime,
+      sessionId: 'sess-deterministic',
+      uid: 'uid-deterministic',
+    });
     expect(seqA).toEqual(seqB);
   });
 
@@ -149,6 +174,8 @@ describe('generateNormalSequence', () => {
       seed: 'gaussian-seed',
       startTime,
       maxSteps: 32,
+      sessionId: 'sess-gaussian',
+      uid: 'uid-gaussian',
     });
 
     expect(sequence.length).toBeGreaterThan(0);
@@ -202,7 +229,14 @@ describe('generateNormalSequence', () => {
       },
     };
 
-    const sequence = generateNormalSequence({ scenario: loopScenario, seed: 1, maxSteps: 3, startTime: '2024-01-01T00:00:00.000Z' });
+    const sequence = generateNormalSequence({
+      scenario: loopScenario,
+      seed: 1,
+      maxSteps: 3,
+      startTime: '2024-01-01T00:00:00.000Z',
+      sessionId: 'sess-loop',
+      uid: 'uid-loop',
+    });
     expect(sequence).toHaveLength(3);
   });
 });

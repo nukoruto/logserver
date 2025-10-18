@@ -1,12 +1,20 @@
 import { DEFAULT_SCENARIO_FILE, loadScenario } from '../scenario';
 import type { ScenarioDefinition } from '../scenario';
 import type { SimulationEvent } from '../../services/simulationService';
+import {
+  createSessionCategoryPrng,
+  type CategoryPrngFactory,
+} from './prng';
 
 export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   scenario?: ScenarioDefinition | string;
   seed?: string | number | null;
   maxSteps?: number;
   startTime?: Date | string;
+  sessionId?: string | null;
+  uid?: string | null;
+  namespace?: string | null;
+  rngFactory?: CategoryPrngFactory;
 }
 
 export type NormalEvent = SimulationEvent & {
@@ -46,36 +54,6 @@ const DEFAULT_DELTA_SPEC: DeltaSpec = {
 
 const isFiniteNumber = (value: unknown): value is number =>
   typeof value === 'number' && Number.isFinite(value);
-
-const normalizeSeed = (seed: unknown): number | null => {
-  if (seed === undefined || seed === null) {
-    return null;
-  }
-  if (typeof seed === 'number' && Number.isFinite(seed)) {
-    return seed >>> 0;
-  }
-  if (typeof seed === 'string' && seed.length > 0) {
-    let hash = 0;
-    for (let index = 0; index < seed.length; index += 1) {
-      hash = (hash << 5) - hash + seed.charCodeAt(index);
-      hash |= 0;
-    }
-    return hash >>> 0;
-  }
-  return null;
-};
-
-const createPrng = (seed: unknown): (() => number) => {
-  const normalizedSeed = normalizeSeed(seed);
-  if (normalizedSeed === null) {
-    return Math.random;
-  }
-  let state = normalizedSeed || 1;
-  return () => {
-    state = (state * 1664525 + 1013904223) >>> 0;
-    return state / 0x100000000;
-  };
-};
 
 const resolveScenario = (scenarioOption: ScenarioDefinition | string | undefined): ScenarioDefinition => {
   if (scenarioOption && typeof scenarioOption === 'object' && !Array.isArray(scenarioOption)) {
@@ -338,7 +316,10 @@ const buildTransitionMap = (scenario: ScenarioDefinition): Map<string, ScenarioT
   return adjacency;
 };
 
-const selectTransition = (candidates: ScenarioTransition[] | undefined, randomFn: () => number): ScenarioTransition | null => {
+const selectTransition = (
+  candidates: ScenarioTransition[] | undefined,
+  randomFn: () => number,
+): ScenarioTransition | null => {
   if (!Array.isArray(candidates) || candidates.length === 0) {
     return null;
   }
@@ -456,7 +437,14 @@ export const generateNormalSequence = (
   const scenario = resolveScenario(options.scenario as ScenarioDefinition | string | undefined);
   validateScenario(scenario);
 
-  const randomFn = createPrng(options.seed);
+  const rngFactory: CategoryPrngFactory =
+    options.rngFactory
+    || createSessionCategoryPrng({
+      seed: options.seed ?? null,
+      sessionId: (options.sessionId as string | null | undefined) ?? null,
+      uid: (options.uid as string | null | undefined) ?? null,
+      namespace: (options.namespace as string | null | undefined) ?? 'normal',
+    });
   const adjacency = buildTransitionMap(scenario);
   const terminalStates = resolveTerminalStates(scenario, adjacency);
   const initialState = resolveInitialState(scenario);
@@ -479,12 +467,14 @@ export const generateNormalSequence = (
       break;
     }
 
-    const chosen = selectTransition(candidates, randomFn);
+    const transitionRng = rngFactory(`transition|${currentState}|step-${steps}`);
+    const chosen = selectTransition(candidates, transitionRng);
     if (!chosen) {
       break;
     }
 
-    const deltaSeconds = sampleDeltaSeconds(chosen, randomFn, defaultDeltaSpec);
+    const deltaRng = rngFactory(`delta|${String(chosen.event ?? 'unknown')}|step-${steps}`);
+    const deltaSeconds = sampleDeltaSeconds(chosen, deltaRng, defaultDeltaSpec);
     currentUtcMillis += deltaSeconds * 1000;
     const timestampUtc = new Date(currentUtcMillis).toISOString();
     const timestampLocal = formatTimestampWithOffset(currentUtcMillis, offsetMinutes);
