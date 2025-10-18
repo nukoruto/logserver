@@ -29,6 +29,7 @@ lint:
 	$(PYTHON) -m ruff check trainer/src trainer/scripts trainer/tests
 
 node-build:
+	pnpm --filter @logserver/session-splitter run build
 	pnpm --filter @logserver/session-splitter-cli build
 	pnpm --filter @logserver/dt-preproc build
 	pnpm --filter @logserver/dt-anom build
