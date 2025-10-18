@@ -15,6 +15,7 @@ from .engine import DTLSTMEngine
 from .fit import FitError, main as fit_main
 from .model_def import ModelDefinition, save_definition
 from .modules import DeltaTimeModel, DeltaTimeModelConfig
+from .train import TrainingConfig, train as train_model
 
 _LOGGER = logging.getLogger("dt_lstm.cli")
 
@@ -135,6 +136,42 @@ def _build_parser() -> argparse.ArgumentParser:
     build_parser.add_argument("--delta-index", type=int, default=0, help="Δt 列のインデックス")
     build_parser.add_argument("--rmtpp-eps", type=float, default=1e-6, help="RMTPP の w 下限ε")
     build_parser.add_argument("--out", required=True, help="model_def.json の出力先")
+
+    train_parser = subparsers.add_parser("train", help="Δt-aware LSTM を学習する")
+    train_parser.add_argument("--train", dest="train", nargs="+", required=True, help="学習用CSVのglobパターン")
+    train_parser.add_argument("--val", dest="val", nargs="+", default=None, help="検証用CSVのglobパターン")
+    train_parser.add_argument("--numeric-cols", nargs="*", default=["z_clipped", "lburst", "m25", "m50", "m75", "z_deseas", "dt_sec"], help="連続特徴量列名")
+    train_parser.add_argument("--delta-col", default="dt_sec", help="Δt 列名")
+    train_parser.add_argument("--vocab", default=None, help="dt-lstm fit で生成した語彙JSON")
+    train_parser.add_argument("--idle-timeout", type=float, default=1800.0, help="セッション分割のアイドルタイムアウト秒")
+    train_parser.add_argument("--arch", choices=["lstm", "phased_lstm"], default="lstm", help="シーケンス骨格")
+    train_parser.add_argument("--time-head", choices=["regression", "rmtpp"], default="regression", help="時間予測ヘッド")
+    train_parser.add_argument("--time-objective", choices=["l1", "huber", "nll", "rmtpp"], default="l1", help="時間損失関数")
+    train_parser.add_argument("--emb-dim", type=int, default=128, help="埋め込み次元")
+    train_parser.add_argument("--hidden", type=int, default=128, help="隠れ状態次元")
+    train_parser.add_argument("--layers", type=int, default=1, help="LSTM 層数")
+    train_parser.add_argument("--dropout", type=float, default=0.1, help="ドロップアウト率")
+    train_parser.add_argument("--mlp-hidden", type=int, nargs="*", default=[64], help="連続特徴MLPの隠れ次元")
+    train_parser.add_argument("--mlp-activation", choices=["relu", "gelu", "silu"], default="gelu", help="MLP活性化")
+    train_parser.add_argument("--mlp-dropout", type=float, default=0.0, help="MLPドロップアウト")
+    train_parser.add_argument("--delta-index", type=int, default=0, help="連続特徴中のΔt列インデックス")
+    train_parser.add_argument("--rmtpp-eps", type=float, default=1e-6, help="RMTPP eps")
+    train_parser.add_argument("--epochs", type=int, default=30, help="エポック数")
+    train_parser.add_argument("--bs", type=int, default=64, help="バッチサイズ")
+    train_parser.add_argument("--lr", type=float, default=1e-3, help="学習率")
+    train_parser.add_argument("--min-lr", type=float, default=1e-5, help="学習率の下限 (cosine 用)")
+    train_parser.add_argument("--scheduler", choices=["none", "cosine"], default="none", help="スケジューラ種別")
+    train_parser.add_argument("--early", type=int, default=5, help="早期終了の許容エポック")
+    train_parser.add_argument("--uncertainty-weight", choices=["on", "off"], default="off", help="不確かさ重み付けの有効化")
+    train_parser.add_argument("--amp", choices=["off", "O0", "O1"], default="off", help="AMP モード")
+    train_parser.add_argument("--clip-grad", type=float, default=1.0, help="勾配クリッピングの上限")
+    train_parser.add_argument("--scheduled-sampling", type=float, default=0.0, help="Scheduled Sampling の確率")
+    train_parser.add_argument("--focal-gamma", type=float, default=None, help="Focal Loss の gamma")
+    train_parser.add_argument("--label-smoothing", type=float, default=0.0, help="ラベルスムージング率")
+    train_parser.add_argument("--class-weights", default=None, help="クラス重みJSONパス")
+    train_parser.add_argument("--num-workers", type=int, default=0, help="DataLoader のワーカー数")
+    train_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
+    train_parser.add_argument("--out", required=True, help="出力ディレクトリ")
     return parser
 
 
@@ -226,6 +263,92 @@ def main(argv: Sequence[str] | None = None) -> int:
             "time_head": args.time_head,
             "param_count": param_count,
             "out_path": str(out_path),
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "train":
+        engine = DTLSTMEngine(seed=args.seed)
+        runtime = engine.configure()
+        output_dir = Path(args.out).expanduser().resolve()
+        numeric_cols = list(args.numeric_cols or [])
+        if args.delta_col not in numeric_cols:
+            numeric_cols = [args.delta_col, *numeric_cols]
+        # Preserve order while removing duplicates
+        seen = set()
+        deduped_numeric = []
+        for col in numeric_cols:
+            if col in seen:
+                continue
+            seen.add(col)
+            deduped_numeric.append(col)
+        numeric_cols = deduped_numeric
+        model_cfg = DeltaTimeModelConfig(
+            arch=args.arch,
+            vocab_size=1,
+            embedding_dim=args.emb_dim,
+            hidden_size=args.hidden,
+            num_layers=args.layers,
+            dropout=args.dropout,
+            numeric_dim=len(numeric_cols),
+            mlp_hidden_dims=tuple(args.mlp_hidden) if args.mlp_hidden else tuple(),
+            mlp_activation=args.mlp_activation,
+            mlp_dropout=args.mlp_dropout,
+            time_head=args.time_head,
+            delta_index=args.delta_index,
+            rmtpp_eps=args.rmtpp_eps,
+        )
+        training_cfg = TrainingConfig(
+            epochs=args.epochs,
+            batch_size=args.bs,
+            learning_rate=args.lr,
+            min_learning_rate=args.min_lr,
+            scheduler=args.scheduler,
+            early_stopping=args.early,
+            clip_grad=args.clip_grad,
+            amp_level=args.amp,
+            scheduled_sampling=max(0.0, min(1.0, args.scheduled_sampling)),
+            uncertainty_weighting=args.uncertainty_weight == "on",
+            focal_gamma=args.focal_gamma,
+            label_smoothing=max(0.0, min(1.0, args.label_smoothing)),
+            num_workers=args.num_workers,
+        )
+        class_weights = None
+        if args.class_weights:
+            class_path = Path(args.class_weights).expanduser().resolve()
+            class_weights = json.loads(class_path.read_text(encoding="utf-8"))
+        val_patterns = args.val if args.val else None
+        time_objective = args.time_objective
+        if args.time_head == "rmtpp":
+            time_objective = "rmtpp"
+        try:
+            result = train_model(
+                args.train,
+                val_patterns=val_patterns,
+                numeric_columns=numeric_cols,
+                delta_column=args.delta_col,
+                vocab_path=Path(args.vocab).expanduser().resolve() if args.vocab else None,
+                idle_timeout=float(args.idle_timeout),
+                model_config=model_cfg,
+                training_config=training_cfg,
+                device=runtime.device,
+                output_dir=output_dir,
+                seed=args.seed,
+                time_objective=time_objective,
+                class_weights=class_weights,
+            )
+        except Exception as exc:  # pragma: no cover - ログ出力
+            _LOGGER.error("train.failed", extra={"error": str(exc)})
+            return 1
+        payload = {
+            "event": "train.completed",
+            "model_path": result["model_path"],
+            "optimizer_path": result["optimizer_path"],
+            "config_path": result["config_path"],
+            "history_path": result["history_path"],
+            "best_val_loss": result["best_val_loss"],
+            "seed": args.seed,
+            "device": str(runtime.device),
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
