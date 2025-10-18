@@ -10,9 +10,9 @@ import {
 import { loadDtRecords, writeJsonFile } from './io.js';
 import {
   anomalyStatsSchema,
-  anomalyMetaSchema,
+  anomalyMetaV2Schema,
   type AnomalyStats,
-  type AnomalyMeta,
+  type AnomalyMetaV2,
   type QuantileGroupEntry,
   type ThresholdTierEntry
 } from './schema.js';
@@ -61,7 +61,7 @@ export interface FitOptions {
 
 export interface FitResult {
   readonly stats: AnomalyStats;
-  readonly meta: AnomalyMeta;
+  readonly meta: AnomalyMetaV2;
 }
 
 interface InitialIntervalMeta {
@@ -554,8 +554,8 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
   await writeJsonFile(options.statsOut, stats);
   const statsHash = computeHashHex(JSON.stringify(stats));
   const seedsNormalized = options.seeds.map((value) => Math.trunc(value));
-  const meta: AnomalyMeta = anomalyMetaSchema.parse({
-    version: 1,
+  const meta: AnomalyMetaV2 = anomalyMetaV2Schema.parse({
+    version: 2,
     generated_at: nowIso(),
     stats_file: options.statsOut,
     input_files: Array.from(options.inputs),

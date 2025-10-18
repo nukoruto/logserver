@@ -87,6 +87,9 @@ describe('dt-anom pipeline', () => {
     );
     expect(updateAllocation).toBeDefined();
     expect(updateAllocation?.weight).toBeGreaterThan(0);
+    if (meta.version !== 2) {
+      throw new Error(`expected anomaly metadata version 2, received ${meta.version}`);
+    }
     expect(meta.threshold_tiers.quantile.length).toBeGreaterThan(0);
     expect(meta.threshold_tiers.spot.length).toBeGreaterThan(0);
     const updateQuantileTier = meta.threshold_tiers.quantile.find(
@@ -106,6 +109,9 @@ describe('dt-anom pipeline', () => {
 
     const loadedStats = await readAnomalyStats(statsOut);
     const loadedMeta = await readAnomalyMeta(metaOut);
+    if (loadedMeta.version !== 2) {
+      throw new Error(`expected anomaly metadata version 2, received ${loadedMeta.version}`);
+    }
     const loadedGlobalSpot = loadedStats.spot.find((entry) => entry.uid === '__global__');
     expect(loadedGlobalSpot?.beta).toBeGreaterThan(0);
     expect(loadedGlobalSpot?.warnings).toBeDefined();
