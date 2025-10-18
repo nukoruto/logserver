@@ -11,9 +11,16 @@ from pkgutil import extend_path
 __path__ = extend_path(__path__, __name__)
 
 from .engine import DTLSTMEngine, RuntimeContext, configure_runtime
+from .model_def import ModelDefinition, load_definition, save_definition
+from .modules import DeltaTimeModel, DeltaTimeModelConfig
 
 __all__ = [
     "DTLSTMEngine",
     "RuntimeContext",
     "configure_runtime",
+    "DeltaTimeModelConfig",
+    "DeltaTimeModel",
+    "ModelDefinition",
+    "save_definition",
+    "load_definition",
 ]

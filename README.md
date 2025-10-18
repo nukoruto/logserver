@@ -280,7 +280,32 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml \
   --cases 10 --out reports/explain_latest.json
 ```
 
-### 5.3 dt-lstm 語彙・統計フィット CLI
+### 5.3 dt-lstm モデル定義ビルド CLI
+
+`dt-lstm build` は、埋め込み・連続特徴 MLP・LSTM/PhasedLSTM 骨格・分類/時間ヘッドを一貫設定した `model_def.json` を生成します。生成物には `arch`（`lstm` / `phased_lstm`）、`time_head`（`regression` / `rmtpp`）、埋め込み次元、隠れ状態、連続特徴 MLP の層構成、Δt インデックス、RMTPP ε など全ハイパラが保存され、`load_definition(...).build_model()` で常に同一グラフを再構築できます。
+
+- `--arch phased_lstm` を選択した場合は、時間ゲート φ(t) を内部的に `τ = softplus(τ_raw)`, `r_on = clip(sigmoid(r_on_raw), 0.05, 0.5)` で正規化し、Δt 累積時刻ベクトルを `--times` 引数で渡すと、ゲート開閉に応じて状態が更新されます。
+- `--time-head rmtpp` では `g_i = v^T h_i + b`, `λ*(t) = exp(g_i + w × (t - t_i))`, `w = softplus(w_raw) + ε` を出力し、積分項は `∫_{0}^{Δ} λ*(t) dt = (exp(g_i + w Δ) - exp(g_i)) / w`（`|w| < 1e-6` の極限は `exp(g_i) × Δ`）で評価します。
+- 連続特徴は LayerNorm→MLP（活性化は `--mlp-activation` で指定）で射影後、イベント埋め込みと連結してシーケンス骨格へ入力されます。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli build \
+  --arch lstm \
+  --time-head rmtpp \
+  --vocab-size 256 \
+  --emb-dim 64 \
+  --hidden 256 \
+  --layers 2 \
+  --dropout 0.1 \
+  --numeric-dim 6 \
+  --mlp-hidden 64 64 \
+  --delta-index 0 \
+  --out ml/artifacts/model_def.json
+```
+
+同じハイパラで `dt-lstm build` を再実行すると出力 JSON の内容は常に一致し、PyTorch のバージョンと総パラメータ数が `metadata` に記録されます。`phased_lstm` を選択した場合は `times` テンソルを前向き計算時に必ず与えてください。
+
+### 5.4 dt-lstm 語彙・統計フィット CLI
 
 Δt 特徴量を含む学習 CSV（`dt-preproc transform` 済み）から `op_category` 語彙と RMTPP 初期ハイパラを推定するには、`dt-lstm fit` サブコマンドを利用します。同じ入力に対しては常に同一バイト列の JSON アーティファクトが生成されます。
 

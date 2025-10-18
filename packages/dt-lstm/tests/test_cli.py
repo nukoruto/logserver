@@ -16,7 +16,7 @@ PACKAGE_SRC = Path(__file__).resolve().parents[1] / "src"
 if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
-from dt_lstm import cli  # noqa: E402  pylint: disable=wrong-import-position
+from dt_lstm import cli, load_definition  # noqa: E402  pylint: disable=wrong-import-position
 
 
 def test_cli_init_creates_expected_structure(tmp_path, capsys):
@@ -71,3 +71,43 @@ def test_cli_help(capsys):
     assert exc.value.code == 0
     output = capsys.readouterr().out
     assert "dt-lstm" in output
+
+
+def test_cli_build_creates_definition(tmp_path, capsys):
+    out_path = tmp_path / "model_def.json"
+    exit_code = cli.main(
+        [
+            "build",
+            "--arch",
+            "lstm",
+            "--time-head",
+            "rmtpp",
+            "--vocab-size",
+            "32",
+            "--emb-dim",
+            "16",
+            "--hidden",
+            "24",
+            "--layers",
+            "2",
+            "--dropout",
+            "0.2",
+            "--numeric-dim",
+            "5",
+            "--mlp-hidden",
+            "12",
+            "--delta-index",
+            "1",
+            "--out",
+            str(out_path),
+        ]
+    )
+    assert exit_code == 0
+    stdout = capsys.readouterr().out.strip()
+    payload = json.loads(stdout)
+    assert payload["event"] == "build.completed"
+    assert out_path.exists()
+    definition = load_definition(out_path)
+    model_a = definition.build_model()
+    model_b = definition.build_model()
+    assert sum(p.numel() for p in model_a.parameters()) == sum(p.numel() for p in model_b.parameters())
