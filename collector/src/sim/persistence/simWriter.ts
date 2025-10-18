@@ -461,7 +461,6 @@ const baseExtrasResolvers: Record<string, FeatureResolver | null> = BASE_EXTRA_C
 );
 
 const CSV_BASE_COLUMNS = [
-  'timestamp',
   'timestamp_utc',
   'session_id',
   'user_id',
@@ -951,7 +950,6 @@ export const formatCsvAugmented = (
   const metadata = serializeMetadata(safeEvent.metadata);
   const sidFinal = resolveSidFinal(safeEvent);
   const baseValues = [
-    safeEvent.timestamp,
     safeEvent.timestamp_utc,
     safeEvent.session_id,
     safeEvent.user_id,

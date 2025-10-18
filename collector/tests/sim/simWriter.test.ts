@@ -31,7 +31,6 @@ const DEFAULT_FEATURE_COLUMNS = [
 ];
 
 const CSV_BASE_COLUMNS = [
-  'timestamp',
   'timestamp_utc',
   'session_id',
   'user_id',
@@ -149,6 +148,7 @@ describe('simWriter.persistSimulationRun', () => {
     const rows = csvContent.trim().split('\n');
     const header = rows[0].split(',');
     expect(header).toEqual([...CSV_BASE_COLUMNS, ...DEFAULT_FEATURE_COLUMNS, CSV_TRAILING_COLUMN]);
+    expect(header).not.toContain('timestamp');
     expect(rows).toHaveLength(events.length + 1);
 
     const headerIndex = new Map<string, number>();
@@ -162,6 +162,11 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const parsedRows = rows.slice(1).map(parseCsvRow);
+    const timestampUtcValues = parsedRows.map((columns: string[]) => {
+      const raw = valueAt(columns, 'timestamp_utc');
+      return raw.replace(/^"/, '').replace(/"$/, '').replace(/""/g, '"');
+    });
+    expect(timestampUtcValues.every((value) => typeof value === 'string' && value.endsWith('Z'))).toBe(true);
     const metadataRows = parsedRows.map((columns: string[]) => JSON.parse(valueAt(columns, 'metadata') || '{}'));
     expect(metadataRows[0].anomaly).toBe('normal');
     expect(metadataRows[1].anomaly).toBe('protocol_violation');
