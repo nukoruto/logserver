@@ -64,6 +64,15 @@ test('computeFeatureRows annotates symmetric log burst for consecutive measured 
   expect(featureRows[5].delta_log_burst).toBeNull();
   expect(featureRows[6].session_id).toBe('session-b');
   expect(featureRows[6].delta_log_burst).toBeNull();
+
+  for (const row of featureRows) {
+    if (row.delta_seconds !== null) {
+      expect(row.delta_seconds).toBeGreaterThan(0);
+    }
+    if (row.delta_clipped_seconds !== null) {
+      expect(row.delta_clipped_seconds).toBeGreaterThan(0);
+    }
+  }
 });
 
 test('computeFeatureRows emits causal rolling quantiles without NaN', () => {

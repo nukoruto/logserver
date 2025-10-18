@@ -114,3 +114,37 @@ test('computeDeltas promotes zero Δt to epsilon resolution', () => {
   assert.equal(result.stats.unknown, 1);
   assert.equal(result.stats.measured, 0);
 });
+
+test('computeDeltas marks missing timestamps as initial without unknown labels', () => {
+  const rows: TestRow[] = [
+    {
+      uid: 'user-c',
+      timestamp_epoch_seconds: baseSeconds,
+      timestamp_utc: isoFromSeconds(baseSeconds),
+      id: 'baseline'
+    },
+    {
+      uid: 'user-c',
+      // NaN simulates unreadable timestamp
+      timestamp_epoch_seconds: Number.NaN,
+      timestamp_utc: 'invalid',
+      id: 'missing'
+    },
+    {
+      uid: 'user-c',
+      timestamp_epoch_seconds: baseSeconds + 2,
+      timestamp_utc: isoFromSeconds(baseSeconds + 2),
+      id: 'recovered'
+    }
+  ];
+
+  const result = computeDeltas(rows, { epsilon: 0.001, epsilon_t: 0.01 });
+
+  assert.equal(result.rows.length, 3);
+  assert.equal(result.rows[0].timeLabel, 'initial');
+  assert.equal(result.rows[1].timeLabel, 'initial');
+  assert.equal(result.rows[2].timeLabel, 'initial');
+  assert.equal(result.rows[2].deltaSeconds, null);
+  assert.equal(result.stats.unknown, 0);
+  assert.equal(result.stats.initial, 3);
+});

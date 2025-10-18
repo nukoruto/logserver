@@ -310,8 +310,16 @@ function assignQuantileField(row: LogRowWithFeats, key: string, value: number | 
 }
 
 function normalizeFeatureOptions(options: Partial<FeatureOptions> = {}): NormalizedFeatureOptions {
-  const epsilon = Math.max(0, options.epsilon ?? DEFAULT_FEATURE_OPTIONS.epsilon);
-  const epsilonT = Math.max(0, options.epsilonT ?? DEFAULT_FEATURE_OPTIONS.epsilonT);
+  const epsilonCandidate = options.epsilon;
+  const epsilon =
+    typeof epsilonCandidate === 'number' && Number.isFinite(epsilonCandidate) && epsilonCandidate > 0
+      ? epsilonCandidate
+      : DEFAULT_FEATURE_OPTIONS.epsilon;
+  const epsilonTCandidate = options.epsilonT;
+  const epsilonT =
+    typeof epsilonTCandidate === 'number' && Number.isFinite(epsilonTCandidate) && epsilonTCandidate >= 0
+      ? Math.max(epsilon, epsilonTCandidate)
+      : Math.max(epsilon, DEFAULT_FEATURE_OPTIONS.epsilonT);
   const clipCandidate = options.clipMaxSeconds ?? DEFAULT_FEATURE_OPTIONS.clipMaxSeconds;
   const clipMaxSeconds = clipCandidate > 0 ? clipCandidate : DEFAULT_FEATURE_OPTIONS.clipMaxSeconds;
   const robustScaleEpsilon = options.robustScaleEpsilon ?? DEFAULT_FEATURE_OPTIONS.robustScaleEpsilon;
@@ -557,7 +565,7 @@ function computeSessionElapsed(state: SessionState, timestamp: number | null): n
   return elapsed >= 0 ? elapsed : 0;
 }
 
-function sanitizeDelta(deltaSeconds: number | null): number | null {
+function sanitizeDelta(deltaSeconds: number | null, epsilon: number): number | null {
   if (deltaSeconds === null) {
     return null;
   }
@@ -565,9 +573,9 @@ function sanitizeDelta(deltaSeconds: number | null): number | null {
     return null;
   }
   if (deltaSeconds <= 0) {
-    return 0;
+    return epsilon;
   }
-  return deltaSeconds;
+  return Math.max(deltaSeconds, epsilon);
 }
 
 export function computeFeatureRows(
@@ -640,7 +648,7 @@ export function computeFeatureRows(
         isFiniteNumber(baseRow.timestamp_epoch_seconds) ? baseRow.timestamp_epoch_seconds : null
       );
 
-      const sanitized = sanitizeDelta(deltaSeconds);
+      const sanitized = sanitizeDelta(deltaSeconds, normalized.epsilon);
 
       let clipped: number | null = null;
       if (sanitized !== null) {
@@ -664,7 +672,7 @@ export function computeFeatureRows(
           measuredValuesByGroup.set(groupKey, [clipped]);
         }
         if (timeLabel === 'measured') {
-          const logValue = Math.log(Math.max(clipped, 0) + logEps);
+          const logValue = Math.log(Math.max(clipped, normalized.epsilon) + logEps);
           measuredLogValues.push(logValue);
           const perUserLog = measuredLogValuesByUser.get(baseRow.uid);
           if (perUserLog) {
@@ -935,7 +943,7 @@ export function computeFeatureRows(
         if (!(scale > 0)) {
           continue;
         }
-        const logDelta = Math.log(Math.max(row.delta_clipped_seconds, 0) + logEps);
+        const logDelta = Math.log(Math.max(row.delta_clipped_seconds, normalized.epsilon) + logEps);
         const zDeseas = (logDelta - hourlyStats.x_med) / scale;
         row.delta_z_deseas_clipped = clip(zDeseas, normalized.robustZClip);
       }
@@ -1185,7 +1193,7 @@ export class StreamingFeatureTransformer {
     let timeLabel: DeltaTimeLabel;
 
     if (!isFiniteNumber(timestamp)) {
-      timeLabel = 'unknown';
+      timeLabel = 'initial';
       state.prevTimestamp = null;
     } else if (sequence === 0 || state.prevTimestamp === null) {
       timeLabel = 'initial';
@@ -1195,17 +1203,14 @@ export class StreamingFeatureTransformer {
       let delta = previous !== null ? timestamp - previous : null;
       if (delta === null || !Number.isFinite(delta) || delta < 0) {
         deltaSeconds = null;
-        timeLabel = 'unknown';
+        timeLabel = 'initial';
       } else {
-        if (delta <= this.normalized.epsilon) {
-          delta = this.normalized.epsilon;
-        }
-        deltaSeconds = delta;
+        deltaSeconds = Math.max(delta, this.normalized.epsilon);
         timeLabel = delta <= this.normalized.epsilonT ? 'unknown' : 'measured';
       }
     }
 
-    const sanitized = sanitizeDelta(deltaSeconds);
+    const sanitized = sanitizeDelta(deltaSeconds, this.normalized.epsilon);
     let clipped: number | null = null;
     let logBurst: number | null = null;
 
@@ -1267,7 +1272,7 @@ export class StreamingFeatureTransformer {
         const hourlyStats = resolveHourlyStats(statsForRow, extractHour(row), fallback);
         const scale = Math.max(hourlyStats.x_smad, this.normalized.robustScaleEpsilon);
         if (scale > 0) {
-          const logDelta = Math.log(Math.max(clipped, 0) + this.logEps);
+          const logDelta = Math.log(Math.max(clipped, this.normalized.epsilon) + this.logEps);
           const zDeseas = (logDelta - hourlyStats.x_med) / scale;
           deltaSeasonalZ = clip(zDeseas, this.normalized.robustZClip);
         }

@@ -38,11 +38,20 @@ const INITIAL_STATS: DeltaComputationStats = {
   initial: 0
 };
 
-function sanitizeNonNegative(value: number): number {
-  if (typeof value !== 'number' || Number.isNaN(value) || value < 0) {
-    return 0;
+const EPSILON_MIN = 1e-6;
+
+function sanitizeEpsilon(value: number): number {
+  if (typeof value !== 'number' || Number.isNaN(value) || value <= 0) {
+    return EPSILON_MIN;
   }
-  return value;
+  return Math.max(value, EPSILON_MIN);
+}
+
+function sanitizeEpsilonT(value: number, epsilon: number): number {
+  if (typeof value !== 'number' || Number.isNaN(value) || value < 0) {
+    return epsilon;
+  }
+  return Math.max(value, epsilon);
 }
 
 function isFiniteTimestamp(row: UserGroupedRow): boolean {
@@ -57,8 +66,8 @@ export function computeDeltas<T extends UserGroupedRow>(
     throw new TypeError('userRows must be an array');
   }
 
-  const epsilon = sanitizeNonNegative(options.epsilon);
-  const epsilonT = sanitizeNonNegative(options.epsilon_t);
+  const epsilon = sanitizeEpsilon(options.epsilon);
+  const epsilonT = sanitizeEpsilonT(options.epsilon_t, epsilon);
 
   const annotated: DeltaAnnotatedRow<T>[] = [];
   const stats: DeltaComputationStats = { ...INITIAL_STATS, total: userRows.length };
@@ -67,8 +76,8 @@ export function computeDeltas<T extends UserGroupedRow>(
 
   for (const row of userRows) {
     if (!isFiniteTimestamp(row)) {
-      annotated.push({ row, deltaSeconds: null, timeLabel: 'unknown' });
-      stats.unknown += 1;
+      annotated.push({ row, deltaSeconds: null, timeLabel: 'initial' });
+      stats.initial += 1;
       previousRow = row;
       continue;
     }
@@ -85,15 +94,13 @@ export function computeDeltas<T extends UserGroupedRow>(
     let delta = currentTime - previousTime;
 
     if (!Number.isFinite(delta) || delta < 0) {
-      annotated.push({ row, deltaSeconds: null, timeLabel: 'unknown' });
-      stats.unknown += 1;
+      annotated.push({ row, deltaSeconds: null, timeLabel: 'initial' });
+      stats.initial += 1;
       previousRow = row;
       continue;
     }
 
-    if (delta <= epsilon) {
-      delta = epsilon;
-    }
+    delta = Math.max(delta, epsilon);
 
     const timeLabel: DeltaTimeLabel = delta <= epsilonT ? 'unknown' : 'measured';
     annotated.push({ row, deltaSeconds: delta, timeLabel });

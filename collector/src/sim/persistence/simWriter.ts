@@ -555,7 +555,7 @@ export const augmentRows = <T extends SimulationEvent>(
     let label: 'initial' | 'measured' | 'unknown';
 
     if (!timestamp) {
-      label = 'unknown';
+      label = 'initial';
       state.previousTimestamp = null;
     } else if (state.sequence === 0 || state.previousTimestamp === null) {
       label = 'initial';
@@ -570,7 +570,7 @@ export const augmentRows = <T extends SimulationEvent>(
         }
       }
       if (deltaCandidate === null || !Number.isFinite(deltaCandidate) || deltaCandidate < 0) {
-        label = 'unknown';
+        label = 'initial';
         dtSec = null;
         state.previousTimestamp = timestamp.getTime();
       } else {

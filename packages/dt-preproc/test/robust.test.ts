@@ -4,6 +4,7 @@ import { fileURLToPath } from 'node:url';
 import { expect, test } from 'vitest';
 
 import {
+  DEFAULT_FEATURE_OPTIONS,
   clip,
   computeFeatureRows,
   fitRobustStats,
@@ -161,8 +162,8 @@ test('computeFeatureRows normalizes epsilon inputs', () => {
   expect(baseline.options.epsilonT).toBeCloseTo(0.05, 6);
 
   const { options } = computeFeatureRows([], { epsilon: -5, epsilonT: -1, clipMaxSeconds: -10 });
-  expect(options.epsilon).toBe(0);
-  expect(options.epsilonT).toBe(0);
+  expect(options.epsilon).toBeCloseTo(DEFAULT_FEATURE_OPTIONS.epsilon, 6);
+  expect(options.epsilonT).toBeCloseTo(Math.max(DEFAULT_FEATURE_OPTIONS.epsilonT, DEFAULT_FEATURE_OPTIONS.epsilon), 6);
   expect(options.clipMaxSeconds).toBe(300);
 });
 
