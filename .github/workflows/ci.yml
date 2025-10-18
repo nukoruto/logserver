@@ -72,6 +72,9 @@ jobs:
       - name: Install dependencies
         run: pnpm install --frozen-lockfile
 
+      - name: Build workspace packages
+        run: make node-build
+
       - name: Session splitter CLI e2e tests
         run: pnpm --filter @logserver/session-splitter-cli test
 
@@ -102,7 +105,7 @@ jobs:
         run: pnpm install --frozen-lockfile
 
       - name: Build all workspaces
-        run: pnpm -r run build
+        run: make node-build
 
       - name: Test all workspaces
         run: pnpm -r run test
