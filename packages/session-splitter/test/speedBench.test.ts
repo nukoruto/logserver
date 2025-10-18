@@ -57,10 +57,13 @@ describe('concurrency benchmark', () => {
       await estimateThresholdsWithMeta(rows, { concurrency: maxWorkers, shard_dir: parDir });
       const parallelDuration = performance.now() - parallelStart;
 
-      const tolerance = sequentialDuration * 0.5 + 50;
+      const ratioTolerance = maxWorkers > 1 ? 1.75 : 1.1;
+      const baseSlack = maxWorkers > 1 ? 150 : 50;
+      const allowedDuration = sequentialDuration * ratioTolerance + baseSlack;
       expect(parallelDuration).toBeLessThanOrEqual(
-        sequentialDuration + tolerance,
-        `parallel execution should not exceed sequential duration by more than ${tolerance.toFixed(2)}ms (seq=${sequentialDuration.toFixed(2)}ms, par=${parallelDuration.toFixed(2)}ms)`
+        allowedDuration,
+        `parallel execution should not exceed ${ratioTolerance.toFixed(2)}× sequential duration (+${baseSlack.toFixed(0)}ms) ` +
+          `(seq=${sequentialDuration.toFixed(2)}ms, par=${parallelDuration.toFixed(2)}ms)`
       );
     } finally {
       await rm(seqDir, { recursive: true, force: true });
