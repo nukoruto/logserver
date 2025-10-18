@@ -258,6 +258,22 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml \
   --cases 10 --out reports/explain_latest.json
 ```
 
+### 5.3 dt-lstm 語彙・統計フィット CLI
+
+Δt 特徴量を含む学習 CSV（`dt-preproc transform` 済み）から `op_category` 語彙と RMTPP 初期ハイパラを推定するには、`dt-lstm fit` サブコマンドを利用します。同じ入力に対しては常に同一バイト列の JSON アーティファクトが生成されます。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli fit \
+  --in data/train/*.csv \
+  --vocab-out ml/artifacts/vocab.json \
+  --cfg-out ml/artifacts/train_meta.json \
+  --seed 2025
+```
+
+- `vocab.json` には `<pad>/<unk>` を含む `stoi/itos`、頻度統計、OOV トークン、TopK 候補（`[3,5]`）が保存されます。
+- `train_meta.json` にはデータ件数・Δt 要約統計に加え、埋め込み次元・隠れ状態・ドロップアウト初期値、温度スケーリング枠、RMTPP の `w_init` / `bias_init` / `scale`（学習対象・固定の両設定）が保存されます。
+- 失敗時は JSON ログに `fit.failed` が出力され、欠損列や入力ファイル不在などの理由を即座に確認できます。
+
 各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc_meta.json`）を再利用して追加検証を実施します。
 
 学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。

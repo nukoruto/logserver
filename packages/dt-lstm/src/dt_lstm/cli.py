@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Sequence
 
 from .engine import DTLSTMEngine
+from .fit import FitError, main as fit_main
 
 _LOGGER = logging.getLogger("dt_lstm.cli")
 
@@ -97,6 +98,12 @@ def _build_parser() -> argparse.ArgumentParser:
         action="store_true",
         help="既存ディレクトリがあっても上書きする",
     )
+
+    fit_parser = subparsers.add_parser("fit", help="学習データから語彙とメタ情報を推定する")
+    fit_parser.add_argument("--in", dest="inputs", nargs="+", required=True, help="入力CSVパス (glob対応)")
+    fit_parser.add_argument("--vocab-out", required=True, help="語彙JSONの出力先")
+    fit_parser.add_argument("--cfg-out", required=True, help="メタ情報JSONの出力先")
+    fit_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
     return parser
 
 
@@ -131,6 +138,25 @@ def main(argv: Sequence[str] | None = None) -> int:
             "device": str(runtime.device),
             "cuda_visible_devices": runtime.cuda_visible_devices,
             "deterministic": runtime.deterministic,
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "fit":
+        vocab_out = Path(args.vocab_out).expanduser().resolve()
+        cfg_out = Path(args.cfg_out).expanduser().resolve()
+        try:
+            result = fit_main(args.inputs, vocab_out, cfg_out, args.seed)
+        except FitError as exc:
+            _LOGGER.error("fit.failed", extra={"error": str(exc)})
+            return 1
+        payload = {
+            "event": "fit.completed",
+            "num_events": result["num_events"],
+            "vocab_size": result["vocab_size"],
+            "dt_mean": result["dt_mean"],
+            "vocab_path": str(vocab_out),
+            "meta_path": str(cfg_out),
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
