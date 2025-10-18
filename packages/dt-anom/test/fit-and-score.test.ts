@@ -287,9 +287,10 @@ describe('dt-anom pipeline', () => {
     expect(sGroup?.tier).toBe('group');
     const sUser = findTier(meta.threshold_tiers.spot, 'u2', 'READ');
     expect(sUser?.tier).toBe('user');
-    const sGlobal = findTier(meta.threshold_tiers.spot, 'u3', 'UPDATE');
-    expect(sGlobal?.tier).toBe('global');
-    expect(sGlobal?.source_uid).toBe('__global__');
+    const sSparse = findTier(meta.threshold_tiers.spot, 'u3', 'UPDATE');
+    expect(sSparse?.tier).toBe('user');
+    expect(sSparse?.sample_count).toBeLessThanOrEqual(1);
+    expect(sSparse?.source_uid).toBe('u3');
   });
 
   it('recalibrates xi/beta when sufficient tail samples arrive', () => {

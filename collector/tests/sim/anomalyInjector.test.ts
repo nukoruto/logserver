@@ -198,6 +198,48 @@ describe('injectAnomaly', () => {
     }
   });
 
+  it('propagate と local モードで後続イベントのシフト量が一致しない', () => {
+    const base = createBaseSequence();
+    const propagateSequence = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'mode-diff',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 180, mode: 'propagate' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-mode', userId: 'user-mode', uid: 'uid-mode' },
+    });
+
+    const localSequence = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'mode-diff',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 180, mode: 'local' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-mode', userId: 'user-mode', uid: 'uid-mode' },
+    });
+
+    const propagateDeviation = propagateSequence.find((event: any) => event._anomalyType === 'timeDeviation');
+    const localDeviation = localSequence.find((event: any) => event._anomalyType === 'timeDeviation');
+    expect(propagateDeviation?._anomalyDetails?.propagationMode).toBe('propagate');
+    expect(localDeviation?._anomalyDetails?.propagationMode).toBe('local');
+    if (!propagateDeviation || !localDeviation) {
+      throw new Error('time deviation not injected');
+    }
+
+    const propagateIndex = propagateSequence.indexOf(propagateDeviation as any);
+    const localIndex = localSequence.indexOf(localDeviation as any);
+    expect(localIndex).toBe(propagateIndex);
+
+    for (let i = propagateIndex + 1; i < base.length; i += 1) {
+      expect(localSequence[i].timestamp).toBe(base[i].timestamp);
+      expect(propagateSequence[i].timestamp).not.toBe(localSequence[i].timestamp);
+    }
+  });
+
   it('認証不備を注入しセッションIDとユーザIDを不正化する', () => {
     const base = createBaseSequence();
     const mutated = injectAnomaly(base, {
