@@ -7,6 +7,10 @@ export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   seed?: string | number | null;
   maxSteps?: number;
   startTime?: Date | string;
+  sessionId?: string | null;
+  uid?: string | null;
+  namespace?: string | null;
+  rngFactory?: (category: string) => () => number;
 }
 
 export type NormalEvent = SimulationEvent & {
