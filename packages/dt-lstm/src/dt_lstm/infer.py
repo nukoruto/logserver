@@ -205,11 +205,17 @@ def run_inference(
                 probs = probabilities[step]
                 effective_k = min(int(topk), probs.numel())
                 top_values, top_indices = torch.topk(probs, effective_k)
+                target_id = int(targets[step].item())
+                target_prob: float
+                if 0 <= target_id < probs.numel():
+                    target_prob = float(probs[target_id].item())
+                else:
+                    target_prob = 0.0
+                target_prob = max(0.0, min(1.0, target_prob))
                 top_mass = float(top_values.sum().item())
                 top_mass = max(0.0, min(1.0, top_mass))
-                p_ev = float(max(0.0, min(1.0, 1.0 - top_mass)))
-                components = [top_mass]
-                target_id = int(targets[step].item())
+                p_ev = target_prob
+                components = [target_prob]
                 delta = float(delta_values[step].item())
                 censored = bool(censor_flags[step].item())
                 g_val = float(g_values[step].item())
