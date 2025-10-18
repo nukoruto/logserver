@@ -136,8 +136,152 @@ tree -L 1 data/processed
 
 ---
 
-## 8. トラブルシュート
-### 8.1 権限エラー (EACCES / Permission denied)
+## 8. Δt CLI 再現（session-split → dt-preproc → dt-anom）
+1. Node.js パッケージをビルドする（初回のみ）。
+   ```bash
+   pnpm install
+   pnpm --filter @logserver/session-splitter build
+   pnpm --filter @logserver/session-splitter-cli build
+   pnpm --filter @logserver/csv-schema build
+   pnpm --filter @logserver/dt-preproc build
+   pnpm --filter @logserver/dt-anom build
+   ```
+2. セッション分割 CLI で Δt を含む CSV とメタデータを生成する。
+   ```bash
+   mkdir -p out stats data
+   JWT_HMAC_KEY=c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY= \
+     node packages/session-splitter-cli/dist/bulk.js \
+     --in logs/sample.csv \
+     --out out/split.csv \
+     --meta out/split.meta.json \
+     --epsilon 0.01 \
+     --k 3 \
+     --scan-step 0.05 \
+     --min-events 3 \
+     --algo otsu+kneedle-v1 \
+     --idle-timeout 1800
+   ```
+   - `out/split.csv` と `out/split.meta.json` が生成され、`split.meta.json` には `DeltaT`・`tau_final`・`dataset_hash` が保存される。
+3. `dt-preproc` で統計を推定し、同一入力に対して 2 回特徴量を生成して決定性と NaN 非存在を確認する。
+   ```bash
+   node packages/dt-preproc/dist/cli.js fit \
+     --input out/split.csv \
+     --out stats/preproc_stats.json \
+     --meta stats/preproc_meta.json \
+     --pretty
+
+   node packages/dt-preproc/dist/cli.js transform \
+     --input out/split.csv \
+     --stats stats/preproc_stats.json \
+     --out data/feat1.csv
+
+   node packages/dt-preproc/dist/cli.js transform \
+     --input out/split.csv \
+     --stats stats/preproc_stats.json \
+     --out data/feat2.csv
+
+   sha256sum data/feat1.csv data/feat2.csv
+   rg "NaN" data/feat1.csv
+   ```
+   - `sha256sum` が一致することを確認し、`rg` で `NaN` が出現しないことを検証する。
+4. `dt-anom` 用の入力 CSV を Δt 特徴量から生成する。初期イベント（Δt 欠損）は除外する。
+   ```bash
+   python - <<'PY'
+import csv, math
+from pathlib import Path
+src = Path('data/feat1.csv')
+dst = Path('data/dt_anom_input.csv')
+with src.open() as f:
+    reader = csv.DictReader(f)
+    fieldnames = [
+        'timestamp_utc','uid','session_id','method','path',
+        'referer','user_agent','op_category',
+        'dt_sec','log_dt','z','z_clipped','z_deseas'
+    ]
+    rows = []
+    for row in reader:
+        dt_raw = row.get('delta_clipped_seconds') or row.get('delta_seconds') or ''
+        if not dt_raw:
+            continue
+        dt = float(dt_raw)
+        rows.append({
+            'timestamp_utc': row['timestamp_utc'],
+            'uid': row['uid'],
+            'session_id': row['session_id'],
+            'method': row['method'],
+            'path': row['path'],
+            'referer': row['referer'],
+            'user_agent': row['user_agent'],
+            'op_category': row['op_category'],
+            'dt_sec': f"{dt:.6f}",
+            'log_dt': f"{math.log(max(dt, 1e-9)):.6f}",
+            'z': ('' if not row.get('delta_robust_z') else f"{float(row['delta_robust_z']):.6f}"),
+            'z_clipped': ('' if not row.get('delta_z_deseas_clipped') else f"{float(row['delta_z_deseas_clipped']):.6f}"),
+            'z_deseas': ('' if not row.get('delta_z_deseas_clipped') else f"{float(row['delta_z_deseas_clipped']):.6f}")
+        })
+with dst.open('w', newline='') as f:
+    writer = csv.DictWriter(f, fieldnames=fieldnames)
+    writer.writeheader()
+    writer.writerows(rows)
+PY
+   ```
+5. `dt-anom` で統計を学習し、同一入力を 2 回スコアリングして決定性と必須列を検証する。
+   ```bash
+   PREPROC_HASH=$(sha256sum stats/preproc_stats.json | awk '{print $1}')
+   node packages/dt-anom/dist/cli.js fit \
+     --input data/dt_anom_input.csv \
+     --stats-out stats/anom_stats.json \
+     --meta-out stats/anom_meta.json \
+     --column dt_sec \
+     --quantile-lower 0.1 \
+     --quantile-upper 0.9 \
+     --min-quantile-samples 1 \
+     --budget-total 0.5 \
+     --spot-domain log_dt \
+     --spot-calib-count 2 \
+     --spot-p0 0.8,0.9,0.95 \
+     --min-tail 1 \
+     --flag-tail-prob 0.1 \
+     --alpha 0.5 \
+     --q 0.95 \
+     --calib-window 10 \
+     --decluster-r 1 \
+     --kofn 1/1 \
+     --H 1.2 \
+     --reestimate-every 5 \
+     --min-exceed 1 \
+     --pool-strategy per-user \
+     --xi-eps 0.001 \
+     --upper-cap-per-day 5 \
+     --lower-clip -5 \
+     --seed 123 \
+     --preproc-hash "$PREPROC_HASH" > logs/dt-anom-fit.json
+
+   node packages/dt-anom/dist/cli.js score \
+     --input data/dt_anom_input.csv \
+     --output out/scored_1.csv \
+     --stats stats/anom_stats.json \
+     --meta stats/anom_meta.json \
+     --audit out/spot_audit.jsonl > logs/dt-anom-score1.json
+
+   node packages/dt-anom/dist/cli.js score \
+     --input data/dt_anom_input.csv \
+     --output out/scored_2.csv \
+     --stats stats/anom_stats.json \
+     --meta stats/anom_meta.json \
+     --audit out/spot_audit_run2.jsonl > logs/dt-anom-score2.json
+
+   sha256sum out/scored_1.csv out/scored_2.csv
+   rg "NaN" out/scored_1.csv
+   head -n 1 out/scored_1.csv
+   ```
+   - `sha256sum` が一致し、`spot_tau_t`・`tau_hi`・`spot_alarm_kofn`・`alarm` 列がヘッダに含まれていることを確認する。
+   - `out/spot_audit.jsonl` を確認し、`flagged` としきい値メタ情報（`spot_tau`、`p_upper_spot` など）が記録されているか検証する。
+
+---
+
+## 9. トラブルシュート
+### 9.1 権限エラー (EACCES / Permission denied)
 - 症状: `artifacts/` や `data/processed/` への書き込み失敗。
 - 対処:
   ```bash
@@ -147,7 +291,7 @@ tree -L 1 data/processed
   ```
 - Docker ボリュームが root 所有の場合は `docker run --rm -v $(pwd)/artifacts:/mnt busybox chown -R 1000:1000 /mnt`。
 
-### 8.2 ディスク不足
+### 9.2 ディスク不足
 - 症状: `No space left on device`。
 - 対処:
   ```bash
@@ -157,7 +301,7 @@ tree -L 1 data/processed
   ```
 - 収集物削除前に `tar czf backup-$(date -u +%Y%m%d).tgz artifacts data/processed runs` で退避。
 
-### 8.3 NTP 不安定
+### 9.3 NTP 不安定
 - 症状: `chronyc tracking` で `Last offset` > 0.050s が継続。
 - 対処:
   ```bash
@@ -167,7 +311,7 @@ tree -L 1 data/processed
   ```
 - コンテナ内はホスト時間に追従するため、ホストの NTP 安定化が必須。安定後にシードをやり直すことで Δt の再現性を担保。
 
-### 8.4 `dt-anom` CLI で `recalibrate` が失敗する
+### 9.4 `dt-anom` CLI で `recalibrate` が失敗する
 - 症状: `pnpm exec dt-anom recalibrate` など `recalibrate` サブコマンドを実行すると、毎回
   `Hierarchical SPOT recalibration is not supported. Please rerun dt-anom fit.` が出力され処理が停止する。
 - 原因: `packages/dt-anom/src/cli.ts` にて `recalibrate` コマンドは意図的に未実装であり、例外を送出して
@@ -182,7 +326,7 @@ tree -L 1 data/processed
 
 ---
 
-## 9. 完了条件チェックリスト
+## 10. 完了条件チェックリスト
 - [ ] `.env` に JWT_HMAC_KEY / SID_KEY_ID / GPU_MODE / SEED_* を設定
 - [ ] `docker compose ps` で collector が `Up` かつ 8000 LISTEN
 - [ ] `chronyc tracking` で ±50ms 内に収束

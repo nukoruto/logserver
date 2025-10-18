@@ -1,0 +1,165 @@
+{
+  "version": 1,
+  "generated_at": "2025-10-18T15:16:23.589Z",
+  "stats_file": "stats/anom_stats.json",
+  "input_files": [
+    "data/dt_anom_input.csv"
+  ],
+  "row_count": 2,
+  "base_column": "dt_sec",
+  "quantile_levels": [
+    0.1,
+    0.9,
+    0.95,
+    0.99,
+    0.995
+  ],
+  "spot": {
+    "recalibrated": false,
+    "min_tail_count": 1,
+    "domain": "log_dt",
+    "xi_eps": 0.001,
+    "decluster_r": 1,
+    "initial_interval": {
+      "type": "count",
+      "count": 2
+    },
+    "p0_candidates": [
+      0.8,
+      0.9,
+      0.95
+    ]
+  },
+  "scoring": {
+    "flag_tail_probability": 0.1,
+    "score_column": "dt_sec",
+    "base_mean": 6,
+    "base_std": 1.4142135623730951
+  },
+  "budget": {
+    "total": 0.5,
+    "weight_mode": "count",
+    "weight_sum": 6,
+    "allocations": [
+      {
+        "uid": "__global__",
+        "op_category": "__global__",
+        "weight": 2,
+        "q_alloc": 0.16666666666666666
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "__all__",
+        "weight": 2,
+        "q_alloc": 0.16666666666666666
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "AUTH",
+        "weight": 1,
+        "q_alloc": 0.08333333333333333
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "READ",
+        "weight": 1,
+        "q_alloc": 0.08333333333333333
+      }
+    ]
+  },
+  "algo_ver": "5.0-spec",
+  "alpha": 0.5,
+  "q": 0.95,
+  "calib_window": 10,
+  "decluster_r": 1,
+  "kofn": [
+    1,
+    1
+  ],
+  "H": 1.2,
+  "reestimate_every": 5,
+  "min_exceed": 1,
+  "pool_strategy": "per-user",
+  "xi_eps": 0.001,
+  "upper_cap/day": 5,
+  "lower_clip": -5,
+  "grouping": {
+    "user": "uid",
+    "category": "op_category"
+  },
+  "seeds": [
+    123
+  ],
+  "stats_hash": "9e83bc112cf3edb9de1a373959ddcd962b9f9f51ffd6de54baca3e4ff6046a69",
+  "preproc_hash": "b51f255a5203f6527f5ada68f31b79c765a9ad0d62aadfe8842f31531259abec",
+  "threshold_tiers": {
+    "quantile": [
+      {
+        "uid": "__global__",
+        "op_category": "__global__",
+        "tier": "global",
+        "sample_count": 2,
+        "source_uid": "__global__",
+        "source_op_category": "__global__"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "__all__",
+        "tier": "user",
+        "sample_count": 2,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "__all__"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "AUTH",
+        "tier": "group",
+        "sample_count": 1,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "AUTH"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "READ",
+        "tier": "group",
+        "sample_count": 1,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "READ"
+      }
+    ],
+    "spot": [
+      {
+        "uid": "__global__",
+        "op_category": "__global__",
+        "tier": "global",
+        "sample_count": 2,
+        "source_uid": "__global__",
+        "source_op_category": "__global__"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "__all__",
+        "tier": "user",
+        "sample_count": 2,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "__all__"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "AUTH",
+        "tier": "group",
+        "sample_count": 1,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "AUTH"
+      },
+      {
+        "uid": "uid-demo-001",
+        "op_category": "READ",
+        "tier": "group",
+        "sample_count": 1,
+        "source_uid": "uid-demo-001",
+        "source_op_category": "READ"
+      }
+    ]
+  }
+}
