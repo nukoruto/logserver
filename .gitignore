@@ -224,5 +224,7 @@ __marimo__/
 # Project artifacts
 server.log
 logs/
+!logs/
+!logs/sample.csv
 data/
 reports/**/*.png
