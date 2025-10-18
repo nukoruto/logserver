@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import io
 import json
 import sys
 import tarfile
@@ -14,6 +15,7 @@ if str(PACKAGE_SRC) not in sys.path:
     sys.path.insert(0, str(PACKAGE_SRC))
 
 from dt_lstm import cli  # noqa: E402  pylint: disable=wrong-import-position
+from dt_lstm.export import ExportError, _safe_extract_all  # noqa: E402
 
 
 def _write_csv(path: Path, content: str) -> None:
@@ -193,3 +195,27 @@ def test_export_bundle_and_infer(tmp_path, capsys):
     assert Path(bundle_payload["out_path"]).exists()
 
     assert baseline_out.read_text(encoding="utf-8") == bundle_out.read_text(encoding="utf-8")
+
+
+def test_safe_extract_all_rejects_relative_hard_link_outside(tmp_path):
+    outside = tmp_path.parent / "outside.txt"
+    outside.write_text("outside", encoding="utf-8")
+
+    tar_path = tmp_path / "bundle.tar"
+    with tarfile.open(tar_path, "w") as archive:
+        file_info = tarfile.TarInfo(name="dir/file.txt")
+        data = b"content"
+        file_info.size = len(data)
+        archive.addfile(file_info, io.BytesIO(data))
+
+        link_info = tarfile.TarInfo(name="dir/link.txt")
+        link_info.type = tarfile.LNKTYPE
+        link_info.linkname = "../outside.txt"
+        archive.addfile(link_info)
+
+    extract_dir = tmp_path / "extract"
+    extract_dir.mkdir()
+
+    with tarfile.open(tar_path, "r") as archive:
+        with pytest.raises(ExportError):
+            _safe_extract_all(archive, extract_dir)
