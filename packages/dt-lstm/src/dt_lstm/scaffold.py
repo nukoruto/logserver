@@ -32,8 +32,13 @@ def _copy_template(template_root: Traversable, destination: Path, context: Dict[
             target.mkdir(parents=True, exist_ok=True)
             _copy_template(entry, target, context)
         else:
-            data = entry.read_text(encoding="utf-8")
-            target.write_text(_render(data, context), encoding="utf-8")
+            raw = entry.read_bytes()
+            try:
+                data = raw.decode("utf-8")
+            except UnicodeDecodeError:
+                target.write_bytes(raw)
+            else:
+                target.write_text(_render(data, context), encoding="utf-8")
 
 
 def create_project(

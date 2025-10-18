@@ -69,35 +69,45 @@ def load_processed_events(
     chunk = chunksize or 100_000
 
     parquet_exception: Optional[BaseException] = None
-    iterator: Optional[Iterator[pd.DataFrame]] = None
-    if parquet_path.exists():
-        try:
-            iterator = _iter_parquet(parquet_path, chunk, use_pyarrow)
-            _log(
-                logging.INFO,
-                {
-                    "event": "load_processed_events",
-                    "format": "parquet",
-                    "path": str(parquet_path),
-                    "status": "loaded",
-                    "mode": "stream" if not collect else "batch",
-                },
-            )
-        except _FALLBACK_EXCEPTIONS as exc:  # pragma: no cover - fallback
-            parquet_exception = exc
-            iterator = None
-            _log(
-                logging.WARNING,
-                {
-                    "event": "load_processed_events",
-                    "format": "parquet",
-                    "path": str(parquet_path),
-                    "status": "failed",
-                    "fallback": "csv",
-                    "reason": exc.__class__.__name__,
-                },
-            )
-    else:
+
+    def _log_parquet_loaded(mode: str) -> None:
+        _log(
+            logging.INFO,
+            {
+                "event": "load_processed_events",
+                "format": "parquet",
+                "path": str(parquet_path),
+                "status": "loaded",
+                "mode": mode,
+            },
+        )
+
+    def _log_parquet_failed(reason: str) -> None:
+        _log(
+            logging.WARNING,
+            {
+                "event": "load_processed_events",
+                "format": "parquet",
+                "path": str(parquet_path),
+                "status": "failed",
+                "fallback": "csv",
+                "reason": reason,
+            },
+        )
+
+    def _log_csv_loaded(mode: str) -> None:
+        payload = {
+            "event": "load_processed_events",
+            "format": "csv",
+            "path": str(csv_path),
+            "status": "loaded",
+            "mode": mode,
+        }
+        if parquet_exception is not None:
+            payload["parquet_error"] = parquet_exception.__class__.__name__
+        _log(logging.INFO, payload)
+
+    if not parquet_path.exists():
         _log(
             logging.INFO,
             {
@@ -108,28 +118,61 @@ def load_processed_events(
                 "fallback": "csv",
             },
         )
+    elif collect:
+        try:
+            frames = list(_iter_parquet(parquet_path, chunk, use_pyarrow))
+        except _FALLBACK_EXCEPTIONS as exc:  # pragma: no cover - fallback
+            parquet_exception = exc
+            _log_parquet_failed(exc.__class__.__name__)
+        else:
+            _log_parquet_loaded("batch")
+            return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    else:
+        # streaming path needs lazy fallback handling
+        def _stream_with_fallback() -> Iterator[pd.DataFrame]:
+            nonlocal parquet_exception
+            logged_parquet = False
+            try:
+                for frame in _iter_parquet(parquet_path, chunk, use_pyarrow):
+                    if not logged_parquet:
+                        _log_parquet_loaded("stream")
+                        logged_parquet = True
+                    yield frame
+                if not logged_parquet:
+                    _log_parquet_loaded("stream")
+            except _FALLBACK_EXCEPTIONS as exc:  # pragma: no cover - fallback
+                parquet_exception = exc
+                _log_parquet_failed(exc.__class__.__name__)
+                if not csv_path.exists():
+                    raise
+                logged_csv = False
+                for frame in _iter_csv(csv_path, chunk):
+                    if not logged_csv:
+                        _log_csv_loaded("stream")
+                        logged_csv = True
+                    yield frame
 
-    if iterator is None and csv_path.exists():
-        iterator = _iter_csv(csv_path, chunk)
-        payload = {
-            "event": "load_processed_events",
-            "format": "csv",
-            "path": str(csv_path),
-            "status": "loaded",
-            "mode": "stream" if not collect else "batch",
-        }
-        if parquet_exception is not None:
-            payload["parquet_error"] = parquet_exception.__class__.__name__
-        _log(logging.INFO, payload)
+        return _stream_with_fallback()
 
-    if iterator is None:
+    if not csv_path.exists():
         raise FileNotFoundError(
             f"Neither {parquet_path} nor {csv_path} is available under {processed_dir}"
         )
 
-    if not collect:
-        return iterator
+    if collect:
+        frames = list(_iter_csv(csv_path, chunk))
+        _log_csv_loaded("batch")
+        return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
 
-    frames = list(iterator)
-    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+    def _csv_stream() -> Iterator[pd.DataFrame]:
+        logged = False
+        for frame in _iter_csv(csv_path, chunk):
+            if not logged:
+                _log_csv_loaded("stream")
+                logged = True
+            yield frame
+        if not logged:
+            _log_csv_loaded("stream")
+
+    return _csv_stream()
 
