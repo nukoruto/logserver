@@ -1,6 +1,7 @@
 import path from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
+import collectorConfig from '../collector/src/config';
 import { generateScenario, normalizeAnomalyList } from '../collector/src/services/simulationService';
 
 const requireFromCollector = createRequire(path.resolve(__dirname, '../collector/package.json'));
@@ -25,6 +26,7 @@ type CliOptions = {
   pretty: boolean;
   timeAnomalyMode?: string;
   timeAnomalyPropWeight?: number;
+  deltaEpsilon?: number;
 };
 
 const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
@@ -98,11 +100,16 @@ const main = async (): Promise<void> => {
       type: 'number',
       describe: 'Maximum transitions per session before termination.',
     })
+    .option('delta-epsilon', {
+      type: 'number',
+      describe: 'Minimum Δt floor epsilon applied to generated intervals (seconds).',
+      default: collectorConfig.deltaEpsilon,
+    })
     .option('time-anomaly-mode', {
       type: 'string',
       describe: 'Time anomaly propagation mode (auto|propagate|local).',
       choices: ['auto', 'propagate', 'local'],
-      default: 'auto',
+      default: collectorConfig.timeAnomalyMode,
     })
     .option('time-anomaly-prop-weight', {
       type: 'number',
@@ -139,6 +146,7 @@ const main = async (): Promise<void> => {
       maxSteps: argv.maxSteps,
       timeAnomalyMode: argv.timeAnomalyMode,
       timeAnomalyPropWeight: argv.timeAnomalyPropWeight,
+      deltaEpsilon: argv.deltaEpsilon,
     });
 
     const indent = argv.pretty ? 2 : 0;

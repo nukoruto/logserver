@@ -19,6 +19,7 @@ describe('simulate CLI', () => {
     const result = runSimulate(['--help']);
     expect(result.status).toBe(0);
     expect(result.stdout).toContain('Usage:');
+    expect(result.stdout).toContain('--delta-epsilon');
   });
 
   it('generates a scenario and persists files', () => {
@@ -40,6 +41,10 @@ describe('simulate CLI', () => {
           'cli-events.csv',
           '--manifest-file',
           'cli-manifest.json',
+          '--delta-epsilon',
+          '0.005',
+          '--time-anomaly-mode',
+          'local',
           '--pretty',
         ],
         { SIM_LOG_DIR: tempDir }
@@ -56,6 +61,8 @@ describe('simulate CLI', () => {
       expect(payload.summary.events).toBe(5);
       expect(payload.files.csvPath).toContain('cli-events.csv');
       expect(payload.files.manifestPath).toContain('cli-manifest.json');
+      expect(payload.params.delta_epsilon).toBeCloseTo(0.005, 10);
+      expect(payload.params.time_anomaly.mode).toBe('local');
       expect(existsSync(path.join(tempDir, 'cli-events.csv'))).toBe(true);
       expect(existsSync(path.join(tempDir, 'cli-manifest.json'))).toBe(true);
     } finally {

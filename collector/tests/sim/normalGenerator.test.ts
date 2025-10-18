@@ -199,6 +199,73 @@ describe('generateNormalSequence', () => {
     expect(estimatedSigma).toBeLessThan(expectedSigma + 0.35);
   });
 
+  it('deltaEpsilon オプションで Δt の最小値を制御できる', () => {
+    const epsilonFloor = 0.02;
+    const scenarioWithLowEpsilon = {
+      id: 'epsilon-floor',
+      states: ['start', 'end'],
+      transitions: [
+        {
+          from: 'start',
+          to: 'end',
+          event: 'login',
+          probability: 1,
+          deltaSeconds: { distribution: 'lognormal', medianLog: -4, sigmaLog: 0.2, epsilon: 1e-5 },
+        },
+      ],
+      initialState: 'start',
+      terminalStates: ['end'],
+      defaultDeltaSeconds: { distribution: 'lognormal', medianLog: -4, sigmaLog: 0.2, epsilon: 1e-5 },
+    };
+
+    const sequence = generateNormalSequence({
+      scenario: scenarioWithLowEpsilon,
+      seed: 'epsilon-floor',
+      maxSteps: 8,
+      deltaEpsilon: epsilonFloor,
+    });
+
+    const deltas = sequence.map((event: any) => Number(event.deltaSeconds));
+    expect(Math.min(...deltas)).toBeGreaterThanOrEqual(epsilonFloor);
+  });
+
+  it('normal/uniform 分布指定には非推奨警告を出す', () => {
+    const warnSpy = jest.spyOn(process, 'emitWarning').mockImplementation(() => undefined as unknown as void);
+    try {
+      const scenarioDeprecated = {
+        id: 'deprecated-distributions',
+        states: ['start', 'mid', 'end'],
+        transitions: [
+          {
+            from: 'start',
+            to: 'mid',
+            event: 'login',
+            probability: 1,
+            deltaSeconds: { distribution: 'normal', mean: 2, stdDev: 0.1 },
+          },
+          {
+            from: 'mid',
+            to: 'end',
+            event: 'logout',
+            probability: 1,
+            deltaSeconds: { distribution: 'uniform', min: 1, max: 3 },
+          },
+        ],
+        initialState: 'start',
+        terminalStates: ['end'],
+        defaultDeltaSeconds: { distribution: 'lognormal', medianLog: 0, sigmaLog: 0.3 },
+      };
+
+      generateNormalSequence({ scenario: scenarioDeprecated, seed: 'deprecated', maxSteps: 3 });
+
+      const messages = warnSpy.mock.calls.map((call) => String(call[0]));
+      expect(messages.some((message) => message.includes('normal'))).toBe(true);
+      expect(messages.some((message) => message.includes('uniform'))).toBe(true);
+    } finally {
+      warnSpy.mockRestore();
+    }
+  });
+
   it('最大ステップ数でループを安全に終了する', () => {
     const loopScenario = {
       id: 'loop',

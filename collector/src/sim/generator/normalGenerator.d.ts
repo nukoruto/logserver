@@ -11,6 +11,7 @@ export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   uid?: string | null;
   namespace?: string | null;
   rngFactory?: (category: string) => () => number;
+  deltaEpsilon?: number | string | null;
 }
 
 export type NormalEvent = SimulationEvent & {

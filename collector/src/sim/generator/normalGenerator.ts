@@ -1,3 +1,4 @@
+import config from '../../config';
 import { DEFAULT_SCENARIO_FILE, loadScenario } from '../scenario';
 import type { ScenarioDefinition } from '../scenario';
 import type { SimulationEvent } from '../../services/simulationService';
@@ -15,6 +16,7 @@ export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   uid?: string | null;
   namespace?: string | null;
   rngFactory?: CategoryPrngFactory;
+  deltaEpsilon?: number | string | null;
 }
 
 export type NormalEvent = SimulationEvent & {
@@ -26,7 +28,39 @@ export type NormalEvent = SimulationEvent & {
 const MAD_TO_STD = 1.4826;
 const MIN_SIGMA_LOG = 1e-6;
 const MIN_SIGMA_SQUARED = MIN_SIGMA_LOG * MIN_SIGMA_LOG;
-export const DEFAULT_DELTA_EPSILON = 1e-3;
+const MIN_DELTA_EPSILON = 1e-6;
+const MAX_DELTA_EPSILON = 1;
+const BASE_DELTA_EPSILON = 1e-3;
+
+const clampDeltaEpsilonValue = (value: number): number => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return BASE_DELTA_EPSILON;
+  }
+  if (value < MIN_DELTA_EPSILON) {
+    return MIN_DELTA_EPSILON;
+  }
+  if (value > MAX_DELTA_EPSILON) {
+    return MAX_DELTA_EPSILON;
+  }
+  return value;
+};
+
+const configuredDeltaEpsilon = clampDeltaEpsilonValue(config.deltaEpsilon ?? BASE_DELTA_EPSILON);
+
+export const DEFAULT_DELTA_EPSILON = configuredDeltaEpsilon;
+
+const WARNED_DISTRIBUTIONS = new Set<string>();
+
+const warnDeprecatedDistribution = (distribution: string): void => {
+  const normalized = distribution.toLowerCase();
+  if ((normalized === 'normal' || normalized === 'uniform') && !WARNED_DISTRIBUTIONS.has(normalized)) {
+    WARNED_DISTRIBUTIONS.add(normalized);
+    process.emitWarning(
+      `deltaSeconds.distribution="${normalized}" is deprecated; use "lognormal" instead.`,
+      { type: 'DeprecationWarning', code: 'LOGSERVER_DELTA_DISTRIBUTION' },
+    );
+  }
+};
 
 interface DeltaSpec {
   muLog: number;
@@ -97,14 +131,44 @@ const toPositiveFiniteNumber = (value: unknown): number | null => {
   return null;
 };
 
-const cloneDeltaSpec = (spec: DeltaSpec | undefined | null): DeltaSpec => {
+const resolveDeltaEpsilon = (candidate: unknown, fallback: number): number => {
+  if (candidate === undefined || candidate === null || candidate === '') {
+    return fallback;
+  }
+  if (typeof candidate === 'number') {
+    return clampDeltaEpsilonValue(candidate);
+  }
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0) {
+      return fallback;
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return clampDeltaEpsilonValue(numeric);
+    }
+  }
+  return fallback;
+};
+
+const clampEpsilon = (candidate: number | null | undefined, floor: number): number => {
+  if (typeof candidate !== 'number' || !Number.isFinite(candidate) || candidate <= 0) {
+    return floor;
+  }
+  if (candidate < floor) {
+    return floor;
+  }
+  return candidate;
+};
+
+const cloneDeltaSpec = (spec: DeltaSpec | undefined | null, epsilonFloor: number): DeltaSpec => {
   if (!spec) {
-    return { ...DEFAULT_DELTA_SPEC };
+    return { ...DEFAULT_DELTA_SPEC, epsilon: epsilonFloor };
   }
   return {
     muLog: spec.muLog,
     sigmaLog: Math.max(spec.sigmaLog, MIN_SIGMA_LOG),
-    epsilon: spec.epsilon > 0 ? spec.epsilon : DEFAULT_DELTA_EPSILON,
+    epsilon: clampEpsilon(spec.epsilon, epsilonFloor),
   };
 };
 
@@ -128,7 +192,8 @@ const deriveLogParamsFromMoments = (
 };
 
 const normalizeDeltaSpec = (candidate: unknown, fallbackSpec: DeltaSpec = DEFAULT_DELTA_SPEC): DeltaSpec => {
-  const fallback = cloneDeltaSpec(fallbackSpec);
+  const fallbackFloor = fallbackSpec?.epsilon ?? DEFAULT_DELTA_EPSILON;
+  const fallback = cloneDeltaSpec(fallbackSpec, fallbackFloor);
 
   if (candidate === undefined || candidate === null) {
     return fallback;
@@ -152,11 +217,12 @@ const normalizeDeltaSpec = (candidate: unknown, fallbackSpec: DeltaSpec = DEFAUL
 
   const record = candidate as Record<string, unknown>;
   const distribution = typeof record.distribution === 'string' ? record.distribution.toLowerCase() : 'lognormal';
+  warnDeprecatedDistribution(distribution);
 
-  const epsilonCandidate =
-    toPositiveFiniteNumber(record.epsilon ?? record.floor ?? record.minEpsilon ?? record.eps ?? record.minimum) ??
-    fallback.epsilon;
-  const epsilon = epsilonCandidate > 0 ? epsilonCandidate : fallback.epsilon;
+  const epsilonCandidate = toPositiveFiniteNumber(
+    record.epsilon ?? record.floor ?? record.minEpsilon ?? record.eps ?? record.minimum,
+  );
+  const epsilon = clampEpsilon(epsilonCandidate, fallback.epsilon);
 
   let muLog =
     toFiniteNumber(record.muLog ?? record.mu_log ?? record.medianLog ?? record.median_log ?? record.location) ?? null;
@@ -257,7 +323,7 @@ const sampleDeltaSeconds = (
   randomFn: () => number,
   defaultSpec: DeltaSpec,
 ): number => {
-  const fallbackSpec = normalizeDeltaSpec(defaultSpec, DEFAULT_DELTA_SPEC);
+  const fallbackSpec = cloneDeltaSpec(defaultSpec, defaultSpec.epsilon);
   const spec = normalizeDeltaSpec(transition.deltaSeconds, fallbackSpec);
   const sampled = sampleFromSpec(spec, randomFn);
   return Number.isFinite(sampled) && sampled > 0 ? sampled : spec.epsilon;
@@ -451,7 +517,9 @@ export const generateNormalSequence = (
   const maxSteps = Number.isInteger(options.maxSteps) && (options.maxSteps as number) > 0
     ? (options.maxSteps as number)
     : DEFAULT_MAX_STEPS;
-  const defaultDeltaSpec = normalizeDeltaSpec(scenario.defaultDeltaSeconds as unknown, DEFAULT_DELTA_SPEC);
+  const resolvedDeltaEpsilon = resolveDeltaEpsilon(options.deltaEpsilon, DEFAULT_DELTA_EPSILON);
+  const fallbackDeltaSpec = { ...DEFAULT_DELTA_SPEC, epsilon: resolvedDeltaEpsilon };
+  const defaultDeltaSpec = normalizeDeltaSpec(scenario.defaultDeltaSeconds as unknown, fallbackDeltaSpec);
 
   const startInput = options.startTime as Date | string | undefined;
   const offsetMinutes = deriveOffsetMinutes(startInput);
