@@ -322,7 +322,29 @@ PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli build \
 
 同じハイパラで `dt-lstm build` を再実行すると出力 JSON の内容は常に一致し、PyTorch のバージョンと総パラメータ数が `metadata` に記録されます。`phased_lstm` を選択した場合は `times` テンソルを前向き計算時に必ず与えてください。
 
-### 5.4 dt-lstm 語彙・統計フィット CLI
+### 5.4 dt-lstm 学習 CLI
+
+`dt-lstm train` は、Δt を含むセッション系列 CSV から LSTM モデルを学習し、`model.pt`・`optimizer.pt`・`config.json`・`history.json` を出力します。多タスク損失はイベント分類（Cross Entropy/Focal/クラス重み）と時間予測（L1/Huber/NLL または RMTPP 尤度）の組み合わせで、`--uncertainty-weight on` を指定すると不確かさに基づく重み付け
+
+```
+L_total = Σ_k ( L_k / (2 σ_k^2) + log σ_k )
+```
+
+を自動的に最適化します。AMP (`--amp O1`)、勾配クリップ、Cosine スケジューラ、Scheduled Sampling (`--scheduled-sampling 0.1`) なども CLI フラグで切り替え可能です。RMTPP ヘッドを選択した場合、右打ち切りサンプルには生存項のみを加算します。
+
+```
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli train \
+  --train data/train_feat/*.csv \
+  --val data/val_feat/*.csv \
+  --arch lstm --time-head rmtpp --time-objective rmtpp \
+  --epochs 30 --bs 64 --lr 1e-3 --scheduler cosine --early 5 \
+  --uncertainty-weight on --amp O1 --clip-grad 1.0 \
+  --scheduled-sampling 0.1 --seed 2025 --out ml/checkpoints/
+```
+
+同一シードで再実行すると学習曲線の形状は一致し、完了時に前述の 4 ファイルが出力されます。`config.json` には乱数シード・デバイス・ハイパラ・使用列が保存され、`history.json` には train/val の総損失とイベント/時間損失がエポックごとに記録されます。
+
+### 5.5 dt-lstm 語彙・統計フィット CLI
 
 Δt 特徴量を含む学習 CSV（`dt-preproc transform` 済み）から `op_category` 語彙と RMTPP 初期ハイパラを推定するには、`dt-lstm fit` サブコマンドを利用します。同じ入力に対しては常に同一バイト列の JSON アーティファクトが生成されます。
 
