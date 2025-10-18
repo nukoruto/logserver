@@ -4,6 +4,7 @@
 from __future__ import annotations
 
 import time
+import os
 from pathlib import Path
 from typing import Dict, Iterable
 
@@ -27,10 +28,18 @@ except ImportError:  # pragma: no cover - Windows fallback
     resource = None  # type: ignore[assignment]
 
 
-ROWS = 1_000_000
-CHUNKSIZE = 200_000
-MEMORY_LIMIT_KB = 1_200_000
-TIME_LIMIT_SECONDS = 180.0
+_CI_ENV = os.getenv("CI", "").lower() in {"1", "true", "yes"}
+
+if _CI_ENV:
+    ROWS = 200_000
+    CHUNKSIZE = 50_000
+    MEMORY_LIMIT_KB = 512_000
+    TIME_LIMIT_SECONDS = 90.0
+else:
+    ROWS = 1_000_000
+    CHUNKSIZE = 200_000
+    MEMORY_LIMIT_KB = 1_200_000
+    TIME_LIMIT_SECONDS = 180.0
 
 
 def _make_large_raw_csv(path: Path, rows: int = ROWS) -> None:
