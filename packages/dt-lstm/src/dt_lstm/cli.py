@@ -14,6 +14,7 @@ import torch
 from .calibrate import calibrate_temperature
 from .engine import DTLSTMEngine
 from .fit import FitError, main as fit_main
+from .infer import InferenceError, run_inference
 from .model_def import ModelDefinition, save_definition
 from .modules import DeltaTimeModel, DeltaTimeModelConfig
 from .train import TrainingConfig, train as train_model
@@ -199,6 +200,15 @@ def _build_parser() -> argparse.ArgumentParser:
         default=10,
         help="被覆–冗長曲線で計算する最大 Top-K",
     )
+
+    infer_parser = subparsers.add_parser("infer", help="Δt-aware LSTM でバッチ推論を実行する")
+    infer_parser.add_argument("--in", dest="inputs", nargs="+", required=True, help="入力CSVパス (glob対応)")
+    infer_parser.add_argument("--ckpt", required=True, help="学習済みモデルのチェックポイント (model.pt)")
+    infer_parser.add_argument("--calib", default=None, help="温度スケーリングJSONのパス")
+    infer_parser.add_argument("--topk", type=int, default=5, help="Top-K 被覆で利用するK")
+    infer_parser.add_argument("--out", required=True, help="スコアCSVの出力先")
+    infer_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
+    infer_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
     return parser
 
 
@@ -400,6 +410,36 @@ def main(argv: Sequence[str] | None = None) -> int:
             "ece_before": result["ece"]["before"],
             "ece_after": result["ece"]["after"],
             "out_path": str(out_path),
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "infer":
+        engine = DTLSTMEngine(seed=args.seed)
+        runtime = engine.configure()
+        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        calib_path = Path(args.calib).expanduser().resolve() if args.calib else None
+        out_path = Path(args.out).expanduser().resolve()
+        audit_path = Path(args.audit).expanduser().resolve() if args.audit else None
+        try:
+            summary = run_inference(
+                args.inputs,
+                checkpoint_path=ckpt_path,
+                calibration_path=calib_path,
+                output_path=out_path,
+                audit_path=audit_path,
+                topk=int(args.topk),
+                device=runtime.device,
+            )
+        except InferenceError as exc:
+            _LOGGER.error("infer.failed", extra={"error": str(exc)})
+            return 1
+        payload = {
+            "event": "infer.completed",
+            "sequences": summary.sequences,
+            "events": summary.events,
+            "out_path": str(summary.out_path),
+            "audit_path": summary.audit_path and str(summary.audit_path),
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0

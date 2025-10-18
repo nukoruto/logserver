@@ -209,6 +209,9 @@ def _collect_sequences(
     delta_column: str,
     vocab: Optional[Vocabulary],
     idle_timeout: float,
+    *,
+    include_context: bool = False,
+    source_path: Optional[Path] = None,
 ) -> Tuple[List[Dict[str, np.ndarray]], int, Dict[int, int], RunningStats]:
     frame = _normalise_timestamp(frame)
     if delta_column not in frame.columns:
@@ -253,15 +256,35 @@ def _collect_sequences(
         censor_trimmed = censor[1:]
         if inputs.size == 0:
             continue
-        sequences.append(
-            {
-                "events": inputs.astype(np.int64, copy=True),
-                "targets": targets.astype(np.int64, copy=True),
-                "numeric": numeric_trimmed.astype(np.float32, copy=True),
-                "delta": delta_trimmed.astype(np.float32, copy=True),
-                "censor": censor_trimmed.astype(np.bool_, copy=True),
+        sequence_payload: Dict[str, object] = {
+            "events": inputs.astype(np.int64, copy=True),
+            "targets": targets.astype(np.int64, copy=True),
+            "numeric": numeric_trimmed.astype(np.float32, copy=True),
+            "delta": delta_trimmed.astype(np.float32, copy=True),
+            "censor": censor_trimmed.astype(np.bool_, copy=True),
+        }
+        if include_context:
+            timestamps = group["timestamp_utc"].iloc[1:]
+            if hasattr(timestamps, "dt"):
+                timestamp_values = [ts.isoformat() for ts in timestamps.dt.tz_convert("UTC")]
+            else:
+                timestamp_values = [str(value) for value in timestamps]
+            target_tokens: Optional[Sequence[str]] = None
+            if "op_category" in group.columns:
+                target_tokens = group["op_category"].astype(str).iloc[1:].tolist()
+            elif "event" in group.columns:
+                target_tokens = group["event"].astype(str).iloc[1:].tolist()
+            context: Dict[str, object] = {
+                "file": str(source_path) if source_path is not None else None,
+                "session_id": str(group[session_col].iloc[0]) if session_col in group.columns else None,
+                "uid": str(group["uid"].iloc[0]) if "uid" in group.columns else None,
+                "timestamps": list(timestamp_values),
+                "row_index": [int(index) for index in group.index.tolist()[1:]],
             }
-        )
+            if target_tokens is not None:
+                context["target_tokens"] = list(target_tokens)
+            sequence_payload["_context"] = context
+        sequences.append(sequence_payload)
         for token in targets.tolist():
             class_counts[token] = class_counts.get(token, 0) + 1
         for value in delta_trimmed.tolist():
@@ -323,6 +346,7 @@ def load_sequence_dataset(
     delta_column: str,
     vocab: Optional[Vocabulary],
     idle_timeout: float,
+    include_context: bool = False,
 ) -> Tuple[SessionSequenceDataset, Dict[str, object]]:
     files = resolve_input_files(patterns)
     sequences: List[Mapping[str, np.ndarray]] = []
@@ -338,6 +362,8 @@ def load_sequence_dataset(
             delta_column=delta_column,
             vocab=vocab,
             idle_timeout=idle_timeout,
+            include_context=include_context,
+            source_path=path,
         )
         sequences.extend(seqs)
         vocab_size = max(vocab_size, local_vocab_size)
