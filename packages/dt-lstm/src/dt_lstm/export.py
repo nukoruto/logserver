@@ -248,7 +248,8 @@ def _safe_extract_all(archive: tarfile.TarFile, destination: Path) -> None:
             if link_target.is_absolute():
                 resolved_link_target = link_target.resolve(strict=False)
             else:
-                resolved_link_target = (member_path.parent / link_target).resolve(strict=False)
+                base_path = dest if member.islnk() else member_path.parent
+                resolved_link_target = (base_path / link_target).resolve(strict=False)
 
             if not _is_within(resolved_link_target, dest):
                 raise ExportError("アーカイブに無効なリンクが含まれています")
