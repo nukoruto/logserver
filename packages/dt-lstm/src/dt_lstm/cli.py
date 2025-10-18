@@ -11,6 +11,7 @@ from typing import Sequence
 
 import torch
 
+from .calibrate import calibrate_temperature
 from .engine import DTLSTMEngine
 from .fit import FitError, main as fit_main
 from .model_def import ModelDefinition, save_definition
@@ -172,6 +173,32 @@ def _build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--num-workers", type=int, default=0, help="DataLoader のワーカー数")
     train_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
     train_parser.add_argument("--out", required=True, help="出力ディレクトリ")
+
+    calibrate_parser = subparsers.add_parser(
+        "calibrate", help="温度スケーリングで ECE を最小化し、Top-K 被覆を評価する"
+    )
+    calibrate_parser.add_argument(
+        "--val",
+        dest="val",
+        nargs="+",
+        required=True,
+        help="検証用特徴量CSVのglobパターン",
+    )
+    calibrate_parser.add_argument(
+        "--ckpt",
+        required=True,
+        help="学習済みモデルのチェックポイント (model.pt)",
+    )
+    calibrate_parser.add_argument("--out", required=True, help="温度スケーリング結果JSONの出力先")
+    calibrate_parser.add_argument("--batch-size", type=int, default=64, help="評価時のバッチサイズ")
+    calibrate_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
+    calibrate_parser.add_argument("--bins", type=int, default=15, help="ECE の分割ビン数")
+    calibrate_parser.add_argument(
+        "--max-k",
+        type=int,
+        default=10,
+        help="被覆–冗長曲線で計算する最大 Top-K",
+    )
     return parser
 
 
@@ -349,6 +376,30 @@ def main(argv: Sequence[str] | None = None) -> int:
             "best_val_loss": result["best_val_loss"],
             "seed": args.seed,
             "device": str(runtime.device),
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "calibrate":
+        engine = DTLSTMEngine(seed=args.seed)
+        runtime = engine.configure()
+        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        out_path = Path(args.out).expanduser().resolve()
+        result = calibrate_temperature(
+            args.val,
+            checkpoint_path=ckpt_path,
+            output_path=out_path,
+            device=runtime.device,
+            batch_size=args.batch_size,
+            bins=args.bins,
+            max_k=args.max_k,
+        )
+        payload = {
+            "event": "calibrate.completed",
+            "temperature": result["temperature"],
+            "ece_before": result["ece"]["before"],
+            "ece_after": result["ece"]["after"],
+            "out_path": str(out_path),
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
