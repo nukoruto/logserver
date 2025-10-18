@@ -5,7 +5,7 @@
 ## 共通前提
 - Node.js: v20.12.2（pnpm ワークスペースの `packageManager` 設定に準拠）
 - Python: 3.11 以上（トレーナー側の pytest に合わせる）
-- パッケージマネージャ: `pnpm@9.0.0`、`pip` もしくは `conda`
+- パッケージマネージャ: `pnpm@8.15.8`、`pip` もしくは `conda`
 - ルートで `pnpm install` 実行済みであること
 - Python 依存は `pip install -r trainer/requirements_cpu.txt` などで解決済みであること
 

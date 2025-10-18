@@ -96,11 +96,11 @@
 ### 4.1 依存関係
 本リポジトリは Node.js（シミュレーション CLI）と Python（学習・解析）が同居する **pnpm モノレポ** です。Node.js 側のパッケージは `pnpm` で統一管理し、Python 側は従来どおり `pip` または `conda` を利用します。セットアップ時は以下の順に依存関係を整えてください。
 
-1. Corepack で `pnpm@9.0.0` を有効化し、モノレポ全体の Node.js 依存を解決します。
+1. Corepack で `pnpm@8.15.8` を有効化し、モノレポ全体の Node.js 依存を解決します。
 
    ```bash
    corepack enable
-   corepack prepare pnpm@9.0.0 --activate
+   corepack prepare pnpm@8.15.8 --activate
    ```
 
    有効化後にリポジトリルートで以下を実行すると、`collector/` や `apps/` など Node.js サブパッケージの依存がまとめて導入されます。
