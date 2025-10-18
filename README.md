@@ -89,6 +89,10 @@
     └─ .gitkeep
 ```
 
+> Node.js ワークスペース（`packages/*`, `apps/splitter-gui`）では、`pnpm --filter @logserver/session-splitter-cli build`
+> などのビルドを実行すると `dist/` 以下（例: `packages/dt-preproc/dist`, `apps/splitter-gui/dist/main.js`）が生成される。
+> これらの生成物は `.gitignore` によりバージョン管理対象から除外される。
+
 ---
 
 ## 4. セットアップ
@@ -108,6 +112,9 @@
    ```bash
    pnpm install
    ```
+
+   ビルドを行う場合は、`pnpm -r build`（または後述の `make node-build`）を実行する。`packages/*/dist` や
+   `apps/splitter-gui/dist/main.js` が生成され、いずれも `.gitignore` により自動的に除外される。
 
 2. Python 依存は用途に応じて `pip` または `conda` の手順を選択し、学習・解析環境を構築します。
 
