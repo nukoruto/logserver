@@ -73,8 +73,7 @@ export const budgetSchema = z.object({
   allocations: z.array(budgetAllocationSchema).min(1)
 });
 
-export const anomalyMetaSchema = z.object({
-  version: z.literal(1),
+const anomalyMetaBaseSchema = z.object({
   generated_at: z.string().min(1),
   stats_file: z.string().min(1),
   input_files: z.array(z.string().min(1)).min(1),
@@ -121,9 +120,19 @@ export const anomalyMetaSchema = z.object({
   }),
   seeds: z.array(z.number().int()).min(1),
   stats_hash: z.string().regex(/^[a-f0-9]{64}$/),
-  preproc_hash: z.string().min(1),
+  preproc_hash: z.string().min(1)
+});
+
+export const anomalyMetaV1Schema = anomalyMetaBaseSchema.extend({
+  version: z.literal(1)
+});
+
+export const anomalyMetaV2Schema = anomalyMetaBaseSchema.extend({
+  version: z.literal(2),
   threshold_tiers: thresholdTierSetSchema
 });
+
+export const anomalyMetaSchema = z.union([anomalyMetaV1Schema, anomalyMetaV2Schema]);
 
 export type QuantileEntry = z.infer<typeof quantileEntrySchema>;
 export type QuantileGroupEntry = z.infer<typeof quantileGroupEntrySchema>;
@@ -131,5 +140,7 @@ export type SpotGroupEntry = z.infer<typeof spotGroupEntrySchema>;
 export type BudgetAllocation = z.infer<typeof budgetAllocationSchema>;
 export type BudgetSpec = z.infer<typeof budgetSchema>;
 export type AnomalyStats = z.infer<typeof anomalyStatsSchema>;
+export type AnomalyMetaV1 = z.infer<typeof anomalyMetaV1Schema>;
+export type AnomalyMetaV2 = z.infer<typeof anomalyMetaV2Schema>;
 export type AnomalyMeta = z.infer<typeof anomalyMetaSchema>;
 export type ThresholdTierEntry = z.infer<typeof thresholdTierSchema>;
