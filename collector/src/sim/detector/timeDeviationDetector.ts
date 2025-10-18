@@ -1,4 +1,5 @@
 import type { SimulationEvent } from '../../services/simulationService';
+import { DEFAULT_DELTA_EPSILON } from '../generator/normalGenerator';
 
 export interface TimeDeviationOptions extends Record<string, unknown> {
   method?: 'quantile' | 'fixed' | 'spot' | 'otsu' | 'knee' | string;
@@ -140,6 +141,8 @@ const parseTimestamp = (value: unknown): Date | null => {
   return date;
 };
 
+const DELTA_EPSILON = DEFAULT_DELTA_EPSILON;
+
 const resolveDeltaSeconds = (
   current: SimulationEvent | null | undefined,
   previous: SimulationEvent | null | undefined,
@@ -148,8 +151,8 @@ const resolveDeltaSeconds = (
     return null;
   }
   const declared = Number((current as Record<string, unknown>).deltaSeconds);
-  if (isFiniteNumber(declared) && declared >= 0) {
-    return declared;
+  if (isFiniteNumber(declared) && declared > 0) {
+    return Math.max(declared, DELTA_EPSILON);
   }
   if (!previous) {
     return null;
@@ -157,7 +160,11 @@ const resolveDeltaSeconds = (
   const currentTimestamp = parseTimestamp((current as Record<string, unknown>).timestamp);
   const previousTimestamp = parseTimestamp((previous as Record<string, unknown>).timestamp);
   if (currentTimestamp && previousTimestamp) {
-    return Math.max(0, (currentTimestamp.getTime() - previousTimestamp.getTime()) / 1000);
+    const diffSeconds = (currentTimestamp.getTime() - previousTimestamp.getTime()) / 1000;
+    if (!Number.isFinite(diffSeconds) || diffSeconds < 0) {
+      return null;
+    }
+    return Math.max(diffSeconds, DELTA_EPSILON);
   }
   return null;
 };
