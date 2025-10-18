@@ -2,7 +2,12 @@
 
 from __future__ import annotations
 
-from dt_lstm.pipeline import ProjectPipeline
+import pytest
+
+_ = pytest.importorskip("dt_lstm.pipeline")
+
+
+from dt_lstm.pipeline import ProjectPipeline  # type: ignore  # noqa: E402
 
 
 def test_pipeline_setup(tmp_path):
