@@ -17,6 +17,7 @@ from .fit import FitError, main as fit_main
 from .infer import InferenceError, run_inference
 from .model_def import ModelDefinition, save_definition
 from .modules import DeltaTimeModel, DeltaTimeModelConfig
+from .online import OnlineError, run_online_stream
 from .train import TrainingConfig, train as train_model
 
 _LOGGER = logging.getLogger("dt_lstm.cli")
@@ -65,6 +66,20 @@ def _configure_logging() -> None:
     root = logging.getLogger()
     root.setLevel(logging.INFO)
     root.handlers = [handler]
+
+
+def _parse_kofn(spec: str) -> tuple[int, int]:
+    try:
+        numerator, denominator = spec.split("/", 1)
+        k_value = int(numerator.strip())
+        n_value = int(denominator.strip())
+    except Exception as exc:  # pragma: no cover - defensive branch
+        raise ValueError("K-of-N は 'K/N' 形式で指定してください") from exc
+    if k_value <= 0 or n_value <= 0:
+        raise ValueError("K と N は正の整数で指定してください")
+    if k_value > n_value:
+        raise ValueError("K は N 以下である必要があります")
+    return k_value, n_value
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -209,6 +224,28 @@ def _build_parser() -> argparse.ArgumentParser:
     infer_parser.add_argument("--out", required=True, help="スコアCSVの出力先")
     infer_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
     infer_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
+
+    online_parser = subparsers.add_parser(
+        "online", help="Δt-aware LSTM によるオンライン到着前アラーム監視を実行する"
+    )
+    online_parser.add_argument("--stream", required=True, help="疑似ストリームCSVのパス")
+    online_parser.add_argument("--ckpt", required=True, help="学習済みモデルのチェックポイント (model.pt)")
+    online_parser.add_argument("--calib", default=None, help="温度スケーリングJSONのパス")
+    online_parser.add_argument("--q", type=float, required=True, help="生存関数が下回る監視閾値 q")
+    online_parser.add_argument(
+        "--kofn",
+        required=True,
+        help="K-of-N 条件 (例: 2/5)",
+    )
+    online_parser.add_argument(
+        "--hysteresis",
+        type=float,
+        default=1.1,
+        help="ヒステリシス比 H (>1)。解除条件は s_evt ≤ 1/H",
+    )
+    online_parser.add_argument("--out", required=True, help="オンライン監視結果CSVの出力先")
+    online_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
+    online_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
     return parser
 
 
@@ -438,6 +475,48 @@ def main(argv: Sequence[str] | None = None) -> int:
             "event": "infer.completed",
             "sequences": summary.sequences,
             "events": summary.events,
+            "out_path": str(summary.out_path),
+            "audit_path": summary.audit_path and str(summary.audit_path),
+        }
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "online":
+        try:
+            k_value, n_value = _parse_kofn(args.kofn)
+        except ValueError as exc:
+            _LOGGER.error("online.invalid_kofn", extra={"error": str(exc)})
+            return 1
+        engine = DTLSTMEngine(seed=args.seed)
+        runtime = engine.configure()
+        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        calib_path = Path(args.calib).expanduser().resolve() if args.calib else None
+        out_path = Path(args.out).expanduser().resolve()
+        audit_path = Path(args.audit).expanduser().resolve() if args.audit else None
+        stream_path = Path(args.stream).expanduser().resolve()
+        try:
+            summary = run_online_stream(
+                stream_path=stream_path,
+                checkpoint_path=ckpt_path,
+                calibration_path=calib_path,
+                output_path=out_path,
+                audit_path=audit_path,
+                q=float(args.q),
+                kofn=(k_value, n_value),
+                hysteresis=float(args.hysteresis),
+                device=runtime.device,
+            )
+        except OnlineError as exc:
+            _LOGGER.error("online.failed", extra={"error": str(exc)})
+            return 1
+        payload = {
+            "event": "online.completed",
+            "sequences": summary.sequences,
+            "events": summary.events,
+            "raw_alarms": summary.raw_alarms,
+            "kofn_active_steps": summary.kofn_alarms,
+            "active_steps": summary.active_steps,
+            "triggers": summary.triggers,
             "out_path": str(summary.out_path),
             "audit_path": summary.audit_path and str(summary.audit_path),
         }
