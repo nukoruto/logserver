@@ -5,11 +5,11 @@
   "initialState": "start",
   "terminalStates": ["completed"],
   "defaultDeltaSeconds": {
-    "distribution": "normal",
-    "mean": 2.0,
-    "stdDev": 1.0,
-    "min": 0.2,
-    "max": 6.0
+    "distribution": "lognormal",
+    "medianLog": 0.581575404903,
+    "sigmaLog": 0.472380727077,
+    "madLog": 0.318616435369,
+    "epsilon": 0.001
   },
   "transitions": [
     {
@@ -17,70 +17,130 @@
       "to": "authenticated",
       "event": "login",
       "probability": 1.0,
-      "deltaSeconds": { "min": 0.0, "max": 0.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -1.530135397346,
+        "sigmaLog": 0.536360021303,
+        "madLog": 0.361769878121,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "authenticated",
       "to": "browsing",
       "event": "browse",
       "probability": 0.8,
-      "deltaSeconds": { "min": 0.5, "max": 2.0 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.166479208661,
+        "sigmaLog": 0.336643261194,
+        "madLog": 0.227062768915,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "authenticated",
       "to": "completed",
       "event": "logout",
       "probability": 0.2,
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
       "to": "editing",
       "event": "edit",
       "probability": 0.6,
-      "deltaSeconds": { "min": 1.0, "max": 3.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.761967447631,
+        "sigmaLog": 0.312930562857,
+        "madLog": 0.211068773005,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
       "to": "browsing",
       "event": "browse",
       "probability": 0.25,
-      "deltaSeconds": { "min": 0.8, "max": 2.2 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.370425757352,
+        "sigmaLog": 0.264723821205,
+        "madLog": 0.178553771216,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
       "to": "completed",
       "event": "logout",
       "probability": 0.15,
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
       "to": "saving",
       "event": "save",
       "probability": 0.7,
-      "deltaSeconds": { "min": 0.6, "max": 2.0 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.216235619138,
+        "sigmaLog": 0.303738852733,
+        "madLog": 0.204869049462,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
       "to": "browsing",
       "event": "browse",
       "probability": 0.2,
-      "deltaSeconds": { "min": 0.8, "max": 2.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.458393195396,
+        "sigmaLog": 0.291142894526,
+        "madLog": 0.196373192045,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
       "to": "completed",
       "event": "logout",
       "probability": 0.1,
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "saving",
       "to": "completed",
       "event": "logout",
       "probability": 1.0,
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     }
   ]
 }

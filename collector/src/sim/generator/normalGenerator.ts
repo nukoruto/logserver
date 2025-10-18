@@ -15,17 +15,15 @@ export type NormalEvent = SimulationEvent & {
   probability?: number;
 };
 
-interface DeltaRange {
-  min: number;
-  max: number;
-}
+const MAD_TO_STD = 1.4826;
+const MIN_SIGMA_LOG = 1e-6;
+const MIN_SIGMA_SQUARED = MIN_SIGMA_LOG * MIN_SIGMA_LOG;
+export const DEFAULT_DELTA_EPSILON = 1e-3;
 
 interface DeltaSpec {
-  distribution: 'uniform' | 'normal';
-  min: number;
-  max: number;
-  mean?: number;
-  stdDev?: number;
+  muLog: number;
+  sigmaLog: number;
+  epsilon: number;
 }
 
 interface ScenarioTransition extends Record<string, unknown> {
@@ -40,11 +38,10 @@ interface ScenarioTransition extends Record<string, unknown> {
 }
 
 const DEFAULT_MAX_STEPS = 128;
-const DEFAULT_DELTA_RANGE: DeltaRange = { min: 1, max: 3 };
 const DEFAULT_DELTA_SPEC: DeltaSpec = {
-  distribution: 'uniform',
-  min: DEFAULT_DELTA_RANGE.min,
-  max: DEFAULT_DELTA_RANGE.max,
+  muLog: 0.5815754049028404,
+  sigmaLog: 0.47238072707743883,
+  epsilon: DEFAULT_DELTA_EPSILON,
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -101,116 +98,157 @@ const validateScenario = (scenario: ScenarioDefinition): void => {
   }
 };
 
-const clampValue = (value: number, minimum: number, maximum: number): number => {
-  let result = value;
-  if (Number.isFinite(minimum)) {
-    result = Math.max(minimum, result);
+const toFiniteNumber = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
   }
-  if (Number.isFinite(maximum)) {
-    result = Math.min(maximum, result);
+  if (typeof value === 'string' && value.trim().length > 0) {
+    const parsed = Number(value);
+    if (Number.isFinite(parsed)) {
+      return parsed;
+    }
   }
-  return result;
+  return null;
 };
 
-const normalizeRange = (candidate: unknown, fallback: DeltaRange): DeltaRange => {
-  if (candidate && typeof candidate === 'object') {
-    const record = candidate as Record<string, unknown>;
-    const minCandidate = Number(record.min ?? record.lower ?? record.start);
-    const maxCandidate = Number(record.max ?? record.upper ?? record.end);
-    const min = isFiniteNumber(minCandidate) && minCandidate >= 0 ? minCandidate : fallback.min;
-    const maxSource = isFiniteNumber(maxCandidate) && maxCandidate >= min ? maxCandidate : fallback.max;
-    const max = Number.isFinite(maxSource) && maxSource >= min ? maxSource : min;
-    return { min, max };
+const toPositiveFiniteNumber = (value: unknown): number | null => {
+  const parsed = toFiniteNumber(value);
+  if (parsed !== null && parsed > 0) {
+    return parsed;
   }
-  if (isFiniteNumber(candidate) && candidate >= 0) {
-    return { min: candidate, max: candidate };
-  }
-  return { min: fallback.min, max: fallback.max };
+  return null;
 };
 
 const cloneDeltaSpec = (spec: DeltaSpec | undefined | null): DeltaSpec => {
   if (!spec) {
     return { ...DEFAULT_DELTA_SPEC };
   }
-  if (spec.distribution === 'normal') {
-    return {
-      distribution: 'normal',
-      mean: spec.mean,
-      stdDev: spec.stdDev,
-      min: spec.min,
-      max: spec.max,
-    };
-  }
   return {
-    distribution: 'uniform',
-    min: spec.min,
-    max: spec.max,
+    muLog: spec.muLog,
+    sigmaLog: Math.max(spec.sigmaLog, MIN_SIGMA_LOG),
+    epsilon: spec.epsilon > 0 ? spec.epsilon : DEFAULT_DELTA_EPSILON,
   };
+};
+
+const deriveLogParamsFromMoments = (
+  meanSeconds: number | null,
+  stdSeconds: number | null,
+): { muLog: number; sigmaLog: number } | null => {
+  if (meanSeconds === null || !Number.isFinite(meanSeconds) || meanSeconds <= 0) {
+    return null;
+  }
+  if (stdSeconds === null || !Number.isFinite(stdSeconds) || stdSeconds < 0) {
+    return null;
+  }
+  const normalizedStd = Math.max(stdSeconds, MIN_SIGMA_LOG);
+  const variance = normalizedStd * normalizedStd;
+  const ratio = variance / (meanSeconds * meanSeconds);
+  const sigmaSquared = Math.log(1 + ratio);
+  const sigma = Math.sqrt(Math.max(sigmaSquared, MIN_SIGMA_SQUARED));
+  const mu = Math.log(meanSeconds) - sigmaSquared / 2;
+  return { muLog: mu, sigmaLog: Math.max(sigma, MIN_SIGMA_LOG) };
 };
 
 const normalizeDeltaSpec = (candidate: unknown, fallbackSpec: DeltaSpec = DEFAULT_DELTA_SPEC): DeltaSpec => {
   const fallback = cloneDeltaSpec(fallbackSpec);
-  if (candidate && typeof candidate === 'object') {
-    const record = candidate as Record<string, unknown>;
-    const distribution = typeof record.distribution === 'string' ? record.distribution.toLowerCase() : fallback.distribution;
-    if (distribution === 'normal') {
-      const mean = Number(record.mean ?? record.mu);
-      const stdDevCandidate = Number(record.stdDev ?? record.std ?? record.sigma);
-      if (isFiniteNumber(mean) && isFiniteNumber(stdDevCandidate) && stdDevCandidate > 0) {
-        const stdDev = stdDevCandidate;
-        const rangeHint: DeltaRange = {
-          min: Number(record.min),
-          max: Number(record.max),
-        };
-        const suggestedRange = normalizeRange(rangeHint, {
-          min: Math.max(0, mean - 3 * stdDev),
-          max: Math.max(Math.max(0, mean + 3 * stdDev), mean),
-        });
-        return {
-          distribution: 'normal',
-          mean,
-          stdDev,
-          min: suggestedRange.min,
-          max: suggestedRange.max,
-        };
-      }
-      return fallback;
-    }
-    if (distribution === 'uniform') {
-      const range = normalizeRange(record, fallback.distribution === 'uniform' ? fallback : DEFAULT_DELTA_RANGE);
+
+  if (candidate === undefined || candidate === null) {
+    return fallback;
+  }
+
+  if (typeof candidate === 'number' || typeof candidate === 'string') {
+    const numeric = toPositiveFiniteNumber(candidate);
+    if (numeric !== null) {
       return {
-        distribution: 'uniform',
-        min: range.min,
-        max: range.max,
+        muLog: Math.log(numeric),
+        sigmaLog: fallback.sigmaLog,
+        epsilon: fallback.epsilon,
       };
     }
+    return fallback;
   }
 
-  if (candidate && typeof candidate === 'object' && ('min' in candidate || 'max' in candidate)) {
-    const range = normalizeRange(candidate, fallback.distribution === 'uniform' ? fallback : DEFAULT_DELTA_RANGE);
-    return {
-      distribution: 'uniform',
-      min: range.min,
-      max: range.max,
-    };
+  if (typeof candidate !== 'object') {
+    return fallback;
   }
 
-  if (isFiniteNumber(candidate) && candidate >= 0) {
-    return {
-      distribution: 'uniform',
-      min: candidate,
-      max: candidate,
-    };
+  const record = candidate as Record<string, unknown>;
+  const distribution = typeof record.distribution === 'string' ? record.distribution.toLowerCase() : 'lognormal';
+
+  const epsilonCandidate =
+    toPositiveFiniteNumber(record.epsilon ?? record.floor ?? record.minEpsilon ?? record.eps ?? record.minimum) ??
+    fallback.epsilon;
+  const epsilon = epsilonCandidate > 0 ? epsilonCandidate : fallback.epsilon;
+
+  let muLog =
+    toFiniteNumber(record.muLog ?? record.mu_log ?? record.medianLog ?? record.median_log ?? record.location) ?? null;
+  if (muLog === null) {
+    const medianSeconds = toPositiveFiniteNumber(record.medianSeconds ?? record.median ?? record.typical);
+    if (medianSeconds !== null) {
+      muLog = Math.log(medianSeconds);
+    }
   }
 
-  return fallback;
-};
-
-const sampleUniform = (range: DeltaRange, randomFn: () => number): number => {
-  if (range.min === range.max) {
-    return range.min;
+  let sigmaLog =
+    toPositiveFiniteNumber(record.sigmaLog ?? record.sigma_log ?? record.stdLog ?? record.std_log ?? record.scale) ?? null;
+  if (sigmaLog === null) {
+    const madLog = toPositiveFiniteNumber(record.madLog ?? record.mad_log ?? record.mad);
+    if (madLog !== null) {
+      sigmaLog = Math.max(madLog * MAD_TO_STD, MIN_SIGMA_LOG);
+    }
   }
-  return range.min + (range.max - range.min) * randomFn();
+
+  let meanSeconds: number | null = null;
+  let stdSeconds: number | null = null;
+
+  if (distribution === 'normal') {
+    meanSeconds = toPositiveFiniteNumber(record.mean ?? record.mu ?? record.expected ?? record.location);
+    stdSeconds = toPositiveFiniteNumber(record.stdDev ?? record.std ?? record.sigma ?? record.scale);
+  } else if (distribution === 'uniform') {
+    const minCandidate = toPositiveFiniteNumber(record.min ?? record.lower ?? record.start);
+    const maxCandidate = toPositiveFiniteNumber(record.max ?? record.upper ?? record.end);
+    if (minCandidate !== null && maxCandidate !== null && maxCandidate >= minCandidate) {
+      const spread = maxCandidate - minCandidate;
+      meanSeconds = (minCandidate + maxCandidate) / 2;
+      stdSeconds = Math.max(spread / Math.sqrt(12), MIN_SIGMA_LOG);
+    }
+  }
+
+  if ((meanSeconds === null || stdSeconds === null) && distribution !== 'lognormal') {
+    const altMean = toPositiveFiniteNumber(record.mean ?? record.mu);
+    const altStd = toPositiveFiniteNumber(record.stdDev ?? record.std ?? record.sigma);
+    if (meanSeconds === null && altMean !== null) {
+      meanSeconds = altMean;
+    }
+    if (stdSeconds === null && altStd !== null) {
+      stdSeconds = altStd;
+    }
+  }
+
+  if ((muLog === null || sigmaLog === null) && meanSeconds !== null) {
+    const derived = deriveLogParamsFromMoments(meanSeconds, stdSeconds ?? MIN_SIGMA_LOG);
+    if (derived) {
+      if (muLog === null) {
+        muLog = derived.muLog;
+      }
+      if (sigmaLog === null || sigmaLog <= MIN_SIGMA_LOG) {
+        sigmaLog = derived.sigmaLog;
+      }
+    }
+  }
+
+  if (muLog === null) {
+    muLog = fallback.muLog;
+  }
+  if (sigmaLog === null || !Number.isFinite(sigmaLog) || sigmaLog <= MIN_SIGMA_LOG) {
+    sigmaLog = fallback.sigmaLog;
+  }
+
+  return {
+    muLog,
+    sigmaLog: Math.max(sigmaLog, MIN_SIGMA_LOG),
+    epsilon,
+  };
 };
 
 const sampleStandardNormal = (randomFn: () => number): number => {
@@ -224,18 +262,16 @@ const sampleStandardNormal = (randomFn: () => number): number => {
   return magnitude * Math.cos(2.0 * Math.PI * u2);
 };
 
-const sampleNormal = (mean: number, stdDev: number, randomFn: () => number): number => {
-  const standard = sampleStandardNormal(randomFn);
-  return mean + stdDev * standard;
-};
-
 const sampleFromSpec = (spec: DeltaSpec, randomFn: () => number): number => {
-  if (spec.distribution === 'normal' && isFiniteNumber(spec.mean) && isFiniteNumber(spec.stdDev)) {
-    const sampled = sampleNormal(spec.mean, spec.stdDev, randomFn);
-    return clampValue(sampled, spec.min, spec.max);
+  const epsilon = spec.epsilon > 0 ? spec.epsilon : DEFAULT_DELTA_EPSILON;
+  const standard = sampleStandardNormal(randomFn);
+  const logSample = spec.muLog + spec.sigmaLog * standard;
+  const safeLog = Math.min(logSample, 700);
+  const candidate = Math.exp(safeLog);
+  if (!Number.isFinite(candidate) || candidate <= 0) {
+    return epsilon;
   }
-  const range: DeltaRange = { min: spec.min, max: spec.max };
-  return sampleUniform(range, randomFn);
+  return Math.max(epsilon, candidate);
 };
 
 const sampleDeltaSeconds = (
@@ -246,7 +282,7 @@ const sampleDeltaSeconds = (
   const fallbackSpec = normalizeDeltaSpec(defaultSpec, DEFAULT_DELTA_SPEC);
   const spec = normalizeDeltaSpec(transition.deltaSeconds, fallbackSpec);
   const sampled = sampleFromSpec(spec, randomFn);
-  return Math.max(0, Number(sampled));
+  return Number.isFinite(sampled) && sampled > 0 ? sampled : spec.epsilon;
 };
 
 const normalizeProbabilities = (transitions: ScenarioTransition[]): ScenarioTransition[] => {

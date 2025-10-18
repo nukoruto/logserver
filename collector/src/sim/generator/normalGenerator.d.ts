@@ -16,10 +16,11 @@ export type NormalEvent = SimulationEvent & {
 };
 
 export function generateNormalSequence(options?: GenerateNormalSequenceOptions): NormalEvent[];
+export const DEFAULT_DELTA_EPSILON: number;
 
 declare const normalGenerator: {
   generateNormalSequence: typeof generateNormalSequence;
 };
 
-export { GenerateNormalSequenceOptions, NormalEvent, ScenarioDefinition, generateNormalSequence };
+export { GenerateNormalSequenceOptions, NormalEvent, ScenarioDefinition, generateNormalSequence, DEFAULT_DELTA_EPSILON };
 export default normalGenerator;
