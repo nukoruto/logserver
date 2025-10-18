@@ -1,5 +1,1 @@
-{
-  "algo_ver": "5.0-spec",
-  "epsilon": "min_half",
-  "epsilon_value": 0.01
-}
+{"algo_ver":"5.0-spec","epsilon":"min_half","epsilon_value":0.01}
