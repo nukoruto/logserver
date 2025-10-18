@@ -1,0 +1,26 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "__PROJECT_NAME__"
+version = "0.1.0"
+description = "Δt-aware LSTM anomaly detection project"
+readme = "README.md"
+requires-python = ">=3.11"
+license = { text = "MIT" }
+authors = [{ name = "Researcher" }]
+dependencies = [
+  "dt-lstm>=0.1.0",
+  "torch>=2.1.0",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+]
+
+[tool.setuptools]
+packages = { find = { include = ["dt_lstm*"], where = ["."] } }
+
+[tool.dt_lstm.runtime]
+seed = __SEED__
+device = "__DEVICE__"
+cuda_visible_devices = "__CUDA_VISIBLE__"

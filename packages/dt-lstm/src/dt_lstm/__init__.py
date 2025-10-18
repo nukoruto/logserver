@@ -1,0 +1,19 @@
+"""dt-lstm core package.
+
+このパッケージは Δt 対応 LSTM 実験の決定性制御・GPU 切替・プロジェクト雛形生成を担う。
+Electron/CLI 双方から共通の `DTLSTMEngine` を経由して利用することを想定している。
+"""
+
+from __future__ import annotations
+
+from pkgutil import extend_path
+
+__path__ = extend_path(__path__, __name__)
+
+from .engine import DTLSTMEngine, RuntimeContext, configure_runtime
+
+__all__ = [
+    "DTLSTMEngine",
+    "RuntimeContext",
+    "configure_runtime",
+]
