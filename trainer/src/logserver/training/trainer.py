@@ -97,6 +97,8 @@ class TrainerConfig:
 class SessionSplit:
     train_ids: List[str]
     val_ids: List[str]
+    test_ids: List[str]
+    ordered_ids: List[str]
 
 
 def _set_seed(seed: int) -> None:
@@ -108,25 +110,134 @@ def _set_seed(seed: int) -> None:
         torch.cuda.manual_seed_all(seed)
     torch.backends.cudnn.deterministic = True
     torch.backends.cudnn.benchmark = False
-def create_session_split(session_order: Sequence[str], config: TrainerConfig) -> SessionSplit:
-    unique_sessions = list(dict.fromkeys(str(session) for session in session_order))
-    if not unique_sessions:
-        return SessionSplit(train_ids=[], val_ids=[])
-    rng = random.Random(config.seed)
-    indices = list(range(len(unique_sessions)))
-    rng.shuffle(indices)
-    val_count = int(len(indices) * config.validation_split)
-    if val_count >= len(indices):
-        val_count = max(0, len(indices) - 1)
-    val_indices = set(indices[:val_count])
-    train_ids = [unique_sessions[idx] for idx in indices if idx not in val_indices]
-    val_ids = [unique_sessions[idx] for idx in indices if idx in val_indices]
-    if not train_ids and val_ids:
-        train_ids, val_ids = val_ids, []
-    if not train_ids:
-        train_ids = unique_sessions
+def _coerce_timestamp(value: object) -> datetime:
+    if isinstance(value, datetime):
+        timestamp = value
+    elif hasattr(value, "to_pydatetime"):
+        timestamp = value.to_pydatetime()  # type: ignore[assignment]
+    elif isinstance(value, (int, float)):
+        timestamp = datetime.fromtimestamp(float(value), tz=timezone.utc)
+    elif isinstance(value, str):
+        text = value.strip()
+        if not text:
+            raise ValueError("Empty timestamp string is not supported for session split")
+        normalised = text.replace("Z", "+00:00") if text.endswith("Z") else text
+        try:
+            timestamp = datetime.fromisoformat(normalised)
+        except ValueError as exc:
+            try:
+                timestamp = datetime.fromtimestamp(float(text), tz=timezone.utc)
+            except ValueError as inner_exc:
+                raise ValueError("Failed to parse timestamp for session split") from inner_exc
+        else:
+            if timestamp.tzinfo is None:
+                timestamp = timestamp.replace(tzinfo=timezone.utc)
+            else:
+                timestamp = timestamp.astimezone(timezone.utc)
+    else:
+        raise TypeError(f"Unsupported timestamp type: {type(value)!r}")
+    if timestamp.tzinfo is None:
+        return timestamp.replace(tzinfo=timezone.utc)
+    return timestamp.astimezone(timezone.utc)
+
+
+def _compute_partition_counts(total: int) -> Tuple[int, int, int]:
+    if total <= 0:
+        return 0, 0, 0
+    ratios = (0.7, 0.1, 0.2)
+    raw = [total * ratio for ratio in ratios]
+    counts = [int(value) for value in raw]
+    allocated = sum(counts)
+    remainder = total - allocated
+    if remainder > 0:
+        fractions = sorted(
+            ((raw[idx] - counts[idx], idx) for idx in range(len(ratios))),
+            key=lambda item: (-item[0], item[1]),
+        )
+        for _, idx in fractions:
+            if remainder <= 0:
+                break
+            counts[idx] += 1
+            remainder -= 1
+    if counts[0] == 0:
+        counts[0] = 1
+    total_assigned = sum(counts)
+    if total_assigned > total:
+        overflow = total_assigned - total
+        for idx in (2, 1):
+            if overflow <= 0:
+                break
+            reducible = min(counts[idx], overflow)
+            counts[idx] -= reducible
+            overflow -= reducible
+        if overflow > 0:
+            counts[0] = max(counts[0] - overflow, 1)
+    if total >= 3 and counts[1] == 0 and counts[2] > 0:
+        counts[1] = 1
+        counts[2] = max(counts[2] - 1, 0)
+    if total >= 5 and counts[2] == 0:
+        if counts[1] > 1:
+            counts[1] -= 1
+            counts[2] = 1
+        elif counts[0] > 1:
+            counts[0] -= 1
+            counts[2] = 1
+    adjustment = total - sum(counts)
+    if adjustment > 0:
+        counts[0] += adjustment
+    elif adjustment < 0:
+        for idx in (2, 1, 0):
+            if adjustment == 0:
+                break
+            reducible = min(counts[idx], -adjustment)
+            counts[idx] -= reducible
+            adjustment += reducible
+    if total > 0 and counts[0] == 0:
+        counts[0] = 1
+        for idx in (2, 1):
+            if counts[idx] > 0 and sum(counts) > total:
+                counts[idx] -= 1
+                break
+    return counts[0], counts[1], counts[2]
+
+
+def create_session_split(
+    session_order: Sequence[str],
+    session_timestamps: Sequence[object],
+    config: TrainerConfig,
+) -> SessionSplit:
+    if len(session_order) != len(session_timestamps):
+        raise ValueError("Session identifiers and timestamps must have matching lengths")
+    session_first: Dict[str, Tuple[datetime, int]] = {}
+    for index, (session, raw_ts) in enumerate(zip(session_order, session_timestamps)):
+        key = str(session)
+        timestamp = _coerce_timestamp(raw_ts)
+        if key not in session_first or timestamp < session_first[key][0]:
+            session_first[key] = (timestamp, index)
+    if not session_first:
+        return SessionSplit(train_ids=[], val_ids=[], test_ids=[], ordered_ids=[])
+    ordered = sorted(
+        session_first.items(),
+        key=lambda item: (item[1][0], item[1][1], item[0]),
+    )
+    ordered_ids = [item[0] for item in ordered]
+    total_sessions = len(ordered_ids)
+    train_count, val_count, test_count = _compute_partition_counts(total_sessions)
+    val_start = train_count
+    test_start = train_count + val_count
+    train_ids = ordered_ids[:train_count]
+    val_ids = ordered_ids[val_start:test_start]
+    test_ids = ordered_ids[test_start:]
+    if not train_ids and ordered_ids:
+        train_ids = ordered_ids
         val_ids = []
-    return SessionSplit(train_ids=train_ids, val_ids=val_ids)
+        test_ids = []
+    return SessionSplit(
+        train_ids=train_ids,
+        val_ids=val_ids,
+        test_ids=test_ids,
+        ordered_ids=ordered_ids,
+    )
 
 
 def _split_sessions(

@@ -18,11 +18,23 @@ def test_train_model_produces_artifacts(tmp_path: Path) -> None:
             "latency_ms": [100, 150, 120, 90, 95, 110],
             "status": [200, 200, 200, 200, 200, 200],
             "session_id": ["s1", "s1", "s1", "s2", "s2", "s2"],
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01T00:00:00Z",
+                    "2024-01-01T00:01:00Z",
+                    "2024-01-01T00:02:00Z",
+                    "2024-01-02T00:00:00Z",
+                    "2024-01-02T00:01:00Z",
+                    "2024-01-02T00:02:00Z",
+                ],
+                utc=True,
+            ),
         }
     )
     session_ids = df["session_id"].astype(str).tolist()
+    timestamps = df["timestamp"].tolist()
     config = TrainerConfig(max_epochs=1, batch_size=2, validation_split=0.5, early_stopping_patience=1)
-    split = create_session_split(session_ids, config)
+    split = create_session_split(session_ids, timestamps, config)
     train_df = df[df["session_id"].isin(split.train_ids)]
     pack = build_feature_pack(train_df, extra_features=None)
     encoded = encode_dataframe(df, pack)
@@ -42,11 +54,23 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
             "status": [200, 200, 200, 200, 200, 200],
             "response_bytes": [256, 512, 128, 256, 1024, 512],
             "session_id": ["s1", "s1", "s1", "s2", "s2", "s2"],
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01T00:00:00Z",
+                    "2024-01-01T00:01:00Z",
+                    "2024-01-01T00:02:00Z",
+                    "2024-01-02T00:00:00Z",
+                    "2024-01-02T00:01:00Z",
+                    "2024-01-02T00:02:00Z",
+                ],
+                utc=True,
+            ),
         }
     )
     session_ids = df["session_id"].astype(str).tolist()
+    timestamps = df["timestamp"].tolist()
     config = TrainerConfig(max_epochs=1, batch_size=2, validation_split=0.5, early_stopping_patience=1)
-    split = create_session_split(session_ids, config)
+    split = create_session_split(session_ids, timestamps, config)
     train_df = df[df["session_id"].isin(split.train_ids)]
     pack = build_feature_pack(train_df, extra_features=None)
     encoded = encode_dataframe(df, pack)
