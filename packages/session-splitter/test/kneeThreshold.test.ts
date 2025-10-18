@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, expect, it } from 'vitest';
 
 import { kneeThreshold, makeLogHistogram, otsuThreshold } from '../dist/index.js';
 
@@ -10,7 +9,8 @@ function computeSigmaLog(values: readonly number[]): number {
   return Math.sqrt(Math.max(0, variance));
 }
 
-test('knee detection is stable for noisy staircase curves', () => {
+describe('kneeThreshold', () => {
+  it('is stable for noisy staircase curves', () => {
   const base = [
     0.6,
     0.7,
@@ -57,9 +57,12 @@ test('knee detection is stable for noisy staircase curves', () => {
   const kneeBase = kneeThreshold(base, tauBase, sigmaBase);
   const kneeNoisy = kneeThreshold(noisy, tauNoisy, sigmaNoisy);
 
-  assert.ok(Number.isFinite(kneeBase));
-  assert.ok(Number.isFinite(kneeNoisy));
-  assert.ok(kneeBase >= 2 && kneeBase <= 6, `expected kneeBase in [2,6], received ${kneeBase}`);
-  assert.ok(kneeNoisy >= 2 && kneeNoisy <= 6, `expected kneeNoisy in [2,6], received ${kneeNoisy}`);
-  assert.ok(Math.abs(kneeBase - kneeNoisy) < 0.5, `knees diverged: base=${kneeBase}, noisy=${kneeNoisy}`);
+    expect(Number.isFinite(kneeBase)).toBe(true);
+    expect(Number.isFinite(kneeNoisy)).toBe(true);
+    expect(kneeBase).toBeGreaterThanOrEqual(2);
+    expect(kneeBase).toBeLessThanOrEqual(6);
+    expect(kneeNoisy).toBeGreaterThanOrEqual(2);
+    expect(kneeNoisy).toBeLessThanOrEqual(6);
+    expect(Math.abs(kneeBase - kneeNoisy)).toBeLessThan(0.5);
+  });
 });

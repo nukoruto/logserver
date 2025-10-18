@@ -1,27 +1,29 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, expect, it } from 'vitest';
 
 import { makeLogHistogram, otsuThreshold } from '../dist/index.js';
 import type { LogHistogramResult } from '../dist/index.js';
 
-test('makeLogHistogram enforces minimum bin count of 32', () => {
+describe('makeLogHistogram', () => {
+  it('enforces minimum bin count of 32', () => {
   const dense = Array.from({ length: 48 }, (_: unknown, index) => 1 + index * 1e-6);
   const result = makeLogHistogram(dense);
-  assert.equal(result.binCount, 32);
-  assert.equal(result.binEdges.length, result.binCount + 1);
-  assert.equal(result.binCounts.length, result.binCount);
-});
+    expect(result.binCount).toBe(32);
+    expect(result.binEdges).toHaveLength(result.binCount + 1);
+    expect(result.binCounts).toHaveLength(result.binCount);
+  });
 
-test('makeLogHistogram enforces maximum bin count of 512', () => {
+  it('enforces maximum bin count of 512', () => {
   const narrow = Array.from({ length: 4096 }, (_: unknown, index) => 1 + index * 1e-6);
   const tail = Array.from({ length: 32 }, (_: unknown, index) => 10 ** (index + 1));
   const result = makeLogHistogram([...narrow, ...tail]);
-  assert.equal(result.binCount, 512);
-  assert.equal(result.binEdges.length, result.binCount + 1);
-  assert.equal(result.binCounts.length, result.binCount);
+    expect(result.binCount).toBe(512);
+    expect(result.binEdges).toHaveLength(result.binCount + 1);
+    expect(result.binCounts).toHaveLength(result.binCount);
+  });
 });
 
-test('otsuThreshold returns stable log-domain boundary on bimodal mixture', () => {
+describe('otsuThreshold', () => {
+  it('returns stable log-domain boundary on bimodal mixture', () => {
   const binCount = 32;
   const logMin = 0;
   const logBinWidth = 0.25;
@@ -44,9 +46,10 @@ test('otsuThreshold returns stable log-domain boundary on bimodal mixture', () =
     }
   };
   const { tauLog, quality } = otsuThreshold(histogram);
-  assert.ok(Number.isFinite(tauLog), 'tauLog must be finite');
+    expect(Number.isFinite(tauLog)).toBe(true);
   const expectedLogBoundary = logMin + logBinWidth * 16;
-  assert.ok(Math.abs(tauLog - expectedLogBoundary) < 1e-9, `tauLog deviates from expected boundary: ${tauLog}`);
-  assert.ok(quality >= 0.9, `quality should highlight strong separation, got ${quality}`);
-  assert.ok(quality <= 1.01, `quality should not exceed 1 by margin, got ${quality}`);
+    expect(Math.abs(tauLog - expectedLogBoundary)).toBeLessThan(1e-9);
+    expect(quality).toBeGreaterThanOrEqual(0.9);
+    expect(quality).toBeLessThanOrEqual(1.01);
+  });
 });

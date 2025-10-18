@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, expect, it } from 'vitest';
 
 import { makeSid, deriveDatasetKey, algoVersion } from '../dist/index.js';
 
@@ -9,29 +8,31 @@ function epochSeconds(timestampUtc: string): number {
   return Math.trunc(Date.parse(timestampUtc) / 1000);
 }
 
-test('makeSid is deterministic for identical inputs', () => {
+describe('makeSid', () => {
+  it('is deterministic for identical inputs', () => {
   const datasetKey = deriveDatasetKey(FIXTURE_JWT_KEY);
   const epoch = epochSeconds('2024-05-01T12:34:56.000Z');
   const sidA = makeSid('user-123', epoch, algoVersion, datasetKey);
   const sidB = makeSid('user-123', epoch, algoVersion, datasetKey);
-  assert.equal(sidA, sidB);
-});
+    expect(sidA).toBe(sidB);
+  });
 
-test('makeSid changes when any component differs', () => {
+  it('changes when any component differs', () => {
   const datasetKey = deriveDatasetKey(FIXTURE_JWT_KEY);
   const epoch = epochSeconds('2024-05-01T12:34:56.000Z');
   const base = makeSid('user-123', epoch, algoVersion, datasetKey);
 
   const diffUser = makeSid('user-456', epoch, algoVersion, datasetKey);
-  assert.notEqual(base, diffUser);
+    expect(diffUser).not.toBe(base);
 
   const diffEpoch = makeSid('user-123', epoch + 1, algoVersion, datasetKey);
-  assert.notEqual(base, diffEpoch);
+    expect(diffEpoch).not.toBe(base);
 
   const diffAlgo = makeSid('user-123', epoch, `${algoVersion}-alt`, datasetKey);
-  assert.notEqual(base, diffAlgo);
+    expect(diffAlgo).not.toBe(base);
 
   const otherDatasetKey = deriveDatasetKey('c2VlZF9rZXlfZm9yX3NpZF9kZXJpdmF0aW9uXzEyMzQ1Ng==');
   const diffKey = makeSid('user-123', epoch, algoVersion, otherDatasetKey);
-  assert.notEqual(base, diffKey);
+    expect(diffKey).not.toBe(base);
+  });
 });
