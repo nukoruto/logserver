@@ -137,6 +137,23 @@
   列を末尾に追加しても旧スキーマはそのまま動作し、新列がある場合のみ下流の LSTM 前処理で特徴量として利用される。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
+- `logs/` には最小構成の参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
+
+  ```bash
+  mkdir -p data/raw
+  cp logs/sample.csv data/raw/
+  ```
+
+- 追加の生ログを取得する際は、決定的シードでシミュレータを実行して `artifacts/<run>/` 以下に CSV・manifest・ハッシュ（`checksums.txt`）を保存する。例：
+
+  ```bash
+  pnpm dlx ts-node --transpile-only --compiler-options '{"module":"commonjs","target":"ES2020"}' \
+    scripts/simulate.ts --seed reproducible-demo --count 64 --anomalies time,auth \
+    --scenario configs/scenario_default.json --output-dir artifacts/sim_repro \
+    --run-id reproducible-demo --delta-epsilon 0.001
+  ```
+
+- サンプルログや生成結果が揃っているかは `ls logs/*.csv artifacts/sim_repro/*.json artifacts/sim_repro/*.txt` などで確認できる。
 
 ### 4.3 環境変数ファイル (.env)
 1. 雛形 `.env.example` を `.env` にコピーする（任意）。
