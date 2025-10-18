@@ -214,6 +214,13 @@ def run_inference(
                 censored = bool(censor_flags[step].item())
                 g_val = float(g_values[step].item())
                 w_val = float(w_values[step].item())
+                hit_rank = None
+                topk_hit = 0
+                if effective_k > 0:
+                    matches = (top_indices == target_id).nonzero(as_tuple=False)
+                    if matches.numel() > 0:
+                        hit_rank = int(matches[0, 0].item()) + 1
+                        topk_hit = 1
                 if not censored:
                     p_time = _rmtpp_cdf(g_val, w_val, delta)
                     components.append(1.0 - p_time)
@@ -242,6 +249,10 @@ def run_inference(
                     round(statistic, 10),
                     round(combined_p, 12),
                     round(neglog10, 10),
+                    round(g_val, 10),
+                    round(w_val, 10),
+                    topk_hit,
+                    hit_rank,
                 ]
                 rows.append(row)
                 topk_payload = []
@@ -271,6 +282,10 @@ def run_inference(
                     "statistic": round(statistic, 10),
                     "combined_p": round(combined_p, 12),
                     "neglog10_p": round(neglog10, 10),
+                    "rmtpp_g": round(g_val, 10),
+                    "rmtpp_w": round(w_val, 10),
+                    "topk_hit": bool(topk_hit),
+                    "topk_rank": hit_rank,
                 }
                 audit_records.append(json.dumps(audit_entry, ensure_ascii=False, sort_keys=True))
                 total_events += 1
@@ -292,6 +307,10 @@ def run_inference(
         "fisher_statistic",
         "combined_p",
         "neglog10_p",
+        "rmtpp_g",
+        "rmtpp_w",
+        "topk_hit",
+        "topk_rank",
     ]
     with output_path.open("w", encoding="utf-8", newline="") as stream:
         writer = csv.writer(stream)

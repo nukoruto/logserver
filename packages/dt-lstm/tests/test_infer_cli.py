@@ -205,6 +205,11 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
     expected_combined = _chi2_sf(statistic, 2)
     assert math.isclose(float(first["fisher_statistic"]), statistic, rel_tol=1e-6)
     assert math.isclose(float(first["combined_p"]), expected_combined, rel_tol=1e-6)
+    assert "rmtpp_g" in first
+    assert "rmtpp_w" in first
+    assert "topk_hit" in first
+    assert first["topk_hit"] in {"0", "1"}
+    assert "topk_rank" in first
 
     audit_lines = audit_path.read_text(encoding="utf-8").strip().splitlines()
     assert len(audit_lines) == 4
@@ -213,6 +218,10 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
     for item in record["topk"]:
         assert math.isclose(float(item["prob"]), 1.0 / 6.0, rel_tol=1e-6)
     assert record["target_token"] == "browse"
+    assert "rmtpp_g" in record
+    assert "rmtpp_w" in record
+    assert "topk_hit" in record
+    assert isinstance(record["topk_hit"], bool)
 
     # Deterministic outputs
     csv_bytes_before = out_path.read_bytes()
