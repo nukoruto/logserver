@@ -8,6 +8,7 @@ import {
   resolveFeatureAugmenterOptions,
   cloneFeatureAugmenterOptions,
 } from '../sim/persistence/simWriter';
+import type { TimeDeviationMode, StrategyConfig } from '../sim/generator/anomalyInjector';
 import type { FeatureAugmenterOptions } from '../sim/persistence/simWriter';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
@@ -25,7 +26,17 @@ import {
 
 type StrategyName = 'protocolViolation' | 'timeDeviation' | 'authenticationBypass';
 
-type StrategyOverrides = Record<StrategyName, { weight: number }>;
+interface TimeDeviationStrategyOverride extends StrategyConfig {
+  weight: number;
+  mode?: TimeDeviationMode;
+  propagateWeight?: number | null;
+}
+
+type StrategyOverrides = {
+  protocolViolation: StrategyConfig;
+  timeDeviation: TimeDeviationStrategyOverride;
+  authenticationBypass: StrategyConfig;
+};
 
 type NumericBounds = { min: number; max: number };
 
@@ -46,6 +57,8 @@ const DEFAULT_ANOMALY_RATE = 0.2;
 const DEFAULT_TIME_DEVIATION_METHOD = 'quantile';
 const DEFAULT_TIME_DEVIATION_QUANTILE = 0.99;
 const DEFAULT_TIME_DEVIATION_MIN_SAMPLES = 5;
+const DEFAULT_TIME_ANOMALY_MODE: TimeDeviationMode = 'auto';
+const DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT = 0.7;
 
 interface EventBlueprint {
   method: string;
@@ -129,6 +142,7 @@ export interface SimulationFiles {
   csvPath: string;
   manifestPath: string;
   hash: string;
+  metaPath?: string | null;
 }
 
 export interface GenerateScenarioOptions extends Record<string, unknown> {
@@ -150,6 +164,8 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   timeDeviation?: Partial<TimeDeviationOptions> | null;
   featureAugmenter?: Partial<FeatureAugmenterOptions> | Record<string, unknown> | null;
   feature_augmenter?: Partial<FeatureAugmenterOptions> | Record<string, unknown> | null;
+  timeAnomalyMode?: TimeDeviationMode | string | null;
+  timeAnomalyPropWeight?: number | string | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -189,6 +205,10 @@ export interface SimulationParameters extends Record<string, unknown> {
   };
   protocol_validator: {
     enabled: boolean;
+  };
+  time_anomaly: {
+    mode: TimeDeviationMode;
+    weights: { propagate: number; local: number };
   };
 }
 
@@ -234,6 +254,8 @@ interface DefaultParameterInput {
   timeDeviationVoteWindow: number;
   timeDeviationVoteThreshold: number;
   timeDeviationHysteresisHold: number;
+  timeAnomalyMode: TimeDeviationMode;
+  timeAnomalyPropWeight: number;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -258,6 +280,39 @@ const normalizeSeedInput = (seed: unknown): string | null => {
 };
 
 const generateSeed = (): string => crypto.randomBytes(12).toString('hex');
+
+const normalizeTimeAnomalyMode = (value: unknown): TimeDeviationMode | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'auto' || normalized === 'propagate' || normalized === 'local') {
+    return normalized;
+  }
+  return null;
+};
+
+const resolveTimeAnomalyMode = (value: unknown, fallback: TimeDeviationMode): TimeDeviationMode => {
+  const normalized = normalizeTimeAnomalyMode(value);
+  return normalized ?? fallback;
+};
+
+const resolvePropagateWeight = (value: unknown, fallback: number): number => {
+  if (value === null || value === undefined || value === '') {
+    return fallback;
+  }
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  if (numeric <= 0) {
+    return 0;
+  }
+  if (numeric >= 1) {
+    return 1;
+  }
+  return numeric;
+};
 
 const resolveSeed = (seed: unknown): SeedResolution => {
   const normalized = normalizeSeedInput(seed);
@@ -334,9 +389,17 @@ export const normalizeAnomalyList = (input: unknown): NormalizedAnomalyList => {
   return new Set(filtered);
 };
 
-const buildStrategyOverrides = (selectedStrategies: NormalizedAnomalyList): StrategyOverrides => ({
+const buildStrategyOverrides = (
+  selectedStrategies: NormalizedAnomalyList,
+  timeAnomalyMode: TimeDeviationMode,
+  timeAnomalyPropWeight: number,
+): StrategyOverrides => ({
   protocolViolation: { weight: selectedStrategies.has('protocolViolation') ? 1 : 0 },
-  timeDeviation: { weight: selectedStrategies.has('timeDeviation') ? 1 : 0 },
+  timeDeviation: {
+    weight: selectedStrategies.has('timeDeviation') ? 1 : 0,
+    mode: timeAnomalyMode,
+    propagateWeight: timeAnomalyPropWeight,
+  },
   authenticationBypass: { weight: selectedStrategies.has('authenticationBypass') ? 1 : 0 },
 });
 
@@ -528,6 +591,13 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   protocol_validator: {
     enabled: true,
   },
+  time_anomaly: {
+    mode: input.timeAnomalyMode,
+    weights: {
+      propagate: input.timeAnomalyPropWeight,
+      local: Math.max(0, 1 - input.timeAnomalyPropWeight),
+    },
+  },
 });
 
 export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
@@ -541,6 +611,11 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     : DEFAULT_ANOMALY_RATE;
   const anomalyCount = options.anomalyCount !== undefined ? parseNonNegativeNumber(options.anomalyCount, null) : null;
   const anomalies = normalizeAnomalyList(options.anomalies);
+  const resolvedTimeAnomalyMode = resolveTimeAnomalyMode(options.timeAnomalyMode, DEFAULT_TIME_ANOMALY_MODE);
+  const resolvedTimeAnomalyPropWeight = resolvePropagateWeight(
+    options.timeAnomalyPropWeight,
+    DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT,
+  );
 
   const scenarioDefinition = scenario.loadScenario(scenarioPath) as ScenarioDefinition;
   const scenarioId = normalizeString((scenarioDefinition as Record<string, unknown>).id) || 'default-flow';
@@ -631,9 +706,15 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeDeviationVoteWindow: resolvedTimeDeviationVoteWindow,
     timeDeviationVoteThreshold: resolvedTimeDeviationVoteThreshold,
     timeDeviationHysteresisHold: resolvedTimeDeviationHysteresisHold,
+    timeAnomalyMode: resolvedTimeAnomalyMode,
+    timeAnomalyPropWeight: resolvedTimeAnomalyPropWeight,
   });
 
-  const selectedStrategies = buildStrategyOverrides(anomalies);
+  const selectedStrategies = buildStrategyOverrides(
+    anomalies,
+    resolvedTimeAnomalyMode,
+    resolvedTimeAnomalyPropWeight,
+  );
   const anomalyStrategies = Array.from(anomalies);
   const startTimeHr = process.hrtime.bigint();
 
@@ -653,6 +734,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     run_id: options.runId || null,
     time_deviation_detector: parameters.time_deviation_detector,
     feature_augmenter: parameters.feature_augmenter,
+    time_anomaly: parameters.time_anomaly,
   });
 
   const events: SimulationEvent[] = [];
@@ -679,6 +761,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
         anomalyRate,
         anomalyCount: Number.isFinite(anomalyCount) ? (anomalyCount as number) : null,
         strategies: selectedStrategies,
+        session: sessionIdentifiers,
       }) as SimulationEvent[];
     }
 
@@ -785,6 +868,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       csvPath: persistenceResult.csvPath,
       manifestPath: persistenceResult.manifestPath,
       hash: persistenceResult.hash,
+      metaPath: persistenceResult.metaPath,
     };
     response.manifest = persistenceResult.manifest;
   }
@@ -800,6 +884,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     duration_ms: Number.isFinite(durationMs) ? Math.round(durationMs) : null,
     time_deviation_detector: parameters.time_deviation_detector,
     feature_augmenter: parameters.feature_augmenter,
+    time_anomaly: parameters.time_anomaly,
   });
 
   return response;

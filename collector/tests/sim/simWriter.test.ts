@@ -228,6 +228,7 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.output.csv_path).toBe(result.csvPath);
     expect(manifest.output.manifest_path).toBe(result.manifestPath);
     expect(manifest.output.csv_sha256).toBe(result.hash);
+    expect(manifest.output.meta_path).toBe(result.metaPath);
     expect(manifest.source.sim_log_dir).toBe(tempDir);
     expect(manifest.timing).toMatchObject({
       epsilon_seconds: expect.any(Number),
@@ -258,6 +259,17 @@ describe('simWriter.persistSimulationRun', () => {
     expect(deltaStats.stddev).toBeLessThan(1.09);
     expect(deltaStats.min).toBeCloseTo(1.5, 5);
     expect(deltaStats.max).toBeCloseTo(4.0, 5);
+
+    expect(result.metaPath).not.toBeNull();
+    if (!result.metaPath) {
+      throw new Error('metaPath should be defined');
+    }
+    const metaLines = (await fs.readFile(result.metaPath, 'utf8')).trim().split('\n');
+    expect(metaLines.length).toBeGreaterThan(0);
+    const metaRecord = JSON.parse(metaLines[0]);
+    expect(metaRecord.type).toBe('time-anomaly');
+    expect(metaRecord).toHaveProperty('propagation_mode');
+    expect(metaRecord).toHaveProperty('weights');
   });
 
   it('ε 推定と time_label を複数解像度で検証する', async () => {

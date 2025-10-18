@@ -3,6 +3,14 @@ import { DEFAULT_DELTA_EPSILON } from './normalGenerator';
 
 export type StrategyConfig = Record<string, unknown>;
 
+export type TimeDeviationMode = 'auto' | 'propagate' | 'local';
+
+export interface SessionContext {
+  sessionId?: string | null;
+  userId?: string | null;
+  uid?: string | null;
+}
+
 export interface AnomalyInjectionOptions extends Record<string, unknown> {
   anomalyRate?: number;
   anomalyCount?: number | null;
@@ -12,6 +20,7 @@ export interface AnomalyInjectionOptions extends Record<string, unknown> {
   seed?: number | string | null;
   markField?: string | null;
   strategies?: Record<string, StrategyConfig> | Iterable<string> | null;
+  session?: SessionContext | null;
 }
 
 interface StrategyEntry {
@@ -25,6 +34,7 @@ interface MutationContext {
   randomFn: () => number;
   markField: string | null;
   deltaMap: WeakMap<SimulationEvent, number>;
+  session: SessionContext | null;
 }
 
 interface NormalizedOptions extends AnomalyInjectionOptions {
@@ -36,6 +46,7 @@ interface NormalizedOptions extends AnomalyInjectionOptions {
   seed: number | string | null;
   markField: string | null;
   strategies: Record<string, StrategyConfig>;
+  session: SessionContext | null;
 }
 
 const DEFAULT_OPTIONS: NormalizedOptions = {
@@ -46,6 +57,7 @@ const DEFAULT_OPTIONS: NormalizedOptions = {
   maxAnomalies: null,
   seed: null,
   markField: '_anomalyType',
+  session: null,
   strategies: {
     protocolViolation: {
       weight: 1,
@@ -68,6 +80,8 @@ const DEFAULT_OPTIONS: NormalizedOptions = {
       longGapSeconds: 300,
       shortGapSeconds: 0.05,
       longProbability: 0.5,
+      mode: 'auto',
+      propagateWeight: 0.7,
     },
     authenticationBypass: {
       weight: 1,
@@ -80,6 +94,7 @@ const DEFAULT_OPTIONS: NormalizedOptions = {
 };
 
 const MIN_ANOMALY_DELTA = DEFAULT_DELTA_EPSILON;
+const DEFAULT_PROPAGATE_WEIGHT = 0.7;
 
 type StrategyHandler = (context: MutationContext) => boolean;
 
@@ -174,6 +189,83 @@ const formatTimestamp = (date: Date | null): string | null => {
     return null;
   }
   return date.toISOString();
+};
+
+const toIdString = (value: unknown, fallback: string): string => {
+  if (typeof value === 'string' && value.length > 0) {
+    return value;
+  }
+  return fallback;
+};
+
+const resolvePropagationSeed = (
+  session: SessionContext | null,
+  event: SimulationEvent,
+  index: number,
+  globalSeed: number | string | null,
+): string => {
+  const sessionId = toIdString(session?.sessionId ?? event.session_id, 'sess-unknown');
+  const uid = toIdString(session?.uid ?? event.uid ?? event.user_id, 'uid-unknown');
+  const baseSeed = `${sessionId}|${uid}|${index}`;
+  const seedPrefix =
+    typeof globalSeed === 'string' && globalSeed.length > 0
+      ? String(globalSeed)
+      : typeof globalSeed === 'number' && Number.isFinite(globalSeed)
+        ? String(globalSeed)
+        : 'time-deviation';
+  return `${seedPrefix}|${baseSeed}`;
+};
+
+const normalizePropagationWeight = (value: unknown): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return DEFAULT_PROPAGATE_WEIGHT;
+  }
+  if (numeric <= 0) {
+    return 0;
+  }
+  if (numeric >= 1) {
+    return 1;
+  }
+  return numeric;
+};
+
+const normalizeTimeDeviationMode = (value: unknown): TimeDeviationMode | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'propagate' || normalized === 'local' || normalized === 'auto') {
+    return normalized;
+  }
+  return null;
+};
+
+const selectPropagationMode = (
+  config: Record<string, unknown>,
+  events: SimulationEvent[],
+  options: NormalizedOptions,
+  session: SessionContext | null,
+  index: number,
+): { mode: 'propagate' | 'local'; weight: number } => {
+  const explicitMode =
+    normalizeTimeDeviationMode(config.mode) ||
+    normalizeTimeDeviationMode((config as Record<string, unknown>).propagationMode);
+  if (explicitMode === 'propagate' || explicitMode === 'local') {
+    return { mode: explicitMode, weight: normalizePropagationWeight(config.propagateWeight) };
+  }
+
+  const weights = (config.weights as Record<string, unknown> | undefined) ?? {};
+  const propagateWeight = normalizePropagationWeight(
+    config.propagateWeight ?? weights.propagate ?? (config as Record<string, unknown>).propagateProbability,
+  );
+  const seed = resolvePropagationSeed(session, events[index], index, options.seed);
+  const rng = createPrng(seed);
+  const roll = rng();
+  return {
+    mode: roll < propagateWeight ? 'propagate' : 'local',
+    weight: propagateWeight,
+  };
 };
 
 const markAnomaly = (
@@ -436,7 +528,7 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
   return true;
 };
 
-const applyTimeDeviation = ({ events, options, randomFn, markField }: MutationContext): boolean => {
+const applyTimeDeviation = ({ events, options, randomFn, markField, session }: MutationContext): boolean => {
   if (!Array.isArray(events) || events.length < 2) {
     return false;
   }
@@ -472,11 +564,38 @@ const applyTimeDeviation = ({ events, options, randomFn, markField }: MutationCo
   const currentTimestamp = parseTimestamp(target.timestamp) || newTimestamp;
   const deltaShift = newTimestamp.getTime() - currentTimestamp.getTime();
 
+  const propagationSelection = selectPropagationMode(config, events, options, session ?? null, chosenIndex);
+  const propagationMode = propagationSelection.mode;
+  const propagateWeight = propagationSelection.weight;
+
   target.timestamp = formatTimestamp(newTimestamp) || target.timestamp;
   target.deltaSeconds = desiredDelta;
-  markAnomaly(target, 'timeDeviation', { mode: useLongGap ? 'long' : 'short', desiredDelta }, markField);
+  if (!target.metadata || typeof target.metadata !== 'object') {
+    target.metadata = {};
+  }
+  const metaRecord = target.metadata as Record<string, unknown>;
+  const timeMeta = (metaRecord.time_anomaly as Record<string, unknown>) || {};
+  timeMeta.propagation_mode = propagationMode;
+  timeMeta.gap_type = useLongGap ? 'long' : 'short';
+  timeMeta.desired_delta = desiredDelta;
+  timeMeta.weights = {
+    propagate: propagateWeight,
+    local: Math.max(0, 1 - propagateWeight),
+  };
+  metaRecord.time_anomaly = timeMeta;
+  markAnomaly(
+    target,
+    'timeDeviation',
+    {
+      mode: useLongGap ? 'long' : 'short',
+      desiredDelta,
+      propagationMode,
+      propagateWeight,
+    },
+    markField,
+  );
 
-  if (deltaShift !== 0) {
+  if (deltaShift !== 0 && propagationMode === 'propagate') {
     shiftTimestamps(events, chosenIndex + 1, deltaShift);
   }
   return true;
@@ -566,6 +685,7 @@ export const injectAnomaly = (
     seed: userOptions.seed ?? DEFAULT_OPTIONS.seed,
     markField: (userOptions.markField ?? DEFAULT_OPTIONS.markField) as string | null,
     strategies: deepMerge(DEFAULT_OPTIONS.strategies, userOptions.strategies as Record<string, unknown> | undefined),
+    session: (userOptions.session ?? DEFAULT_OPTIONS.session) as SessionContext | null,
   };
 
   if (typeof userOptions.anomalyRate === 'number') {
@@ -606,6 +726,7 @@ export const injectAnomaly = (
     randomFn,
     markField: mergedOptions.markField,
     deltaMap,
+    session: mergedOptions.session ?? null,
   };
 
   let appliedCount = 0;
