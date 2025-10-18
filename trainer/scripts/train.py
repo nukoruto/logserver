@@ -70,6 +70,12 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
     processed_dir = Path(data_cfg.get("processed_dir", "data/processed"))
     df = load_processed_events(processed_dir)
     session_ids = df["session_id"].astype(str).tolist()
+    if "timestamp" in df.columns:
+        session_timestamps = df["timestamp"].tolist()
+    elif "timestamp_utc" in df.columns:
+        session_timestamps = df["timestamp_utc"].tolist()
+    else:
+        raise RuntimeError("Processed dataset must include timestamp column for deterministic split")
 
     trainer_config = TrainerConfig(
         batch_size=int(train_cfg.get("batch_size", 64)),
@@ -88,7 +94,7 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
     output_dir = Path(logging_cfg.get("dir", "runs"))
     output_dir.mkdir(parents=True, exist_ok=True)
     feature_flags = _normalize_features(features)
-    split = create_session_split(session_ids, trainer_config)
+    split = create_session_split(session_ids, session_timestamps, trainer_config)
     training_df = _select_training_rows(df, split)
     feature_pack = build_feature_pack(training_df, extra_features=feature_flags)
     _log_feature_usage(feature_pack, feature_flags)
