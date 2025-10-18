@@ -13,7 +13,8 @@ import {
   anomalyMetaSchema,
   type AnomalyStats,
   type AnomalyMeta,
-  type QuantileGroupEntry
+  type QuantileGroupEntry,
+  type ThresholdTierEntry
 } from './schema.js';
 import { nowIso, parseQuantileLevels, computeHashHex } from './utils.js';
 import { createRunningMoments, finalizeStd, updateRunningMoments } from './utils.js';
@@ -21,6 +22,8 @@ import { createRunningMoments, finalizeStd, updateRunningMoments } from './utils
 const ALGO_VERSION = '5.0-spec';
 
 type BudgetWeightMode = 'count' | 'uniform';
+
+type TierScope = 'group' | 'user' | 'global';
 
 export interface FitOptions {
   readonly inputs: readonly string[];
@@ -220,8 +223,18 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
     quantileDatasetCache.set(cacheKey, result);
     return result;
   }
+  const quantileTierRecords: ThresholdTierEntry[] = [];
+  function resolveTierSource(scope: TierScope, targetUid: string, targetOpCategory: string) {
+    if (scope === 'group') {
+      return { sourceUid: targetUid, sourceOpCategory: targetOpCategory };
+    }
+    if (scope === 'user') {
+      return { sourceUid: targetUid, sourceOpCategory: '__all__' };
+    }
+    return { sourceUid: '__global__', sourceOpCategory: '__global__' };
+  }
   function createQuantileEntry(params: {
-    scope: 'group' | 'user' | 'global';
+    scope: TierScope;
     key: string;
     uid: string;
     opCategory: string;
@@ -229,6 +242,15 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
   }): { entry: QuantileGroupEntry; datasetKey: string } {
     const cacheKey = `${params.scope}:${params.key}`;
     const statsForDataset = getQuantileDatasetStats(cacheKey, params.values);
+    const tierSource = resolveTierSource(params.scope, params.uid, params.opCategory);
+    quantileTierRecords.push({
+      uid: params.uid,
+      op_category: params.opCategory,
+      tier: params.scope,
+      sample_count: statsForDataset.sampleCount,
+      source_uid: tierSource.sourceUid,
+      source_op_category: tierSource.sourceOpCategory
+    });
     return {
       entry: {
         uid: params.uid,
@@ -359,6 +381,7 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
     q: options.q
   };
   const spotEntries: AnomalyStats['spot'] = [];
+  const spotTierRecords: ThresholdTierEntry[] = [];
   const globalSpotResult = calibrateSpot(buildSpotSamples(globalDomainRecords), candidateQuantiles, spotOptions);
   const userSpotCache = new Map<string, SpotCalibrateResult>();
   const globalDiag = extractDiagnostics(globalSpotResult);
@@ -378,14 +401,24 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
     estimator: globalDiag.estimator,
     warnings: globalDiag.warnings
   });
+  spotTierRecords.push({
+    uid: '__global__',
+    op_category: '__global__',
+    tier: 'global',
+    sample_count: globalSpotResult.calibrationSize,
+    source_uid: '__global__',
+    source_op_category: '__global__'
+  });
   for (const [uid, samples] of domainUserSamples.entries()) {
     let result: SpotCalibrateResult;
     const extraWarnings: string[] = [];
+    let tierUsed: TierScope = 'user';
     try {
       result = calibrateSpot(samples, candidateQuantiles, spotOptions);
     } catch (error) {
       result = globalSpotResult;
       extraWarnings.push('user_spot_fallback_global');
+      tierUsed = 'global';
       if (error instanceof Error && error.message) {
         extraWarnings.push(`user_spot_error:${error.message}`);
       } else {
@@ -410,6 +443,17 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
       estimator: diag.estimator,
       warnings: diag.warnings
     });
+    const source = tierUsed === 'global'
+      ? { sourceUid: '__global__', sourceOpCategory: '__global__' }
+      : { sourceUid: uid, sourceOpCategory: '__all__' };
+    spotTierRecords.push({
+      uid,
+      op_category: '__all__',
+      tier: tierUsed,
+      sample_count: result.calibrationSize,
+      source_uid: source.sourceUid,
+      source_op_category: source.sourceOpCategory
+    });
   }
   const groupKeys = new Set<string>();
   for (const key of domainGroupSamples.keys()) {
@@ -423,6 +467,7 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
     const [uid, opCategory] = groupKey.split('||', 2);
     let result: SpotCalibrateResult | undefined;
     const fallbackWarnings: string[] = [];
+    let tierUsed: TierScope = 'group';
     if (samples && samples.length >= options.minTailCount) {
       try {
         result = calibrateSpot(samples, candidateQuantiles, spotOptions);
@@ -441,9 +486,11 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
       if (cached) {
         fallbackWarnings.push('group_spot_fallback_user');
         result = cached;
+        tierUsed = cached === globalSpotResult ? 'global' : 'user';
       } else {
         fallbackWarnings.push('group_spot_fallback_global');
         result = globalSpotResult;
+        tierUsed = 'global';
       }
     }
     const diag = extractDiagnostics(result, fallbackWarnings);
@@ -462,6 +509,22 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
       q_star: result.qStar,
       estimator: diag.estimator,
       warnings: diag.warnings
+    });
+    let sourceUid = uid;
+    let sourceOpCategory = opCategory;
+    if (tierUsed === 'user') {
+      sourceOpCategory = '__all__';
+    } else if (tierUsed === 'global') {
+      sourceUid = '__global__';
+      sourceOpCategory = '__global__';
+    }
+    spotTierRecords.push({
+      uid,
+      op_category: opCategory,
+      tier: tierUsed,
+      sample_count: result.calibrationSize,
+      source_uid: sourceUid,
+      source_op_category: sourceOpCategory
     });
   }
   spotEntries.sort((a, b) => {
@@ -539,7 +602,37 @@ export async function fitAnomalyModel(options: FitOptions): Promise<FitResult> {
     },
     seeds: seedsNormalized,
     stats_hash: statsHash,
-    preproc_hash: options.preprocHash
+    preproc_hash: options.preprocHash,
+    threshold_tiers: {
+      quantile: [...quantileTierRecords].sort((a, b) => {
+        const uidCompare = a.uid.localeCompare(b.uid);
+        if (uidCompare !== 0) {
+          return uidCompare;
+        }
+        const catCompare = a.op_category.localeCompare(b.op_category);
+        if (catCompare !== 0) {
+          return catCompare;
+        }
+        if (a.tier === b.tier) {
+          return 0;
+        }
+        return a.tier < b.tier ? -1 : 1;
+      }),
+      spot: [...spotTierRecords].sort((a, b) => {
+        const uidCompare = a.uid.localeCompare(b.uid);
+        if (uidCompare !== 0) {
+          return uidCompare;
+        }
+        const catCompare = a.op_category.localeCompare(b.op_category);
+        if (catCompare !== 0) {
+          return catCompare;
+        }
+        if (a.tier === b.tier) {
+          return 0;
+        }
+        return a.tier < b.tier ? -1 : 1;
+      })
+    }
   });
   await writeJsonFile(options.metaOut, meta);
   return { stats, meta };

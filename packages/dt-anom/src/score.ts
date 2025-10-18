@@ -228,6 +228,7 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   const quantileMap = new Map<string, QuantileRuntimeEntry>();
   const userFallback = new Map<string, QuantileRuntimeEntry>();
   let globalFallback: QuantileRuntimeEntry | undefined;
+  const quantileResolutionCache = new Map<string, QuantileRuntimeEntry>();
   for (const entry of quantileEntries) {
     const runtimeEntry: QuantileRuntimeEntry = {
       entry,
@@ -248,20 +249,29 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   }
   const globalQuantile = globalFallback;
   function resolveQuantile(uid: string, opCategory: string): QuantileRuntimeEntry {
-    const direct = quantileMap.get(`${uid}||${opCategory}`);
+    const cacheKey = `${uid}||${opCategory}`;
+    const cached = quantileResolutionCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const direct = quantileMap.get(cacheKey);
     if (direct) {
+      quantileResolutionCache.set(cacheKey, direct);
       return direct;
     }
     const user = userFallback.get(uid);
     if (user) {
+      quantileResolutionCache.set(cacheKey, user);
       return user;
     }
+    quantileResolutionCache.set(cacheKey, globalQuantile);
     return globalQuantile;
   }
   const spotEntries = stats.spot;
   const spotMap = new Map<string, typeof spotEntries[number]>();
   const spotUserFallback = new Map<string, typeof spotEntries[number]>();
   let spotGlobal: typeof spotEntries[number] | undefined;
+  const spotResolutionCache = new Map<string, typeof spotEntries[number]>();
   for (const entry of spotEntries) {
     if (entry.uid === '__global__' && entry.op_category === '__global__') {
       spotGlobal = entry;
@@ -278,14 +288,22 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   }
   const globalSpot = spotGlobal;
   function resolveSpot(uid: string, opCategory: string) {
-    const direct = spotMap.get(`${uid}||${opCategory}`);
+    const cacheKey = `${uid}||${opCategory}`;
+    const cached = spotResolutionCache.get(cacheKey);
+    if (cached) {
+      return cached;
+    }
+    const direct = spotMap.get(cacheKey);
     if (direct) {
+      spotResolutionCache.set(cacheKey, direct);
       return direct;
     }
     const user = spotUserFallback.get(uid);
     if (user) {
+      spotResolutionCache.set(cacheKey, user);
       return user;
     }
+    spotResolutionCache.set(cacheKey, globalSpot);
     return globalSpot;
   }
   const hysteresisH = meta.H;
