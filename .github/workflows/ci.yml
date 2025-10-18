@@ -7,6 +7,15 @@ on:
   pull_request:
 
 jobs:
+  jwt_secret_guard:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Verify JWT_HMAC_KEY customization
+        run: python3 scripts/check_jwt_key.py --env-file .env
+
   collector:
     runs-on: ubuntu-latest
     defaults:
