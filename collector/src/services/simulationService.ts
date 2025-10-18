@@ -57,8 +57,11 @@ const DEFAULT_ANOMALY_RATE = 0.2;
 const DEFAULT_TIME_DEVIATION_METHOD = 'quantile';
 const DEFAULT_TIME_DEVIATION_QUANTILE = 0.99;
 const DEFAULT_TIME_DEVIATION_MIN_SAMPLES = 5;
-const DEFAULT_TIME_ANOMALY_MODE: TimeDeviationMode = 'auto';
+const DEFAULT_TIME_ANOMALY_MODE: TimeDeviationMode = config.timeAnomalyMode as TimeDeviationMode;
 const DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT = 0.7;
+const MIN_DELTA_EPSILON = 1e-6;
+const MAX_DELTA_EPSILON = 1;
+const DEFAULT_DELTA_EPSILON = Math.min(Math.max(config.deltaEpsilon, MIN_DELTA_EPSILON), MAX_DELTA_EPSILON);
 
 interface EventBlueprint {
   method: string;
@@ -166,6 +169,7 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   feature_augmenter?: Partial<FeatureAugmenterOptions> | Record<string, unknown> | null;
   timeAnomalyMode?: TimeDeviationMode | string | null;
   timeAnomalyPropWeight?: number | string | null;
+  deltaEpsilon?: number | string | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -179,6 +183,7 @@ export interface SimulationParameters extends Record<string, unknown> {
   session_spacing_seconds: number;
   persist: boolean;
   max_steps: number;
+  delta_epsilon: number;
   feature_augmenter: {
     window_size: number;
     quantiles: number[];
@@ -246,6 +251,7 @@ interface DefaultParameterInput {
   sessionSpacingSeconds: number;
   persist: boolean;
   maxSteps: number;
+  deltaEpsilon: number;
   featureAugmenter: FeatureAugmenterOptions;
   timeDeviationMethod: string;
   timeDeviationQuantile: number | null;
@@ -340,6 +346,39 @@ const parseNonNegativeNumber = (candidate: unknown, fallback: number | null): nu
   const value = Number(candidate);
   if (Number.isFinite(value) && value >= 0) {
     return value;
+  }
+  return fallback;
+};
+
+const clampDeltaEpsilon = (value: number, fallback: number): number => {
+  if (!Number.isFinite(value) || value <= 0) {
+    return fallback;
+  }
+  if (value < MIN_DELTA_EPSILON) {
+    return MIN_DELTA_EPSILON;
+  }
+  if (value > MAX_DELTA_EPSILON) {
+    return MAX_DELTA_EPSILON;
+  }
+  return value;
+};
+
+const resolveDeltaEpsilonOption = (candidate: unknown, fallback: number): number => {
+  if (candidate === undefined || candidate === null || candidate === '') {
+    return fallback;
+  }
+  if (typeof candidate === 'number') {
+    return clampDeltaEpsilon(candidate, fallback);
+  }
+  if (typeof candidate === 'string') {
+    const trimmed = candidate.trim();
+    if (trimmed.length === 0) {
+      return fallback;
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric) && numeric > 0) {
+      return clampDeltaEpsilon(numeric, fallback);
+    }
   }
   return fallback;
 };
@@ -565,6 +604,7 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   session_spacing_seconds: input.sessionSpacingSeconds,
   persist: input.persist,
   max_steps: input.maxSteps,
+  delta_epsilon: input.deltaEpsilon,
   feature_augmenter: {
     window_size: input.featureAugmenter.windowSize,
     quantiles: [...input.featureAugmenter.quantiles],
@@ -616,6 +656,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     options.timeAnomalyPropWeight,
     DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT,
   );
+  const resolvedDeltaEpsilon = resolveDeltaEpsilonOption(options.deltaEpsilon, DEFAULT_DELTA_EPSILON);
 
   const scenarioDefinition = scenario.loadScenario(scenarioPath) as ScenarioDefinition;
   const scenarioId = normalizeString((scenarioDefinition as Record<string, unknown>).id) || 'default-flow';
@@ -698,6 +739,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     sessionSpacingSeconds,
     persist,
     maxSteps,
+    deltaEpsilon: resolvedDeltaEpsilon,
     featureAugmenter: resolvedFeatureAugmenter,
     timeDeviationMethod: resolvedTimeDeviationMethod,
     timeDeviationQuantile: parameterQuantile,
@@ -732,6 +774,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     scenario_version: scenarioVersion,
     scenario_path: scenarioPath,
     run_id: options.runId || null,
+    delta_epsilon: resolvedDeltaEpsilon,
     time_deviation_detector: parameters.time_deviation_detector,
     feature_augmenter: parameters.feature_augmenter,
     time_anomaly: parameters.time_anomaly,
@@ -755,6 +798,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       sessionId: sessionIdentifiers.sessionId,
       uid: sessionIdentifiers.uid ?? sessionIdentifiers.userId,
       namespace: 'normal-sequence',
+      deltaEpsilon: resolvedDeltaEpsilon,
     }) as NormalEvent[];
 
     let mutatedSequence: SimulationEvent[] = baseSequence as SimulationEvent[];
@@ -888,6 +932,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     time_deviation_detector: parameters.time_deviation_detector,
     feature_augmenter: parameters.feature_augmenter,
     time_anomaly: parameters.time_anomaly,
+    delta_epsilon: parameters.delta_epsilon,
   });
 
   return response;

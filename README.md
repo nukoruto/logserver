@@ -137,6 +137,8 @@
    cp .env.example .env
    ```
 2. シミュレーション結果の保存先を変更したい場合は `SIM_LOG_DIR` を設定する。設定がなければ `data/sim/` が利用される。
+3. Δt の最小値（ε フロア）や時間異常モードの既定値を固定したい場合は `SIM_DELTA_EPSILON`（秒、1e-6〜1.0 にクリップ）と
+   `SIM_TIME_ANOMALY_MODE`（`auto` / `propagate` / `local`）を設定する。未指定時は 1e-3 秒・`auto` が適用される。
 
 ### 4.4 シミュレーションログ生成
 シナリオに基づく CSV / manifest を生成するには、リポジトリルートで次を実行する。
@@ -147,7 +149,8 @@ pnpm exec ts-node scripts/simulate.ts \
   --seed demo-seed \
   --anomalies time,auth \
   --count 256 \
-  --output-dir data/sim
+  --output-dir data/sim \
+  --delta-epsilon 0.002
 ```
 
 - `--persist false` を指定すると、生成結果を標準出力に表示するだけでファイルは生成されない。
@@ -299,6 +302,9 @@ pnpm exec dt-preproc transform \
 - CLI からは `ts-node` 経由で `scripts/simulate.ts` を実行し、件数・異常タイプ・シードなどを指定できます。
 - `--seed` を省略した場合でも疑似乱数生成器を暗号学的シードで初期化し、レスポンスおよびマニフェストの `params.seed` / `params.seed_source` に保存します（`generated` または `provided`）。
 - 実行時には `Simulate start` / `Simulate complete` の INFO ログが出力され、シナリオ ID、遷移数、異常戦略、Δt 閾値計算方式などが記録されます。運用ログを収集することで、同一シードでの再実行や実験差異の追跡が容易になります。
+- Δt 分布は lognormal が前提であり、`normal` / `uniform` を指定すると Deprecation Warning を発行します。CLI の `--delta-epsilon` で ε フロア（秒）を 1e-6〜1.0 の範囲で制御でき、未指定時は `SIM_DELTA_EPSILON` または 1e-3 が適用されます。
+- `--time-anomaly-mode` の既定値は環境変数 `SIM_TIME_ANOMALY_MODE`（未設定時は `auto`）から決定され、auto 時の伝搬比率は `--time-anomaly-prop-weight`（0〜1、既定 0.7）で制御します。
+- CSV 出力の `timestamp_utc` 列は UTC 専用です。ローカルタイム表示は CLI 応答 JSON の `events[].timestamp` や GUI（例: `apps/splitter-gui`）で行います。
 
 ```bash
 node -r ts-node/register/transpile-only scripts/simulate.ts \
