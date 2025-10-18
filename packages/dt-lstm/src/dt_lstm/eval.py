@@ -190,20 +190,23 @@ def _compute_rmtpp_negloglik(frame: pd.DataFrame, mask: np.ndarray) -> float | N
     censored = frame["censored"].to_numpy(dtype=int)[mask]
     losses: List[float] = []
     for g_val, w_val, delta, cens in zip(g_vals, w_vals, deltas, censored, strict=False):
-        if not np.isfinite(delta):
+        g = float(g_val)
+        w = float(w_val)
+        delta_val = float(delta)
+        if not (math.isfinite(g) and math.isfinite(w) and math.isfinite(delta_val)):
             continue
-        safe_w = max(float(w_val), 1e-6)
-        safe_delta = max(float(delta), 0.0)
-        exp_g = math.exp(float(g_val)) if float(g_val) < 80 else math.exp(80)
+        safe_w = max(w, 1e-6)
+        safe_delta = max(delta_val, 0.0)
+        exp_g = math.exp(g) if g < 80 else math.exp(80)
         if safe_w <= 1e-6:
             integral = exp_g * safe_delta
         else:
             try:
-                exp_term = math.exp(float(g_val) + safe_w * safe_delta)
+                exp_term = math.exp(g + safe_w * safe_delta)
             except OverflowError:
                 exp_term = float("inf")
             try:
-                exp_g_val = math.exp(float(g_val))
+                exp_g_val = math.exp(g)
             except OverflowError:
                 exp_g_val = float("inf")
             if math.isfinite(exp_term) and math.isfinite(exp_g_val):
@@ -217,7 +220,7 @@ def _compute_rmtpp_negloglik(frame: pd.DataFrame, mask: np.ndarray) -> float | N
             losses.append(float(integral))
             continue
         try:
-            log_lambda = float(g_val + safe_w * safe_delta)
+            log_lambda = float(g + safe_w * safe_delta)
         except OverflowError:
             log_lambda = 80.0
         losses.append(float(-log_lambda + integral))
