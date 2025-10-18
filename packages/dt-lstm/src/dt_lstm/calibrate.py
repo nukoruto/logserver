@@ -204,9 +204,8 @@ def calibrate_temperature(
     model.load_state_dict(state)
     model.to(device)
     model.eval()
-    logits_list: List[Tensor] = []
-    targets_list: List[Tensor] = []
-    mask_list: List[Tensor] = []
+    flat_logits_list: List[Tensor] = []
+    flat_targets_list: List[Tensor] = []
     with torch.no_grad():
         for batch in loader:
             events = batch["events"].to(device)
@@ -214,13 +213,16 @@ def calibrate_temperature(
             mask = batch["mask"].to(device)
             lengths = mask.sum(dim=1)
             outputs = model(events, numeric, lengths=lengths)
-            logits_list.append(outputs["event_logits"].detach().cpu())
-            targets_list.append(batch["targets"].detach().cpu())
-            mask_list.append(batch["mask"].detach().cpu())
-    logits = torch.cat(logits_list, dim=0)
-    targets = torch.cat(targets_list, dim=0)
-    mask = torch.cat(mask_list, dim=0)
-    flat_logits, flat_targets = _flatten_predictions(logits, targets, mask)
+            batch_logits = outputs["event_logits"].detach().cpu()
+            batch_targets = batch["targets"].detach().cpu()
+            batch_mask = batch["mask"].detach().cpu()
+            flat_logits, flat_targets = _flatten_predictions(
+                batch_logits, batch_targets, batch_mask
+            )
+            flat_logits_list.append(flat_logits)
+            flat_targets_list.append(flat_targets)
+    flat_logits = torch.cat(flat_logits_list, dim=0)
+    flat_targets = torch.cat(flat_targets_list, dim=0)
     base_ece = _ece_from_logits(flat_logits, flat_targets, temperature=1.0, bins=bins)
     best_temp, best_ece = _search_temperature(flat_logits, flat_targets, bins)
     if best_ece >= base_ece:
