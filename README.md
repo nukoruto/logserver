@@ -139,6 +139,21 @@
 2. シミュレーション結果の保存先を変更したい場合は `SIM_LOG_DIR` を設定する。設定がなければ `data/sim/` が利用される。
 3. Δt の最小値（ε フロア）や時間異常モードの既定値を固定したい場合は `SIM_DELTA_EPSILON`（秒、1e-6〜1.0 にクリップ）と
    `SIM_TIME_ANOMALY_MODE`（`auto` / `propagate` / `local`）を設定する。未指定時は 1e-3 秒・`auto` が適用される。
+4. GPU を切り替える場合は `.env` の `GPU_MODE` を編集し、対象マシンの GPU スロットに合わせて `ada6000`（RTX 6000 Ada 世代）
+   もしくは `4060`（RTX 4060）を指定する。変更後は依存するサービスを再起動する。
+
+   ```bash
+   # RTX 6000 Ada を利用する場合
+   sed -i 's/^GPU_MODE=.*/GPU_MODE=ada6000/' .env
+   docker compose up -d --force-recreate collector trainer
+
+   # RTX 4060 を利用する場合
+   sed -i 's/^GPU_MODE=.*/GPU_MODE=4060/' .env
+   docker compose up -d --force-recreate collector trainer
+   ```
+
+   - `GPU_MODE` の変更は Python トレーナと Docker コンテナに反映され、`TrainerConfig.device` が対応する GPU を自動選択する。
+   - `docker compose exec collector printenv CUDA_VISIBLE_DEVICES` を実行し、`ada6000` の場合は `0`、`4060` の場合は `1` となることを確認する。
 
 ### 4.4 シミュレーションログ生成
 シナリオに基づく CSV / manifest を生成するには、リポジトリルートで次を実行する。
