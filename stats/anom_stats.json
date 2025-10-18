@@ -1,0 +1,223 @@
+{
+  "version": 1,
+  "generated_at": "2025-10-18T15:16:23.585Z",
+  "algo_ver": "5.0-spec",
+  "base_column": "dt_sec",
+  "quantile_levels": [
+    0.1,
+    0.9,
+    0.95,
+    0.99,
+    0.995
+  ],
+  "global_quantiles": [
+    {
+      "p": 0.1,
+      "value": 5
+    },
+    {
+      "p": 0.9,
+      "value": 7
+    },
+    {
+      "p": 0.95,
+      "value": 7
+    },
+    {
+      "p": 0.99,
+      "value": 7
+    },
+    {
+      "p": 0.995,
+      "value": 7
+    }
+  ],
+  "quantile": [
+    {
+      "uid": "__global__",
+      "op_category": "__global__",
+      "tau_hi": 7,
+      "tau_lo": 5,
+      "n": 2,
+      "method": "R7",
+      "cdf": [
+        {
+          "p": 0.1,
+          "value": 5
+        },
+        {
+          "p": 0.9,
+          "value": 7
+        },
+        {
+          "p": 0.95,
+          "value": 7
+        },
+        {
+          "p": 0.99,
+          "value": 7
+        },
+        {
+          "p": 0.995,
+          "value": 7
+        }
+      ]
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "__all__",
+      "tau_hi": 7,
+      "tau_lo": 5,
+      "n": 2,
+      "method": "R7",
+      "cdf": [
+        {
+          "p": 0.1,
+          "value": 5
+        },
+        {
+          "p": 0.9,
+          "value": 7
+        },
+        {
+          "p": 0.95,
+          "value": 7
+        },
+        {
+          "p": 0.99,
+          "value": 7
+        },
+        {
+          "p": 0.995,
+          "value": 7
+        }
+      ]
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "AUTH",
+      "tau_hi": 7,
+      "tau_lo": 7,
+      "n": 1,
+      "method": "R7",
+      "cdf": [
+        {
+          "p": 0.1,
+          "value": 7
+        },
+        {
+          "p": 0.9,
+          "value": 7
+        },
+        {
+          "p": 0.95,
+          "value": 7
+        },
+        {
+          "p": 0.99,
+          "value": 7
+        },
+        {
+          "p": 0.995,
+          "value": 7
+        }
+      ]
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "READ",
+      "tau_hi": 5,
+      "tau_lo": 5,
+      "n": 1,
+      "method": "R7",
+      "cdf": [
+        {
+          "p": 0.1,
+          "value": 5
+        },
+        {
+          "p": 0.9,
+          "value": 5
+        },
+        {
+          "p": 0.95,
+          "value": 5
+        },
+        {
+          "p": 0.99,
+          "value": 5
+        },
+        {
+          "p": 0.995,
+          "value": 5
+        }
+      ]
+    }
+  ],
+  "spot": [
+    {
+      "uid": "__global__",
+      "op_category": "__global__",
+      "domain": "log_dt",
+      "u": 1.94590805309,
+      "xi": -0.9,
+      "beta": 0.0000019472675788152306,
+      "p_ref": 0.5,
+      "theta": 1,
+      "decluster_r": 1,
+      "calib_N": 2,
+      "p0": 0.9,
+      "q_star": 0.95,
+      "estimator": "mle",
+      "warnings": []
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "__all__",
+      "domain": "log_dt",
+      "u": 1.94590805309,
+      "xi": -0.9,
+      "beta": 0.0000019472675788152306,
+      "p_ref": 0.5,
+      "theta": 1,
+      "decluster_r": 1,
+      "calib_N": 2,
+      "p0": 0.9,
+      "q_star": 0.95,
+      "estimator": "mle",
+      "warnings": []
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "AUTH",
+      "domain": "log_dt",
+      "u": 1.94590805309,
+      "xi": -0.9,
+      "beta": 0.0000019472675788152306,
+      "p_ref": 1,
+      "theta": 1,
+      "decluster_r": 1,
+      "calib_N": 1,
+      "p0": 0.9,
+      "q_star": 0.95,
+      "estimator": "mle",
+      "warnings": []
+    },
+    {
+      "uid": "uid-demo-001",
+      "op_category": "READ",
+      "domain": "log_dt",
+      "u": 1.6094363895619999,
+      "xi": -0.9,
+      "beta": 0.0000016107337807346283,
+      "p_ref": 1,
+      "theta": 1,
+      "decluster_r": 1,
+      "calib_N": 1,
+      "p0": 0.9,
+      "q_star": 0.95,
+      "estimator": "mle",
+      "warnings": []
+    }
+  ]
+}
