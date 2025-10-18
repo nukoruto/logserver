@@ -87,6 +87,22 @@ describe('dt-anom pipeline', () => {
     );
     expect(updateAllocation).toBeDefined();
     expect(updateAllocation?.weight).toBeGreaterThan(0);
+    expect(meta.threshold_tiers.quantile.length).toBeGreaterThan(0);
+    expect(meta.threshold_tiers.spot.length).toBeGreaterThan(0);
+    const updateQuantileTier = meta.threshold_tiers.quantile.find(
+      (entry) => entry.uid === 'u1' && entry.op_category === 'UPDATE'
+    );
+    expect(updateQuantileTier?.tier).toBe('group');
+    expect(updateQuantileTier?.source_uid).toBe('u1');
+    const globalQuantileTier = meta.threshold_tiers.quantile.find(
+      (entry) => entry.uid === '__global__' && entry.op_category === '__global__'
+    );
+    expect(globalQuantileTier?.tier).toBe('global');
+    const updateSpotTier = meta.threshold_tiers.spot.find(
+      (entry) => entry.uid === 'u1' && entry.op_category === 'UPDATE'
+    );
+    expect(updateSpotTier?.tier).toBeDefined();
+    expect(updateSpotTier?.sample_count).toBeGreaterThan(0);
 
     const loadedStats = await readAnomalyStats(statsOut);
     const loadedMeta = await readAnomalyMeta(metaOut);
@@ -205,6 +221,75 @@ describe('dt-anom pipeline', () => {
       expect(reestimateEvent.metadata).toHaveProperty('p_upper_spot');
       expect(reestimateEvent.metadata).toHaveProperty('diagnostics');
     }
+  });
+
+  it('annotates tier usage for sparse and abundant aggregates', async () => {
+    const dir = await createTempDir();
+    const inputPath = join(dir, 'tier_train.csv');
+    const csv = [
+      'timestamp_utc,uid,session_id,method,path,referer,user_agent,op_category,dt_sec,log_dt,z,z_clipped,z_deseas',
+      '2024-01-01T00:00:00Z,u1,s1,GET,/read,-,UA,READ,1.0,0.0,0.10,0.10,0.05',
+      '2024-01-01T00:00:02Z,u1,s1,GET,/read,-,UA,READ,1.1,0.09,0.12,0.12,0.06',
+      '2024-01-01T00:00:04Z,u1,s1,GET,/read,-,UA,READ,1.2,0.18,0.14,0.14,0.07',
+      '2024-01-01T00:00:06Z,u1,s1,GET,/read,-,UA,READ,1.3,0.26,0.16,0.16,0.08',
+      '2024-01-01T00:01:00Z,u2,s2,GET,/read,-,UA,READ,2.0,0.69,0.22,0.22,0.10',
+      '2024-01-01T00:01:01Z,u2,s2,POST,/update,-,UA,UPDATE,2.5,0.92,0.40,0.40,0.30',
+      '2024-01-01T00:01:02Z,u2,s2,POST,/auth,-,UA,AUTH,2.2,0.79,0.35,0.35,0.25',
+      '2024-01-01T00:01:03Z,u2,s2,POST,/auth,-,UA,AUTH,2.1,0.74,0.32,0.32,0.22',
+      '2024-01-01T00:02:00Z,u3,s3,POST,/update,-,UA,UPDATE,3.5,1.25,0.60,0.60,0.50'
+    ].join('\n');
+    await writeFile(inputPath, csv, 'utf8');
+    const statsOut = join(dir, 'tier_anom_stats.json');
+    const metaOut = join(dir, 'tier_anom_meta.json');
+    const { meta } = await fitAnomalyModel({
+      inputs: [inputPath],
+      statsOut,
+      metaOut,
+      baseColumn: 'dt_sec',
+      quantiles: [0.25, 0.5, 0.75],
+      quantileLower: 0.25,
+      quantileUpper: 0.75,
+      minQuantileSamples: 3,
+      budgetTotal: 0.05,
+      budgetWeightMode: 'count',
+      spotDomain: 'log_dt',
+      spotCalibCount: 9,
+      spotQuantileCandidates: [0.9],
+      minTailCount: 2,
+      flagTailProbability: 1e-3,
+      alpha: 0.5,
+      q: 0.99,
+      calibWindow: 500,
+      declusterR: 3,
+      kofn: [1, 3],
+      H: 1.2,
+      reestimateEvery: 10,
+      minExceed: 2,
+      poolStrategy: 'per-user',
+      xiEps: 1e-4,
+      upperCapPerDay: 10,
+      lowerClip: -4,
+      seeds: [7],
+      preprocHash: 'test-preproc-hash'
+    });
+    const findTier = (entries: typeof meta.threshold_tiers.quantile, uid: string, op: string) =>
+      entries.find((entry) => entry.uid === uid && entry.op_category === op);
+    const qGroup = findTier(meta.threshold_tiers.quantile, 'u1', 'READ');
+    expect(qGroup?.tier).toBe('group');
+    expect(qGroup?.sample_count).toBeGreaterThanOrEqual(4);
+    const qUser = findTier(meta.threshold_tiers.quantile, 'u2', 'READ');
+    expect(qUser?.tier).toBe('user');
+    expect(qUser?.source_op_category).toBe('__all__');
+    const qGlobal = findTier(meta.threshold_tiers.quantile, 'u3', 'UPDATE');
+    expect(qGlobal?.tier).toBe('global');
+    expect(qGlobal?.source_uid).toBe('__global__');
+    const sGroup = findTier(meta.threshold_tiers.spot, 'u1', 'READ');
+    expect(sGroup?.tier).toBe('group');
+    const sUser = findTier(meta.threshold_tiers.spot, 'u2', 'READ');
+    expect(sUser?.tier).toBe('user');
+    const sGlobal = findTier(meta.threshold_tiers.spot, 'u3', 'UPDATE');
+    expect(sGlobal?.tier).toBe('global');
+    expect(sGlobal?.source_uid).toBe('__global__');
   });
 
   it('recalibrates xi/beta when sufficient tail samples arrive', () => {
