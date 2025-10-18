@@ -1,0 +1,19 @@
+{
+  "name": "@logserver/lstm-gui",
+  "version": "0.1.0",
+  "description": "Electron GUI bridge for dt-lstm CLI operations",
+  "main": "dist/src/main.js",
+  "type": "module",
+  "scripts": {
+    "build": "tsc -p tsconfig.json && node ./scripts/copy-static.mjs",
+    "test": "pnpm run build && node --test dist/tests"
+  },
+  "dependencies": {
+    "electron": "^29.3.0"
+  },
+  "devDependencies": {
+    "@types/electron": "^1.6.0",
+    "@types/node": "^20.12.7",
+    "typescript": "^5.4.5"
+  }
+}

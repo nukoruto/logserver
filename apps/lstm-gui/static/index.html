@@ -1,0 +1,26 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>dt-lstm GUI Bridge</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem; }
+      pre { background: #f4f4f4; padding: 1rem; border-radius: 4px; }
+    </style>
+  </head>
+  <body>
+    <h1>dt-lstm GUI Bridge</h1>
+    <p>このウィンドウは dt-lstm CLI 実行の進捗を Electron IPC で受け取る用途向けのスタブです。</p>
+    <p>レンダラープロセスから <code>window.dtLstm</code> API を利用してください。</p>
+    <pre id="log"></pre>
+    <script>
+      const logElement = document.getElementById('log');
+      if (window.dtLstm) {
+        window.dtLstm.onProgress((event) => {
+          const next = `${new Date().toISOString()}\n${JSON.stringify(event)}\n\n`;
+          logElement.textContent = next + logElement.textContent;
+        });
+      }
+    </script>
+  </body>
+</html>
