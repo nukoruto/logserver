@@ -194,14 +194,14 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
     first = rows_out[0]
     assert first["target_token"] == "browse"
     assert math.isclose(float(first["topk_mass"]), 2.0 / 6.0, rel_tol=1e-6)
-    expected_p_ev = 1.0 - (2.0 / 6.0)
+    expected_p_ev = 1.0 / 6.0
     assert math.isclose(float(first["p_ev"]), expected_p_ev, rel_tol=1e-6)
     g_val = 0.0
     w_val = math.log(1 + math.exp(0.0)) + 1e-6
     delta = 1.0
     p_time = _rmtpp_cdf(g_val, w_val, delta)
     assert math.isclose(float(first["p_time"]), p_time, rel_tol=1e-6)
-    statistic = _fisher_statistic([2.0 / 6.0, 1.0 - p_time])
+    statistic = _fisher_statistic([expected_p_ev, 1.0 - p_time])
     expected_combined = _chi2_sf(statistic, 2)
     assert math.isclose(float(first["fisher_statistic"]), statistic, rel_tol=1e-6)
     assert math.isclose(float(first["combined_p"]), expected_combined, rel_tol=1e-6)
