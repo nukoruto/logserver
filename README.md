@@ -367,6 +367,39 @@ PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli fit \
 - `train_meta.json` にはデータ件数・Δt 要約統計に加え、埋め込み次元・隠れ状態・ドロップアウト初期値、温度スケーリング枠、RMTPP の `w_init` / `bias_init` / `scale`（学習対象・固定の両設定）が保存されます。
 - 失敗時は JSON ログに `fit.failed` が出力され、欠損列や入力ファイル不在などの理由を即座に確認できます。
 
+### 5.6 dt-lstm バッチ推論 CLI（p 値統一スコア）
+
+`dt-lstm infer` は学習済みモデル (`model.pt`) と温度スケーリング結果 (`calib.json`) を読み込み、Top-K 被覆と RMTPP 到着確率を p 値として統一し、Fisher 結合で異常スコアを算出します。推論対象 CSV は `dt-preproc transform` 済みの特徴量で、学習時と同じ `numeric_columns` / `delta_column` が利用可能である必要があります。
+
+- イベント側 p 値: `p_ev = 1 - Σ_{y∈TopK} p(y)`。Top-K 被覆確率そのもの（`Σ_{y∈TopK} p(y)`）は出力 CSV の `topk_mass` 列に保存されます。
+- 時間側 p 値: RMTPP で得られた `g_i, w` と観測 Δ に対し `p_time = 1 - exp(-∫_0^Δ λ*(t) dt)` を評価します。Δ が打ち切り（`time_censored`）の場合は時間成分を無視し、イベント成分のみで Fisher 結合します。
+- 結合統計量: `S = -2 Σ_j log(1 - p_j)`（j はイベントと時間の最大 2 成分）。p 合成値は `p_comb = exp(-S/2) × Σ_{n=0}^{k-1} (S/2)^n / n!` で計算し、`neglog10_p = -log10(p_comb)` も同時に出力します。
+- 監査 JSONL（`--audit`）はステップごとに `topk`, `p_ev`, `g`, `w`, `delta`, `p_time`, `statistic`（S）を記録し、同一入力に対してバイト完全一致となります。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli infer \
+  --in data/test_feat/*.csv \
+  --ckpt ml/checkpoints/best.pt \
+  --calib ml/artifacts/calib.json \
+  --topk 5 \
+  --out out/test_scored.csv \
+  --audit out/lstm_audit.jsonl
+```
+
+出力 CSV には以下の列が含まれます。
+
+| 列名 | 意味 |
+| --- | --- |
+| `sequence_index`, `step_index` | 入力シーケンスと時刻の 0 始まりインデックス |
+| `source`, `session_id`, `uid`, `timestamp` | 元ファイル、セッション、ユーザ、イベント時刻（存在する場合） |
+| `target_id`, `target_token` | 観測イベント ID と語彙トークン |
+| `delta`, `censored` | 観測 Δt（秒）と打ち切りフラグ |
+| `topk_mass`, `p_ev` | Top-K 被覆確率と補数の p 値 |
+| `p_time` | RMTPP 到着までの累積分布（p 値） |
+| `fisher_statistic`, `combined_p`, `neglog10_p` | Fisher 統計量 S、合成 p、負の常用対数スコア |
+
+同じ ckpt/温度/データで再実行すると CSV・JSONL ともにバイト列が完全一致し、再現性監査ログには `infer.completed` が記録されます。
+
 各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc_meta.json`）を再利用して追加検証を実施します。
 
 学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。
