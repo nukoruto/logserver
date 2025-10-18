@@ -199,6 +199,22 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 ### 5.1 Δt ロバスト統計フィッティング CLI（Fit / Transform ランブック）
 
+### 5.2 dt-lstm パッケージ雛形生成
+
+PyTorch ベースの dt-lstm 実験プロジェクトを新規作成する場合は、`packages/dt-lstm` が提供する CLI を利用できます。決定性設定と GPU 切替を自動で行い、`ml/` 配下に必要なディレクトリとテンプレートを展開します。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli init \
+  --out ml \
+  --preset default \
+  --seed 42 \
+  --device cuda
+```
+
+- `GPU_MODE=ada6000|4060` を設定すると、対応する GPU に `CUDA_VISIBLE_DEVICES` が切り替わります（未指定時は CPU へフォールバック）。
+- 生成された `ml/pyproject.toml` は `dt-lstm` パッケージへ依存し、`configs/default.yaml` と `scripts/train.py` は `DTLSTMEngine` を通じて決定性を維持します。
+- Electron 等から IPC で CLI を呼び出す場合も同じエンジンを共有できるため、GUI/CLI 間で再現性が一致します。
+
 以下は、新規参加者が**そのままコピー&ペーストできる一連のコマンド**です。`GPU_MODE` で RTX 6000 Ada（`ada6000`）と RTX 4060（`4060`）を切替できます。
 
 ```bash
