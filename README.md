@@ -160,6 +160,13 @@
    ```bash
    cp .env.example .env
    ```
+   - **必ず `JWT_HMAC_KEY` を独自の 128bit 以上の Base64 文字列に更新**し、既定値
+     `c2VlZF9kZWZhdWx0X2p3dF9obWFjX2tleV8xMjM0NTY=` を利用しないこと。以下のチェック
+     スクリプトを利用すると CI とローカルで検証できる。
+
+     ```bash
+     python scripts/check_jwt_key.py --env-file .env
+     ```
 2. シミュレーション結果の保存先を変更したい場合は `SIM_LOG_DIR` を設定する。設定がなければ `data/sim/` が利用される。
 3. Δt の最小値（ε フロア）や時間異常モードの既定値を固定したい場合は `SIM_DELTA_EPSILON`（秒、1e-6〜1.0 にクリップ）と
    `SIM_TIME_ANOMALY_MODE`（`auto` / `propagate` / `local`）を設定する。未指定時は 1e-3 秒・`auto` が適用される。
