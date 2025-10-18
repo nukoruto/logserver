@@ -40,9 +40,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:01:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
+        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:01:00.000Z,uid-1,session,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -97,9 +97,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:00:20.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
+        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:00:20.000Z,uid-1,session,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -120,6 +120,40 @@ describe('audit CLI', () => {
       const result = runAudit(['--dir', dir, '--fail-on-error']);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('sid_final changed without exceeding ΔT');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails when schema columns are missing', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-schema-'));
+    try {
+      const filePath = path.join(dir, '2024-01-02.csv');
+      const header = [
+        'timestamp_utc',
+        'uid',
+        'session_id',
+        'method',
+        'path',
+        'referer',
+        'ip',
+        'op_category',
+        'status_code',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+      ].join(',');
+      const rows = [
+        '2024-01-02T00:00:00.000Z,uid-1,session,GET,/health,null,127.0.0.1,READ,200,1.0,"{}",,30,ok,s-final-1',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+
+      const result = runAudit(['--dir', dir, '--fail-on-error']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Missing column user_agent');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

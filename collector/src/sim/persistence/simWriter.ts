@@ -467,11 +467,16 @@ const baseExtrasResolvers: Record<string, FeatureResolver | null> = BASE_EXTRA_C
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
   'session_id',
+  'uid',
   'user_id',
   'event',
   'method',
   'path',
-  'status',
+  'referer',
+  'user_agent',
+  'ip',
+  'op_category',
+  'status_code',
   'latency_ms',
   'delta_t',
   'metadata',
@@ -1088,6 +1093,33 @@ const resolveSidFinal = (event: SimulationEvent): unknown => {
   return candidate;
 };
 
+const CSV_NULL_LITERAL = 'null';
+
+const sanitizeStringField = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const sanitizeNumberField = (value: unknown): number | null => {
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return numeric;
+    }
+  }
+  return null;
+};
+
 export const formatCsvAugmented = (
   event: AugmentedSimulationEvent,
   featureColumns: readonly string[],
@@ -1095,14 +1127,32 @@ export const formatCsvAugmented = (
   const safeEvent = event && typeof event === 'object' ? event : ({} as AugmentedSimulationEvent);
   const metadata = serializeMetadata(safeEvent.metadata);
   const sidFinal = resolveSidFinal(safeEvent);
+  const uid = sanitizeStringField(safeEvent.uid) ?? CSV_NULL_LITERAL;
+  const userId = sanitizeStringField(safeEvent.user_id) ?? CSV_NULL_LITERAL;
+  const eventName = sanitizeStringField(safeEvent.event) ?? CSV_NULL_LITERAL;
+  const method = sanitizeStringField(safeEvent.method) ?? CSV_NULL_LITERAL;
+  const pathValue = sanitizeStringField(safeEvent.path) ?? CSV_NULL_LITERAL;
+  const refererValue = sanitizeStringField(safeEvent.referer) ?? CSV_NULL_LITERAL;
+  const userAgent = sanitizeStringField((safeEvent as Record<string, unknown>).user_agent) ?? CSV_NULL_LITERAL;
+  const ipValue = sanitizeStringField((safeEvent as Record<string, unknown>).ip) ?? CSV_NULL_LITERAL;
+  const opCategoryValue = sanitizeStringField((safeEvent as Record<string, unknown>).op_category) ?? CSV_NULL_LITERAL;
+  const statusCode =
+    sanitizeNumberField((safeEvent as Record<string, unknown>).status_code)
+      ?? sanitizeNumberField((safeEvent as Record<string, unknown>).status)
+      ?? CSV_NULL_LITERAL;
   const baseValues = [
     safeEvent.timestamp_utc,
     safeEvent.session_id,
-    safeEvent.user_id,
-    safeEvent.event,
-    safeEvent.method,
-    safeEvent.path,
-    safeEvent.status,
+    uid,
+    userId,
+    eventName,
+    method,
+    pathValue,
+    refererValue,
+    userAgent,
+    ipValue,
+    opCategoryValue,
+    statusCode,
     safeEvent.latency_ms,
     extractDeltaSeconds(safeEvent),
     metadata,

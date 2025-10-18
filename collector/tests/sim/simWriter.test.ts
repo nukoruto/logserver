@@ -33,11 +33,16 @@ const DEFAULT_FEATURE_COLUMNS = [
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
   'session_id',
+  'uid',
   'user_id',
   'event',
   'method',
   'path',
-  'status',
+  'referer',
+  'user_agent',
+  'ip',
+  'op_category',
+  'status_code',
   'latency_ms',
   'delta_t',
   'metadata',
@@ -162,6 +167,24 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const parsedRows = rows.slice(1).map(parseCsvRow);
+    const uidValues = parsedRows.map((columns: string[]) => valueAt(columns, 'uid'));
+    expect(uidValues).toEqual(['null', 'null', 'null']);
+
+    const refererValues = parsedRows.map((columns: string[]) => valueAt(columns, 'referer'));
+    expect(refererValues).toEqual(['null', 'null', 'null']);
+
+    const userAgentValues = parsedRows.map((columns: string[]) => valueAt(columns, 'user_agent'));
+    expect(userAgentValues).toEqual(['null', 'null', 'null']);
+
+    const ipValues = parsedRows.map((columns: string[]) => valueAt(columns, 'ip'));
+    expect(ipValues).toEqual(['null', 'null', 'null']);
+
+    const opCategoryValues = parsedRows.map((columns: string[]) => valueAt(columns, 'op_category'));
+    expect(opCategoryValues).toEqual(['null', 'null', 'null']);
+
+    const statusCodeValues = parsedRows.map((columns: string[]) => valueAt(columns, 'status_code'));
+    expect(statusCodeValues).toEqual(['200', '403', '200']);
+
     const timestampUtcValues = parsedRows.map((columns: string[]) => {
       const raw = valueAt(columns, 'timestamp_utc');
       return raw.replace(/^"/, '').replace(/"$/, '').replace(/""/g, '"');
