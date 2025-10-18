@@ -58,6 +58,43 @@ const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 const OP_CATEGORIES = new Set(['AUTH', 'READ', 'UPDATE']);
 const CSV_EXTENSION = '.csv';
 const EPSILON = 1e-6;
+const REQUIRED_HEADER_COLUMNS = [
+  'timestamp_utc',
+  'session_id',
+  'uid',
+  'method',
+  'path',
+  'referer',
+  'user_agent',
+  'ip',
+  'op_category',
+  'status_code',
+];
+
+const isNullLike = (value: string | undefined): boolean => {
+  if (value === undefined || value === null) {
+    return true;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 || trimmed.toLowerCase() === 'null';
+};
+
+const isValidIpv4 = (value: string): boolean => {
+  const parts = value.split('.');
+  if (parts.length !== 4) {
+    return false;
+  }
+  return parts.every((part) => {
+    if (part.length === 0 || part.length > 3) {
+      return false;
+    }
+    if (!/^[0-9]+$/.test(part)) {
+      return false;
+    }
+    const numeric = Number(part);
+    return numeric >= 0 && numeric <= 255;
+  });
+};
 
 const parseArgs = (argv: string[]): AuditOptions => {
   const options: AuditOptions = { paths: [], failOnError: false };
@@ -323,6 +360,12 @@ const validateRow = (
   const method = row.method || '';
   const category = row.op_category || '';
 
+  for (const required of REQUIRED_HEADER_COLUMNS) {
+    if (!header.includes(required)) {
+      findings.push({ file, line: 1, message: `Missing column ${required}` });
+    }
+  }
+
   if (row.timestamp_utc && !RFC3339_PATTERN.test(row.timestamp_utc)) {
     findings.push({ file, line: lineNumber, message: `timestamp_utc not RFC3339: ${row.timestamp_utc}` });
   }
@@ -333,10 +376,25 @@ const validateRow = (
     findings.push({ file, line: lineNumber, message: `Invalid op_category: ${category}` });
   }
 
-  for (const required of ['timestamp_utc', 'method', 'op_category']) {
-    if (!header.includes(required)) {
-      findings.push({ file, line: 1, message: `Missing column ${required}` });
-    }
+  if (isNullLike(row.uid)) {
+    findings.push({ file, line: lineNumber, message: 'Missing uid value' });
+  }
+
+  if (!isNullLike(row.referer) && !/^https?:\/\//i.test(row.referer)) {
+    findings.push({ file, line: lineNumber, message: `Invalid referer URL: ${row.referer}` });
+  }
+
+  if (isNullLike(row.user_agent)) {
+    findings.push({ file, line: lineNumber, message: 'Missing user_agent value' });
+  }
+
+  if (isNullLike(row.ip) || !isValidIpv4(row.ip)) {
+    findings.push({ file, line: lineNumber, message: `Invalid IP address: ${row.ip ?? 'null'}` });
+  }
+
+  const statusCode = parseNumber(row.status_code);
+  if (statusCode === null || !Number.isInteger(statusCode) || statusCode < 0) {
+    findings.push({ file, line: lineNumber, message: `Invalid status_code: ${row.status_code}` });
   }
 
   if (!header.includes('sid_final') && !header.includes('generated_session_id')) {
@@ -350,8 +408,11 @@ const validateRow = (
 const collectUid = (row: CsvRow): string | null => {
   const candidates = [row.uid, row.user_id, row.userId];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate;
+    if (typeof candidate === 'string') {
+      if (isNullLike(candidate)) {
+        continue;
+      }
+      return candidate.trim();
     }
   }
   return null;
@@ -360,7 +421,10 @@ const collectUid = (row: CsvRow): string | null => {
 const collectSidFinal = (row: CsvRow): string | null => {
   const candidates = [row.sid_final, row.generated_session_id, row.session_id];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.length > 0) {
+    if (typeof candidate === 'string') {
+      if (isNullLike(candidate)) {
+        continue;
+      }
       return candidate;
     }
   }

@@ -94,6 +94,15 @@ const STRATEGY_ALIASES: Record<string, StrategyName> = {
   authentication_bypass: 'authenticationBypass',
 };
 
+const REFERER_HOSTS = ['app.simulated.local', 'workspace.simulated.local', 'reports.simulated.local'] as const;
+const USER_AGENTS = [
+  'Mozilla/5.0 (Macintosh; Intel Mac OS X 13_5) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/119.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/118.0.0.0 Safari/537.36',
+  'Mozilla/5.0 (iPhone; CPU iPhone OS 16_4 like Mac OS X) AppleWebKit/605.1.15 (KHTML, like Gecko) Version/16.4 Mobile/15E148 Safari/604.1',
+] as const;
+const REFERER_PROTOCOL = 'https://';
+
 export interface SimulationEventMetadata extends Record<string, unknown> {
   scenario?: {
     id: string;
@@ -114,12 +123,17 @@ export interface SimulationEvent extends Record<string, unknown> {
   event?: string;
   method?: string;
   path?: string;
-  status?: number;
+  status?: number | null;
+  status_code?: number | null;
   latency_ms?: number;
   delta_t?: number;
   timestamp?: string;
   timestamp_utc?: string;
   deltaSeconds?: number | null;
+  referer?: string | null;
+  user_agent?: string | null;
+  ip?: string | null;
+  op_category?: string | null;
   anomaly?: boolean;
   anomaly_type?: string;
   anomalyLabel?: number;
@@ -238,6 +252,9 @@ interface SessionIdentifiers {
   sessionId: string;
   userId: string;
   uid: string;
+  userAgent: string;
+  ip: string;
+  refererHost: string;
 }
 
 interface DefaultParameterInput {
@@ -269,6 +286,51 @@ const normalizeString = (value: unknown): string => {
     return '';
   }
   return value.trim();
+};
+
+const normalizeNullableString = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  return trimmed.length > 0 ? trimmed : null;
+};
+
+const ensureLeadingSlash = (value: string | null): string | null => {
+  if (!value) {
+    return null;
+  }
+  if (value.startsWith('/')) {
+    return value;
+  }
+  return `/${value}`;
+};
+
+const computeSessionIp = (index: number): string => {
+  const octet1 = 10;
+  const octet2 = 16 + (index % 64);
+  const octet3 = (index * 29) % 256;
+  const octet4 = ((index * 53) % 253) + 2;
+  return `${octet1}.${octet2}.${octet3}.${octet4}`;
+};
+
+const computeSessionUserAgent = (index: number): string => {
+  return USER_AGENTS[index % USER_AGENTS.length];
+};
+
+const computeRefererHost = (index: number): string => {
+  return REFERER_HOSTS[index % REFERER_HOSTS.length];
+};
+
+const formatRefererUrl = (host: string, pathValue: string | null): string | null => {
+  if (!pathValue) {
+    return null;
+  }
+  const normalizedPath = ensureLeadingSlash(pathValue);
+  if (!normalizedPath) {
+    return null;
+  }
+  return `${REFERER_PROTOCOL}${host}${normalizedPath}`;
 };
 
 const normalizeSeedInput = (seed: unknown): string | null => {
@@ -459,10 +521,14 @@ const parseStartTime = (candidate: unknown): Date => {
 const createSessionIdentifiers = (seed: string, index: number): SessionIdentifiers => {
   const base = normalizeString(seed) || 'sim';
   const suffix = (index + 1).toString().padStart(3, '0');
+  const sanitizedBase = base.replace(/[^a-zA-Z0-9]+/g, '-');
   return {
-    sessionId: `sess-${base}-${suffix}`,
-    userId: `user-${base}-${suffix}`,
-    uid: `uid-${base}-${(index + 1).toString(16).padStart(3, '0')}`,
+    sessionId: `sess-${sanitizedBase}-${suffix}`,
+    userId: `user-${sanitizedBase}-${suffix}`,
+    uid: `uid-${sanitizedBase}-${(index + 1).toString(16).padStart(3, '0')}`,
+    userAgent: computeSessionUserAgent(index),
+    ip: computeSessionIp(index),
+    refererHost: computeRefererHost(index),
   };
 };
 
@@ -526,8 +592,12 @@ const decorateEvent = ({
       : null,
   };
   metadata.sequence_index = index;
-  if (!metadata.op_category && blueprint.opCategory) {
-    metadata.op_category = blueprint.opCategory;
+  const explicitCategory = normalizeNullableString(event.op_category);
+  const metadataCategory = normalizeNullableString(metadata.op_category);
+  const resolvedCategoryRaw = explicitCategory || metadataCategory || blueprint.opCategory || null;
+  const resolvedCategory = resolvedCategoryRaw ? resolvedCategoryRaw.toUpperCase() : null;
+  if (resolvedCategory) {
+    metadata.op_category = resolvedCategory;
   }
 
   const anomalyTag = normalizeString((event as SimulationEvent)._anomalyType || event.anomaly_type || event.anomalyType);
@@ -542,11 +612,19 @@ const decorateEvent = ({
     method: event.method || blueprint.method,
     path: event.path || blueprint.path,
     status: Number.isFinite(event.status) ? Number(event.status) : deriveStatus(blueprint, anomalyTag || null),
+    status_code: Number.isFinite(event.status_code)
+      ? Number(event.status_code)
+      : Number.isFinite(event.status)
+        ? Number(event.status)
+        : undefined,
     latency_ms: Number.isFinite(event.latency_ms)
       ? Math.round(Number(event.latency_ms))
       : deriveLatency(blueprint, Number.isFinite(deltaSeconds) ? deltaSeconds : undefined, index),
     deltaSeconds: Number.isFinite(deltaSeconds) ? deltaSeconds : undefined,
     metadata,
+    op_category: resolvedCategory ?? null,
+    user_agent: normalizeNullableString(event.user_agent) ?? session.userAgent,
+    ip: normalizeNullableString(event.ip) ?? session.ip,
   };
 
   if (event.protocolViolationFlag === true) {
@@ -578,17 +656,60 @@ const decorateEvent = ({
   return record;
 };
 
-const decorateSequence = (events: SimulationEvent[], context: { scenarioId: string; session: SessionIdentifiers }): SimulationEvent[] => {
+const decorateSequence = (
+  events: SimulationEvent[],
+  context: { scenarioId: string; session: SessionIdentifiers },
+): SimulationEvent[] => {
   const decorated: SimulationEvent[] = [];
+  let previousPath: string | null = null;
   for (let index = 0; index < events.length; index += 1) {
-    decorated.push(
-      decorateEvent({
-        event: events[index],
-        scenarioId: context.scenarioId,
-        session: context.session,
-        index,
-      })
-    );
+    const decoratedEvent = decorateEvent({
+      event: events[index],
+      scenarioId: context.scenarioId,
+      session: context.session,
+      index,
+    });
+
+    const normalizedUid = normalizeNullableString(decoratedEvent.uid) ?? context.session.uid;
+    decoratedEvent.uid = normalizedUid;
+
+    const sanitizedCurrentPath = ensureLeadingSlash(normalizeNullableString(decoratedEvent.path));
+    if (sanitizedCurrentPath) {
+      decoratedEvent.path = sanitizedCurrentPath;
+    }
+
+    const existingReferer = normalizeNullableString(decoratedEvent.referer);
+    const derivedReferer = existingReferer ?? formatRefererUrl(context.session.refererHost, previousPath);
+    decoratedEvent.referer = derivedReferer ?? null;
+
+    const resolvedUserAgent = normalizeNullableString(decoratedEvent.user_agent) ?? context.session.userAgent;
+    decoratedEvent.user_agent = resolvedUserAgent;
+
+    const resolvedIp = normalizeNullableString(decoratedEvent.ip) ?? context.session.ip;
+    decoratedEvent.ip = resolvedIp;
+
+    const statusCandidate = Number.isFinite(decoratedEvent.status_code)
+      ? Number(decoratedEvent.status_code)
+      : Number.isFinite(decoratedEvent.status)
+        ? Number(decoratedEvent.status)
+        : null;
+    decoratedEvent.status_code = statusCandidate;
+
+    const opCategoryRaw =
+      normalizeNullableString(decoratedEvent.op_category)
+        ?? normalizeNullableString(decoratedEvent.metadata?.op_category)
+        ?? null;
+    const opCategory = opCategoryRaw ? opCategoryRaw.toUpperCase() : null;
+    if (opCategory) {
+      decoratedEvent.op_category = opCategory;
+      if (!decoratedEvent.metadata) {
+        decoratedEvent.metadata = {} as SimulationEventMetadata;
+      }
+      decoratedEvent.metadata.op_category = opCategory;
+    }
+
+    decorated.push(decoratedEvent);
+    previousPath = sanitizedCurrentPath ?? previousPath;
   }
   return decorated;
 };
