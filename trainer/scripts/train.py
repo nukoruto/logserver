@@ -8,6 +8,8 @@ import logging
 from pathlib import Path
 from typing import Sequence
 
+import pandas as pd
+
 import yaml
 
 from trainer.logserver.dataio.processed import load_processed_events

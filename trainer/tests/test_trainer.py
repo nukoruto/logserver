@@ -1,5 +1,7 @@
 ﻿# -*- coding: utf-8 -*-
 import json
+import subprocess
+import sys
 from pathlib import Path
 
 import pandas as pd
@@ -57,3 +59,13 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
         model_config = json.load(handle)
     assert "num_workers" in model_config
     assert "pin_memory" in model_config
+
+
+def test_train_cli_help_succeeds() -> None:
+    result = subprocess.run(
+        [sys.executable, "-m", "trainer.scripts.train", "--help"],
+        check=True,
+        capture_output=True,
+        text=True,
+    )
+    assert "Train" in result.stdout
