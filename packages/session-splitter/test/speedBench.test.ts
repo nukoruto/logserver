@@ -1,9 +1,9 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
 import { performance } from 'node:perf_hooks';
+
+import { describe, expect, it } from 'vitest';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
@@ -42,27 +42,29 @@ function buildRows(userCount: number, perUser: number): BenchRow[] {
   return rows;
 }
 
-test('worker concurrency reduces estimation wall time', async () => {
-  const rows = buildRows(24, 256);
-  const seqDir = await mkdtemp(path.join(os.tmpdir(), 'session-bench-seq-'));
-  const parDir = await mkdtemp(path.join(os.tmpdir(), 'session-bench-par-'));
-  try {
-    const sequentialStart = performance.now();
-    await estimateThresholdsWithMeta(rows, { concurrency: 1, shard_dir: seqDir });
-    const sequentialDuration = performance.now() - sequentialStart;
+describe('concurrency benchmark', () => {
+  it('keeps parallel execution within tolerance of sequential runtime', async () => {
+    const rows = buildRows(24, 256);
+    const seqDir = await mkdtemp(path.join(os.tmpdir(), 'session-bench-seq-'));
+    const parDir = await mkdtemp(path.join(os.tmpdir(), 'session-bench-par-'));
+    try {
+      const sequentialStart = performance.now();
+      await estimateThresholdsWithMeta(rows, { concurrency: 1, shard_dir: seqDir });
+      const sequentialDuration = performance.now() - sequentialStart;
 
-    const maxWorkers = Math.min(4, Math.max(1, os.cpus().length));
-    const parallelStart = performance.now();
-    await estimateThresholdsWithMeta(rows, { concurrency: maxWorkers, shard_dir: parDir });
-    const parallelDuration = performance.now() - parallelStart;
+      const maxWorkers = Math.min(4, Math.max(1, os.cpus().length));
+      const parallelStart = performance.now();
+      await estimateThresholdsWithMeta(rows, { concurrency: maxWorkers, shard_dir: parDir });
+      const parallelDuration = performance.now() - parallelStart;
 
-    const tolerance = sequentialDuration * 0.5 + 50;
-    assert.ok(
-      parallelDuration <= sequentialDuration + tolerance,
-      `parallel execution should not exceed sequential duration by more than ${tolerance.toFixed(2)}ms (seq=${sequentialDuration.toFixed(2)}ms, par=${parallelDuration.toFixed(2)}ms)`
-    );
-  } finally {
-    await rm(seqDir, { recursive: true, force: true });
-    await rm(parDir, { recursive: true, force: true });
-  }
+      const tolerance = sequentialDuration * 0.5 + 50;
+      expect(parallelDuration).toBeLessThanOrEqual(
+        sequentialDuration + tolerance,
+        `parallel execution should not exceed sequential duration by more than ${tolerance.toFixed(2)}ms (seq=${sequentialDuration.toFixed(2)}ms, par=${parallelDuration.toFixed(2)}ms)`
+      );
+    } finally {
+      await rm(seqDir, { recursive: true, force: true });
+      await rm(parDir, { recursive: true, force: true });
+    }
+  });
 });

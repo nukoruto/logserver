@@ -1,5 +1,4 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
+import { describe, expect, it } from 'vitest';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
@@ -36,49 +35,51 @@ function makeRow(
   };
 }
 
-test('hierarchical backoff provides stable thresholds for sparse users', async () => {
-  const rows: BackoffTestRow[] = [];
+describe('threshold backoff', () => {
+  it('provides stable thresholds for sparse users', async () => {
+    const rows: BackoffTestRow[] = [];
 
-  for (let i = 0; i < 100; i += 1) {
-    rows.push(makeRow('rich-desktop', 5, 'desktop', i));
-  }
+    for (let i = 0; i < 100; i += 1) {
+      rows.push(makeRow('rich-desktop', 5, 'desktop', i));
+    }
 
-  rows.push(makeRow('sparse-desktop', null, 'desktop', 0));
-  rows.push(makeRow('sparse-desktop', 15, 'desktop', 1));
-  rows.push(makeRow('sparse-desktop', 15, 'desktop', 2));
+    rows.push(makeRow('sparse-desktop', null, 'desktop', 0));
+    rows.push(makeRow('sparse-desktop', 15, 'desktop', 1));
+    rows.push(makeRow('sparse-desktop', 15, 'desktop', 2));
 
-  rows.push(makeRow('solo-mobile', null, 'mobile', 0));
-  rows.push(makeRow('solo-mobile', 30, 'mobile', 1));
+    rows.push(makeRow('solo-mobile', null, 'mobile', 0));
+    rows.push(makeRow('solo-mobile', 30, 'mobile', 1));
 
-  rows.push(makeRow('only-null', null, 'robot', 0));
+    rows.push(makeRow('only-null', null, 'robot', 0));
 
-  const result = await estimateThresholdsWithMeta(rows, {
-    minimumSamples: 1000,
-    fallbackPercentile: 0.9,
-    min_events: 50,
-    backoff: true
+    const result = await estimateThresholdsWithMeta(rows, {
+      minimumSamples: 1000,
+      fallbackPercentile: 0.9,
+      min_events: 50,
+      backoff: true
+    });
+
+    const thresholds = result.thresholds;
+    const details = result.perUser;
+
+    const expected = 5;
+
+    expect(details.get('rich-desktop')?.backoff_level).toBe('user');
+    expect(details.get('sparse-desktop')?.backoff_level).toBe('group:user_agent_type=desktop');
+    expect(details.get('solo-mobile')?.backoff_level).toBe('global');
+    expect(details.get('only-null')?.backoff_level).toBe('global');
+
+    expect(Math.abs((thresholds.get('rich-desktop') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Math.abs((thresholds.get('sparse-desktop') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Math.abs((thresholds.get('solo-mobile') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Number.isFinite(thresholds.get('only-null'))).toBe(true);
+
+    const repeat = await estimateThresholdsWithMeta(rows, {
+      minimumSamples: 1000,
+      fallbackPercentile: 0.9,
+      min_events: 50,
+      backoff: true
+    });
+    expect(Array.from(repeat.thresholds.entries())).toStrictEqual(Array.from(thresholds.entries()));
   });
-
-  const thresholds = result.thresholds;
-  const details = result.perUser;
-
-  const expected = 5;
-
-  assert.equal(details.get('rich-desktop')?.backoff_level, 'user');
-  assert.equal(details.get('sparse-desktop')?.backoff_level, 'group:user_agent_type=desktop');
-  assert.equal(details.get('solo-mobile')?.backoff_level, 'global');
-  assert.equal(details.get('only-null')?.backoff_level, 'global');
-
-  assert.ok(Math.abs(thresholds.get('rich-desktop') - expected) < 1e-9);
-  assert.ok(Math.abs(thresholds.get('sparse-desktop') - expected) < 1e-9);
-  assert.ok(Math.abs(thresholds.get('solo-mobile') - expected) < 1e-9);
-  assert.ok(Number.isFinite(thresholds.get('only-null')));
-
-  const repeat = await estimateThresholdsWithMeta(rows, {
-    minimumSamples: 1000,
-    fallbackPercentile: 0.9,
-    min_events: 50,
-    backoff: true
-  });
-  assert.deepEqual(Array.from(repeat.thresholds.entries()), Array.from(thresholds.entries()));
 });

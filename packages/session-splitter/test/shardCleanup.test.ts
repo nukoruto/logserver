@@ -1,8 +1,8 @@
-import { test } from 'node:test';
-import assert from 'node:assert/strict';
 import { mkdtemp, readdir, rm } from 'node:fs/promises';
 import os from 'node:os';
 import path from 'node:path';
+
+import { describe, expect, it } from 'vitest';
 
 import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
 
@@ -34,7 +34,8 @@ function makeRow(uid: string, delta: number | null, index: number): ShardRow {
   };
 }
 
-test('temporary shards are removed after estimation', async () => {
+describe('shard cleanup', () => {
+  it('removes temporary shards after estimation', async () => {
   const baseDir = await mkdtemp(path.join(os.tmpdir(), 'session-shard-test-'));
   try {
     const rows: ShardRow[] = [];
@@ -47,8 +48,9 @@ test('temporary shards are removed after estimation', async () => {
 
     await estimateThresholdsWithMeta(rows, { shard_dir: baseDir, concurrency: 2 });
     const remaining = await readdir(baseDir);
-    assert.equal(remaining.length, 0, 'shard directory should be empty after cleanup');
+      expect(remaining.length, 'shard directory should be empty after cleanup').toBe(0);
   } finally {
     await rm(baseDir, { recursive: true, force: true });
   }
+  });
 });
