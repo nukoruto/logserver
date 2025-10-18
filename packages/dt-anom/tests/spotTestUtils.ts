@@ -220,7 +220,29 @@ export async function runSpotScenario(options: SpotScenarioOptions): Promise<Spo
     },
     seeds: [1],
     stats_hash: '0'.repeat(64),
-    preproc_hash: 'spec-tests'
+    preproc_hash: 'spec-tests',
+    threshold_tiers: {
+      quantile: [
+        {
+          uid: '__global__',
+          op_category: '__global__',
+          tier: 'global' as const,
+          sample_count: 0,
+          source_uid: '__global__',
+          source_op_category: '__global__'
+        }
+      ],
+      spot: [
+        {
+          uid: '__global__',
+          op_category: '__global__',
+          tier: 'global' as const,
+          sample_count: 0,
+          source_uid: '__global__',
+          source_op_category: '__global__'
+        }
+      ]
+    }
   };
 
   await writeFile(statsPath, JSON.stringify(stats, null, 2), 'utf8');

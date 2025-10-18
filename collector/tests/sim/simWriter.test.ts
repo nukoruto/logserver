@@ -272,6 +272,50 @@ describe('simWriter.persistSimulationRun', () => {
     expect(metaRecord).toHaveProperty('weights');
   });
 
+  it('CSV ヘッダーは UTC 列のみを公開しローカル時刻列を含まない', async () => {
+    const events = [
+      {
+        timestamp: '2024-06-01T09:00:00+09:00',
+        timestamp_utc: '2024-06-01T00:00:00.000Z',
+        session_id: 'sess-utc-only',
+        user_id: 'user-utc-only',
+        event: 'login',
+        method: 'GET' as const,
+        path: '/login',
+        status: 200,
+        latency_ms: 150,
+        deltaSeconds: 1.25,
+        metadata: { timezone_offset_seconds: 9 * 3600 },
+      },
+      {
+        timestamp: '2024-06-01T09:00:02+09:00',
+        timestamp_utc: '2024-06-01T00:00:02.000Z',
+        session_id: 'sess-utc-only',
+        user_id: 'user-utc-only',
+        event: 'browse',
+        method: 'GET' as const,
+        path: '/resource',
+        status: 200,
+        latency_ms: 90,
+        deltaSeconds: 2,
+      },
+    ];
+
+    const result = await persistSimulationRun({
+      events,
+      scenarioId: 'default-flow',
+      seed: 'utc-header',
+      transitionTableVersion: 'v-test',
+      runId: 'utc-header',
+      outputDir: tempDir,
+    });
+
+    const csvContent = await fs.readFile(result.csvPath, 'utf8');
+    const header = csvContent.trim().split('\n', 1)[0]?.split(',') ?? [];
+    const timestampColumns = header.filter((name) => name.startsWith('timestamp'));
+    expect(timestampColumns).toEqual(['timestamp_utc']);
+  });
+
   it('ε 推定と time_label を複数解像度で検証する', async () => {
     const fineEvents = [
       {
