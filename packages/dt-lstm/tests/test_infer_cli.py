@@ -230,3 +230,152 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
     assert exit_code == 0
     assert csv_bytes_before == out_path.read_bytes()
     assert audit_bytes_before == audit_path.read_bytes()
+
+
+def test_cli_infer_ignores_time_component_when_censored(tmp_path, capsys):
+    vocab_path = tmp_path / "vocab.json"
+    vocab_payload = {
+        "stoi": {"<pad>": 0, "login": 1, "browse": 2, "edit": 3},
+        "itos": ["<pad>", "login", "browse", "edit"],
+        "pad_token": "<pad>",
+        "oov_token": "<unk>",
+    }
+    vocab_path.write_text(json.dumps(vocab_payload, ensure_ascii=False), encoding="utf-8")
+
+    data_dir = tmp_path / "data"
+    data_dir.mkdir()
+    rows = [
+        {
+            "timestamp_utc": "2024-01-01T00:00:00Z",
+            "uid": "u1",
+            "session_id": "s1",
+            "op_category": "login",
+            "dt_sec": 0.0,
+            "time_censored": 0,
+        },
+        {
+            "timestamp_utc": "2024-01-01T00:00:01Z",
+            "uid": "u1",
+            "session_id": "s1",
+            "op_category": "browse",
+            "dt_sec": 1.0,
+            "time_censored": 1,
+        },
+        {
+            "timestamp_utc": "2024-01-01T00:00:04Z",
+            "uid": "u1",
+            "session_id": "s1",
+            "op_category": "edit",
+            "dt_sec": 3.0,
+            "time_censored": 0,
+        },
+    ]
+    data_path = data_dir / "test.csv"
+    _write_csv(data_path, rows)
+
+    model_cfg = DeltaTimeModelConfig(
+        arch="lstm",
+        vocab_size=4,
+        embedding_dim=4,
+        hidden_size=4,
+        num_layers=1,
+        dropout=0.0,
+        numeric_dim=1,
+        mlp_hidden_dims=tuple(),
+        mlp_activation="relu",
+        mlp_dropout=0.0,
+        time_head="rmtpp",
+        delta_index=0,
+        rmtpp_eps=1e-6,
+    )
+    torch.manual_seed(7)
+    model = DeltaTimeModel(model_cfg)
+    for parameter in model.parameters():
+        torch.nn.init.constant_(parameter, 0.0)
+    ckpt_dir = tmp_path / "ml" / "checkpoints"
+    ckpt_dir.mkdir(parents=True)
+    ckpt_path = ckpt_dir / "best.pt"
+    torch.save(model.state_dict(), ckpt_path)
+
+    config = {
+        "model": model_cfg.to_dict(),
+        "training": {
+            "epochs": 1,
+            "batch_size": 2,
+            "learning_rate": 1e-3,
+            "min_learning_rate": 1e-5,
+            "scheduler": "none",
+            "early_stopping": 1,
+            "clip_grad": 1.0,
+            "amp_level": "off",
+            "scheduled_sampling": 0.0,
+            "uncertainty_weighting": False,
+            "focal_gamma": None,
+            "label_smoothing": 0.0,
+            "num_workers": 0,
+        },
+        "data": {
+            "files": [str(data_path)],
+            "vocab_size": model_cfg.vocab_size,
+            "class_counts": {},
+            "dt_stats": {"count": 0.0, "mean": 0.0, "std": 0.0, "min": 0.0, "max": 0.0},
+            "numeric_dim": model_cfg.numeric_dim,
+            "delta_column": "dt_sec",
+            "numeric_columns": ["dt_sec"],
+            "idle_timeout": 1800.0,
+        },
+        "seed": 123,
+        "device": "cpu",
+        "time_objective": "rmtpp",
+        "vocab": str(vocab_path),
+    }
+    (ckpt_dir / "config.json").write_text(json.dumps(config, ensure_ascii=False), encoding="utf-8")
+
+    calib_path = tmp_path / "ml" / "artifacts" / "calib.json"
+    calib_path.parent.mkdir(parents=True)
+    calib_payload = {"temperature": 1.0, "ece": {"before": 0.0, "after": 0.0, "bins": 10}, "coverage": {"selected_k": None, "coverage_rate": None, "curve": [], "comparison": {}}}
+    calib_path.write_text(json.dumps(calib_payload, ensure_ascii=False), encoding="utf-8")
+
+    out_path = tmp_path / "out" / "scores.csv"
+    audit_path = tmp_path / "out" / "audit.jsonl"
+
+    args = [
+        "infer",
+        "--in",
+        str(data_path),
+        "--ckpt",
+        str(ckpt_path),
+        "--calib",
+        str(calib_path),
+        "--topk",
+        "1",
+        "--out",
+        str(out_path),
+        "--audit",
+        str(audit_path),
+    ]
+
+    exit_code = cli.main(args)
+    assert exit_code == 0
+    capsys.readouterr()
+
+    with out_path.open("r", encoding="utf-8") as stream:
+        reader = csv.DictReader(stream)
+        outputs = list(reader)
+
+    assert len(outputs) == 2
+    first = outputs[0]
+    assert first["censored"] == "1"
+    assert first["p_time"] == ""
+    top_mass = float(first["topk_mass"])
+    statistic = -2.0 * math.log(max(top_mass, 1e-12))
+    expected = _chi2_sf(statistic, 1)
+    assert math.isclose(float(first["combined_p"]), expected, rel_tol=1e-9)
+    assert math.isclose(float(first["combined_p"]), top_mass, rel_tol=1e-9)
+    assert math.isclose(float(first["neglog10_p"]), -math.log10(top_mass), rel_tol=1e-9)
+
+    audit_lines = audit_path.read_text(encoding="utf-8").strip().splitlines()
+    assert len(audit_lines) == 2
+    entry = json.loads(audit_lines[0])
+    assert entry["censored"] is True
+    assert entry["p_time"] is None

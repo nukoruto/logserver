@@ -106,3 +106,53 @@ def test_cli_train_emits_artifacts(tmp_path, capsys):
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["training"]["uncertainty_weighting"] is True
     assert config["time_objective"] == "rmtpp"
+
+    model_bytes = model_path.read_bytes()
+    optim_bytes = optimizer_path.read_bytes()
+    history_bytes = history_path.read_bytes()
+
+    exit_code = cli.main(
+        [
+            "train",
+            "--train",
+            str(train_dir / "*.csv"),
+            "--val",
+            str(val_dir / "*.csv"),
+            "--arch",
+            "lstm",
+            "--time-head",
+            "rmtpp",
+            "--time-objective",
+            "rmtpp",
+            "--epochs",
+            "2",
+            "--bs",
+            "2",
+            "--lr",
+            "1e-2",
+            "--scheduler",
+            "none",
+            "--early",
+            "2",
+            "--uncertainty-weight",
+            "on",
+            "--amp",
+            "off",
+            "--clip-grad",
+            "1.0",
+            "--scheduled-sampling",
+            "0.1",
+            "--focal-gamma",
+            "1.5",
+            "--label-smoothing",
+            "0.1",
+            "--seed",
+            "123",
+            "--out",
+            str(out_dir),
+        ]
+    )
+    assert exit_code == 0
+    assert model_bytes == model_path.read_bytes()
+    assert optim_bytes == optimizer_path.read_bytes()
+    assert history_bytes == history_path.read_bytes()

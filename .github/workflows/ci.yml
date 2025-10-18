@@ -120,13 +120,20 @@ jobs:
         run: pnpm -r run test
 
   trainer:
+    name: trainer (device=${{ matrix.device }}, gpu=${{ matrix.gpu_mode }})
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        device: [cpu, cuda]
+        gpu_mode: [ada6000, "4060"]
     defaults:
       run:
         shell: bash
         working-directory: trainer
     env:
-      GPU_MODE: ada6000
+      GPU_MODE: ${{ matrix.gpu_mode }}
+      TRAIN_DEVICE: ${{ matrix.device }}
     steps:
       - name: Checkout
         uses: actions/checkout@v4
@@ -142,11 +149,18 @@ jobs:
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade setuptools wheel
-          pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements_cpu.txt
+          if [ "${{ matrix.device }}" = "cuda" ] && command -v nvidia-smi >/dev/null 2>&1; then
+            echo "Installing CUDA 12.1 dependencies"
+            pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements_cuda121.txt
+          else
+            echo "CUDA device not available, installing CPU fallback wheels"
+            pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements_cpu.txt
+          fi
 
       - name: CLI smoke checks
         env:
           PYTHONPATH: ${{ github.workspace }}
+          TRAIN_DEVICE: ${{ matrix.device }}
         run: |
           python -m trainer.scripts.preprocess --help >/dev/null
           python -m trainer.scripts.train --help >/dev/null
@@ -158,4 +172,5 @@ jobs:
       - name: Run trainer tests
         env:
           PYTHONPATH: ${{ github.workspace }}
+          TRAIN_DEVICE: ${{ matrix.device }}
         run: pytest --maxfail=1 --disable-warnings -q
