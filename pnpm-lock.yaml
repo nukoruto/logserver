@@ -8,6 +8,22 @@ importers:
 
   .: {}
 
+  apps/lstm-gui:
+    dependencies:
+      electron:
+        specifier: ^29.3.0
+        version: 29.4.6
+    devDependencies:
+      '@types/electron':
+        specifier: ^1.6.0
+        version: 1.6.12
+      '@types/node':
+        specifier: ^20.12.7
+        version: 20.19.22
+      typescript:
+        specifier: ^5.4.5
+        version: 5.9.3
+
   apps/splitter-gui:
     dependencies:
       '@logserver/session-splitter':

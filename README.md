@@ -32,6 +32,8 @@
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
+- **Electron GUI ブリッジ**：`apps/lstm-gui` 経由で dt-lstm CLI (`fit`/`train`/`calibrate`/`infer`/`online`) を IPC 呼び出しし、進捗ログと生成物
+  を GUI に反映（CLI 単体実行とバイト一致を保証）
 
 ---
 
@@ -57,6 +59,15 @@
 │       ├─ scripts/
 │       ├─ services/
 │       └─ sim/
+├─ apps/
+│   ├─ splitter-gui/
+│   └─ lstm-gui/
+│       ├─ src/
+│       │   ├─ main.ts（Electron メインプロセス）
+│       │   ├─ preload.ts（IPC API を `window.dtLstm` に公開）
+│       │   └─ python/（dt-lstm CLI ラッパー）
+│       ├─ static/
+│       └─ tests/（node:test による CLI 引数生成の検証）
 ├─ trainer/
 │   ├─ configs/
 │   │   ├─ default.yaml
@@ -89,7 +100,7 @@
     └─ .gitkeep
 ```
 
-> Node.js ワークスペース（`packages/*`, `apps/splitter-gui`）では、`pnpm --filter @logserver/session-splitter-cli build`
+> Node.js ワークスペース（`packages/*`, `apps/splitter-gui`, `apps/lstm-gui`）では、`pnpm --filter @logserver/session-splitter-cli build`
 > などのビルドを実行すると `dist/` 以下（例: `packages/dt-preproc/dist`, `apps/splitter-gui/dist/main.js`）が生成される。
 > これらの生成物は `.gitignore` によりバージョン管理対象から除外される。
 
