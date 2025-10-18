@@ -1,4 +1,5 @@
 import type { SimulationEvent } from '../../services/simulationService';
+import { DEFAULT_DELTA_EPSILON } from './normalGenerator';
 
 export type StrategyConfig = Record<string, unknown>;
 
@@ -77,6 +78,8 @@ const DEFAULT_OPTIONS: NormalizedOptions = {
     },
   },
 };
+
+const MIN_ANOMALY_DELTA = DEFAULT_DELTA_EPSILON;
 
 type StrategyHandler = (context: MutationContext) => boolean;
 
@@ -306,7 +309,10 @@ const synchronizeDeltas = (
   for (const event of events) {
     const currentTimestamp = parseTimestamp(event.timestamp);
     if (previousTimestamp && currentTimestamp) {
-      const computedDelta = Math.max(0, (currentTimestamp.getTime() - previousTimestamp.getTime()) / 1000);
+      const computedDelta = Math.max(
+        MIN_ANOMALY_DELTA,
+        (currentTimestamp.getTime() - previousTimestamp.getTime()) / 1000,
+      );
       event.deltaSeconds = computedDelta;
       const originalDelta = deltaMap.has(event) ? deltaMap.get(event) : null;
       if (Number.isFinite(originalDelta)) {
@@ -318,7 +324,7 @@ const synchronizeDeltas = (
       }
     } else if (!previousTimestamp && currentTimestamp) {
       if (!Number.isFinite(Number(event.deltaSeconds))) {
-        event.deltaSeconds = 0;
+        event.deltaSeconds = MIN_ANOMALY_DELTA;
       }
       const originalDelta = deltaMap.has(event) ? deltaMap.get(event) : null;
       if (Number.isFinite(originalDelta)) {
@@ -330,7 +336,7 @@ const synchronizeDeltas = (
       }
     } else if (!currentTimestamp) {
       if (!Number.isFinite(Number(event.deltaSeconds))) {
-        event.deltaSeconds = 0;
+        event.deltaSeconds = MIN_ANOMALY_DELTA;
       }
       if (event.deltaOffsetSeconds === undefined) {
         event.deltaOffsetSeconds = 0;
@@ -409,7 +415,10 @@ const applyProtocolViolation = ({ events, options, randomFn, markField, deltaMap
   const insertOffsetSeconds = Number(config.insertOffsetSeconds);
   const insertDeltaSeconds = Number(config.insertDeltaSeconds);
   const offsetSeconds = Number.isFinite(insertOffsetSeconds) ? insertOffsetSeconds : -5;
-  const deltaSeconds = Number.isFinite(insertDeltaSeconds) && insertDeltaSeconds >= 0 ? insertDeltaSeconds : 0;
+  const deltaSeconds =
+    Number.isFinite(insertDeltaSeconds) && (insertDeltaSeconds as number) >= MIN_ANOMALY_DELTA
+      ? (insertDeltaSeconds as number)
+      : MIN_ANOMALY_DELTA;
   const referenceTimestamp = parseTimestamp(referenceEvent.timestamp) || new Date();
   const insertedTimestamp = new Date(referenceTimestamp.getTime() + offsetSeconds * 1000);
 
@@ -456,8 +465,8 @@ const applyTimeDeviation = ({ events, options, randomFn, markField }: MutationCo
   const longGap = Number(config.longGapSeconds);
   const shortGap = Number(config.shortGapSeconds);
   const desiredDelta = useLongGap
-    ? (Number.isFinite(longGap) && longGap > 0 ? longGap : 300)
-    : Math.max(0, Number.isFinite(shortGap) ? shortGap : 0.05);
+    ? (Number.isFinite(longGap) && longGap > 0 ? (longGap as number) : 300)
+    : Math.max(MIN_ANOMALY_DELTA, Number.isFinite(shortGap) ? (shortGap as number) : 0.05);
 
   const newTimestamp = new Date(previousTimestamp.getTime() + desiredDelta * 1000);
   const currentTimestamp = parseTimestamp(target.timestamp) || newTimestamp;
