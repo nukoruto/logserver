@@ -219,6 +219,8 @@ def train(
         vocab=vocab,
         idle_timeout=idle_timeout,
     )
+    train_meta = dict(train_meta)
+    train_meta["idle_timeout"] = float(idle_timeout)
     val_dataset = None
     val_meta: Dict[str, object] | None = None
     if val_patterns:
@@ -229,6 +231,9 @@ def train(
             vocab=vocab,
             idle_timeout=idle_timeout,
         )
+        if val_meta is not None:
+            val_meta = dict(val_meta)
+            val_meta["idle_timeout"] = float(idle_timeout)
     vocab_size = int(train_meta["vocab_size"])
     model_config = DeltaTimeModelConfig(
         **{

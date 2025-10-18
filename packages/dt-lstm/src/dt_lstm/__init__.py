@@ -11,6 +11,7 @@ from pkgutil import extend_path
 __path__ = extend_path(__path__, __name__)
 
 from .calibrate import calibrate_temperature
+from .export import export_bundle
 from .engine import DTLSTMEngine, RuntimeContext, configure_runtime
 from .eval import EvaluationError, evaluate
 from .model_def import ModelDefinition, load_definition, save_definition
@@ -28,4 +29,5 @@ __all__ = [
     "ModelDefinition",
     "save_definition",
     "load_definition",
+    "export_bundle",
 ]

@@ -13,6 +13,7 @@ import torch
 
 from .calibrate import calibrate_temperature
 from .engine import DTLSTMEngine
+from .export import DEFAULT_ALGO_VERSION, ExportError, export_bundle
 from .fit import FitError, main as fit_main
 from .infer import InferenceError, run_inference
 from .model_def import ModelDefinition, save_definition
@@ -217,10 +218,28 @@ def _build_parser() -> argparse.ArgumentParser:
         help="被覆–冗長曲線で計算する最大 Top-K",
     )
 
+    export_parser = subparsers.add_parser("export", help="学習済みチェックポイントを単一tarにバンドルする")
+    export_parser.add_argument("--ckpt", required=True, help="学習済みモデルのチェックポイント (model.pt)")
+    export_parser.add_argument("--vocab", default=None, help="語彙JSONのパス")
+    export_parser.add_argument("--calib", default=None, help="温度スケーリングJSONのパス")
+    export_parser.add_argument("--meta", default=None, help="train_meta.json のパス")
+    export_parser.add_argument(
+        "--algo-ver",
+        default=DEFAULT_ALGO_VERSION,
+        help="互換性管理用のアルゴリズムバージョン",
+    )
+    export_parser.add_argument("--out", required=True, help="出力tarパス")
+
     infer_parser = subparsers.add_parser("infer", help="Δt-aware LSTM でバッチ推論を実行する")
     infer_parser.add_argument("--in", dest="inputs", nargs="+", required=True, help="入力CSVパス (glob対応)")
-    infer_parser.add_argument("--ckpt", required=True, help="学習済みモデルのチェックポイント (model.pt)")
-    infer_parser.add_argument("--calib", default=None, help="温度スケーリングJSONのパス")
+    source_group = infer_parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument("--ckpt", help="学習済みモデルのチェックポイント (model.pt)")
+    source_group.add_argument("--bundle", help="dt-lstm export で生成したバンドルtar")
+    infer_parser.add_argument(
+        "--calib",
+        default=None,
+        help="温度スケーリングJSONのパス (bundle 指定時はバンドル内を使用)",
+    )
     infer_parser.add_argument("--topk", type=int, default=5, help="Top-K 被覆で利用するK")
     infer_parser.add_argument("--out", required=True, help="スコアCSVの出力先")
     infer_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
@@ -458,10 +477,32 @@ def main(argv: Sequence[str] | None = None) -> int:
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
 
+    if args.command == "export":
+        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        vocab_path = Path(args.vocab).expanduser().resolve() if args.vocab else None
+        calib_path = Path(args.calib).expanduser().resolve() if args.calib else None
+        meta_path = Path(args.meta).expanduser().resolve() if args.meta else None
+        out_path = Path(args.out).expanduser().resolve()
+        try:
+            payload = export_bundle(
+                checkpoint_path=ckpt_path,
+                output_path=out_path,
+                vocab_path=vocab_path,
+                calibration_path=calib_path,
+                train_meta_path=meta_path,
+                algo_version=str(args.algo_ver),
+            )
+        except ExportError as exc:
+            _LOGGER.error("export.failed", extra={"error": str(exc)})
+            return 1
+        sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
     if args.command == "infer":
         engine = DTLSTMEngine(seed=args.seed)
         runtime = engine.configure()
-        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        ckpt_path = Path(args.ckpt).expanduser().resolve() if args.ckpt else None
+        bundle_path = Path(args.bundle).expanduser().resolve() if args.bundle else None
         calib_path = Path(args.calib).expanduser().resolve() if args.calib else None
         out_path = Path(args.out).expanduser().resolve()
         audit_path = Path(args.audit).expanduser().resolve() if args.audit else None
@@ -474,6 +515,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 audit_path=audit_path,
                 topk=int(args.topk),
                 device=runtime.device,
+                bundle_path=bundle_path,
             )
         except InferenceError as exc:
             _LOGGER.error("infer.failed", extra={"error": str(exc)})

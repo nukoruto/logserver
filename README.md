@@ -402,7 +402,35 @@ PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli infer \
 
 各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc_meta.json`）を再利用して追加検証を実施します。
 
-### 5.7 dt-lstm 評価 CLI（AUROC/F1/遅延/ECE 等）
+### 5.7 dt-lstm エクスポート CLI（checkpoint + 温度 + TorchScript）
+
+`dt-lstm export` は学習済みモデル (`model.pt`)、構成 (`config.json`)、語彙 (`vocab.json`)、温度スケーリング結果 (`calib.json`)、学習メタ (`train_meta.json`) を単一の `model.tar` に束ね、TorchScript 版 (`model.ts`) とコードハッシュ（`code_hash.txt`）を同梱します。`algo_ver` で互換性を管理し、バンドルだけで `dt-lstm infer --bundle` が再現できるため、ckpt ファイルを個別配布する必要がありません。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli export \
+  --ckpt ml/checkpoints/best.pt \
+  --vocab ml/artifacts/vocab.json \
+  --calib ml/artifacts/calib.json \
+  --meta ml/artifacts/train_meta.json \
+  --algo-ver 1 \
+  --out ml/releases/model_v1.tar
+```
+
+アーカイブには以下のファイルが含まれます。
+
+| ファイル | 内容 |
+| --- | --- |
+| `state_dict.pt` | CPU テンソルへ変換した学習済み重み |
+| `model_def.json` | `DeltaTimeModelConfig` と `algo_ver` / `data` メタデータ |
+| `vocab.json` | `dt-lstm fit` で生成した語彙（存在する場合） |
+| `calib.json` | 温度スケーリング結果（未指定時はデフォルト 1.0） |
+| `train_meta.json` | 語彙・Δt 統計などの学習メタ情報 |
+| `model.ts` | TorchScript 変換済みモデル（ONNX 不要で Simulink/MATLAB 連携可能） |
+| `code_hash.txt` | `git rev-parse HEAD`（取得できない場合は `unknown`） |
+
+推論側では `--ckpt` / `--calib` を指定せず、`--bundle ml/releases/model_v1.tar` だけで同一スコアを再現できます。
+
+### 5.8 dt-lstm 評価 CLI（AUROC/F1/遅延/ECE 等）
 
 `dt-lstm eval` は、教師データ（`anomaly_label` 列を含む CSV）と推論済みスコア CSV（`neglog10_p` / `combined_p` など）を突合し、AUROC・F1・平均検知遅延・TopK 精度・RMTPP 負の対数尤度・ECE を決定論的に算出します。`alarm_active` や `spot_alarm_kofn` 列が存在する場合は K-of-N 判定をそのまま利用し、存在しない場合は F1 最大となるスコア閾値を自動選択します。
 

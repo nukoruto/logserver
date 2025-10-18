@@ -7,11 +7,12 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, Optional, Sequence
+from typing import Dict, Iterable, List, Mapping, Optional, Sequence, Tuple
 
 import torch
 
-from .data import load_sequence_dataset, load_vocabulary
+from .data import Vocabulary, load_sequence_dataset, load_vocabulary
+from .export import BundleContents, ExportError, load_bundle
 from .modules import DeltaTimeModel, DeltaTimeModelConfig
 
 
@@ -27,6 +28,16 @@ class InferenceSummary:
     events: int
     out_path: Path
     audit_path: Optional[Path]
+
+
+@dataclass
+class _PreparedModel:
+    model: DeltaTimeModel
+    vocabulary: Optional[Vocabulary]
+    numeric_columns: Sequence[str]
+    delta_column: str
+    idle_timeout: float
+    temperature: float
 
 
 def _load_config(checkpoint_path: Path) -> Mapping[str, object]:
@@ -51,14 +62,113 @@ def _load_calibration(calibration_path: Optional[Path]) -> float:
     return temperature
 
 
+def _resolve_data_meta(primary: object, fallback: object) -> Mapping[str, object]:
+    if isinstance(primary, Mapping):
+        return dict(primary)
+    if isinstance(fallback, Mapping):
+        return dict(fallback)
+    raise InferenceError("config.json に data セクションが存在しません")
+
+
+def _resolve_data_settings(metadata: Mapping[str, object]) -> Tuple[List[str], str, float]:
+    numeric_columns = metadata.get("numeric_columns")
+    if not isinstance(numeric_columns, Sequence) or not numeric_columns:
+        raise InferenceError("numeric_columns が構成に存在しません")
+    delta_column = str(metadata.get("delta_column", "dt_sec"))
+    idle_timeout_raw = metadata.get("idle_timeout", 1800.0)
+    try:
+        idle_timeout = float(idle_timeout_raw)
+    except Exception as exc:  # pragma: no cover - defensive
+        raise InferenceError("idle_timeout は数値である必要があります") from exc
+    return list(numeric_columns), delta_column, idle_timeout
+
+
+def _extract_temperature(calibration: Mapping[str, object]) -> float:
+    value = calibration.get("temperature", 1.0)
+    if isinstance(value, Mapping):
+        if "value" in value:
+            value = value["value"]
+        else:
+            raise InferenceError("temperature フィールドが不正な形式です")
+    temperature = float(value)
+    if temperature <= 0.0:
+        raise InferenceError("temperature は正の値である必要があります")
+    return temperature
+
+
+def _prepare_from_checkpoint(
+    checkpoint_path: Path,
+    calibration_path: Optional[Path],
+    *,
+    device: torch.device,
+) -> _PreparedModel:
+    config = _load_config(checkpoint_path)
+    model_cfg = DeltaTimeModelConfig.from_dict(config.get("model", {}))
+    vocab_entry = config.get("vocab")
+    vocabulary = load_vocabulary(Path(vocab_entry)) if isinstance(vocab_entry, str) else None
+    data_meta = _resolve_data_meta(config.get("data"), config.get("validation"))
+    numeric_columns, delta_column, idle_timeout = _resolve_data_settings(data_meta)
+    temperature = _load_calibration(calibration_path)
+    model = DeltaTimeModel(model_cfg)
+    state = torch.load(checkpoint_path, map_location=device)
+    model.load_state_dict(state)
+    model.to(device)
+    model.eval()
+    return _PreparedModel(
+        model=model,
+        vocabulary=vocabulary,
+        numeric_columns=numeric_columns,
+        delta_column=delta_column,
+        idle_timeout=idle_timeout,
+        temperature=temperature,
+    )
+
+
+def _prepare_from_bundle(bundle: BundleContents, *, device: torch.device) -> _PreparedModel:
+    metadata = bundle.model_def.metadata
+    primary = metadata.get("data") if isinstance(metadata, Mapping) else None
+    fallback = metadata.get("validation") if isinstance(metadata, Mapping) else None
+    if not isinstance(primary, Mapping) and isinstance(bundle.train_meta, Mapping):
+        primary = bundle.train_meta
+    data_meta = _resolve_data_meta(primary, fallback)
+    numeric_columns, delta_column, idle_timeout = _resolve_data_settings(data_meta)
+    vocabulary = load_vocabulary(bundle.vocab_path) if bundle.vocab_path is not None else None
+    temperature = _extract_temperature(bundle.calibration)
+    model = bundle.model_def.build_model()
+    state = torch.load(bundle.state_dict_path, map_location=device)
+    model.load_state_dict(state)
+    model.to(device)
+    model.eval()
+    return _PreparedModel(
+        model=model,
+        vocabulary=vocabulary,
+        numeric_columns=numeric_columns,
+        delta_column=delta_column,
+        idle_timeout=idle_timeout,
+        temperature=temperature,
+    )
+
+
+def _build_dataset(
+    patterns: Sequence[str],
+    prepared: _PreparedModel,
+):
+    return load_sequence_dataset(
+        patterns,
+        numeric_columns=list(prepared.numeric_columns),
+        delta_column=prepared.delta_column,
+        vocab=prepared.vocabulary,
+        idle_timeout=prepared.idle_timeout,
+        include_context=True,
+    )
+
+
 def _chi2_sf(statistic: float, components: int) -> float:
     if components <= 0:
         raise InferenceError("Fisher結合する成分数が正ではありません")
     if statistic < 0:
         statistic = 0.0
     lambda_val = 0.5 * statistic
-    # Survival function of chi-square with 2 * components degrees of freedom.
-    # Equivalent to regularized upper incomplete gamma with integer shape.
     term = 0.0
     factor = 1.0
     for order in range(components):
@@ -118,55 +228,22 @@ def _resolve_token(vocab: Optional[Mapping[int, str]], index: int, fallback: Opt
     return str(index)
 
 
-def run_inference(
-    patterns: Sequence[str],
+def _execute_inference(
+    dataset,
+    prepared: _PreparedModel,
     *,
-    checkpoint_path: Path,
-    calibration_path: Optional[Path],
     output_path: Path,
     audit_path: Optional[Path],
     topk: int,
     device: torch.device,
 ) -> InferenceSummary:
-    if topk <= 0:
-        raise InferenceError("topk は 1 以上である必要があります")
-    config = _load_config(checkpoint_path)
-    model_cfg = DeltaTimeModelConfig.from_dict(config["model"])
-    if model_cfg.time_head != "rmtpp":
-        raise InferenceError("time_head が rmtpp のモデルのみ推論で利用できます")
-    vocab_path = config.get("vocab")
-    vocabulary = load_vocabulary(Path(vocab_path)) if vocab_path else None
-    vocab_lookup: Optional[Dict[int, str]] = None
-    if vocabulary is not None:
-        vocab_lookup = {index: token for index, token in enumerate(vocabulary.itos)}
-    data_meta = config.get("data") or config.get("validation")
-    if data_meta is None:
-        raise InferenceError("config.json に data 情報が存在しません")
-    numeric_columns = data_meta.get("numeric_columns")
-    if not numeric_columns:
-        raise InferenceError("numeric_columns が構成に存在しません")
-    delta_column = str(data_meta.get("delta_column", "dt_sec"))
-    idle_timeout = float(data_meta.get("idle_timeout", 1800.0))
-    dataset, _ = load_sequence_dataset(
-        patterns,
-        numeric_columns=list(numeric_columns),
-        delta_column=delta_column,
-        vocab=vocabulary,
-        idle_timeout=idle_timeout,
-        include_context=True,
-    )
-    if len(dataset) == 0:
-        raise InferenceError("推論対象のシーケンスが存在しません")
-    temperature = _load_calibration(calibration_path)
-    model = DeltaTimeModel(model_cfg)
-    state = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state)
-    model.to(device)
-    model.eval()
-
     output_path.parent.mkdir(parents=True, exist_ok=True)
     if audit_path is not None:
         audit_path.parent.mkdir(parents=True, exist_ok=True)
+
+    vocab_lookup: Optional[Dict[int, str]] = None
+    if prepared.vocabulary is not None:
+        vocab_lookup = {index: token for index, token in enumerate(prepared.vocabulary.itos)}
 
     total_events = 0
     audit_records: List[str] = []
@@ -179,8 +256,8 @@ def run_inference(
             numeric = torch.from_numpy(item["numeric"]).unsqueeze(0).to(device)
             length = events.shape[1]
             lengths = torch.tensor([length], dtype=torch.long, device=device)
-            outputs = model(events, numeric, lengths=lengths)
-            logits = outputs["event_logits"] / temperature
+            outputs = prepared.model(events, numeric, lengths=lengths)
+            logits = outputs["event_logits"] / prepared.temperature
             probabilities = torch.softmax(logits, dim=-1).squeeze(0).cpu()
             g_values = outputs["rmtpp_g"].squeeze(0).cpu()
             w_values = outputs["rmtpp_w"].squeeze(0).cpu()
@@ -317,8 +394,70 @@ def run_inference(
         writer.writerow(header)
         writer.writerows(rows)
 
-    if audit_path is not None:
+    if audit_path is not None and audit_records:
         audit_path.write_text("\n".join(audit_records) + "\n", encoding="utf-8")
 
-    return InferenceSummary(sequences=len(dataset), events=total_events, out_path=output_path, audit_path=audit_path)
+    prepared.model.cpu()
+    return InferenceSummary(
+        sequences=len(dataset),
+        events=total_events,
+        out_path=output_path,
+        audit_path=audit_path,
+    )
 
+
+def run_inference(
+    patterns: Sequence[str],
+    *,
+    checkpoint_path: Optional[Path],
+    calibration_path: Optional[Path],
+    output_path: Path,
+    audit_path: Optional[Path],
+    topk: int,
+    device: torch.device,
+    bundle_path: Optional[Path] = None,
+) -> InferenceSummary:
+    if topk <= 0:
+        raise InferenceError("topk は 1 以上である必要があります")
+    if (checkpoint_path is None) == (bundle_path is None):
+        raise InferenceError("checkpoint または bundle のどちらか一方を指定してください")
+
+    if bundle_path is not None:
+        bundle_path = bundle_path.expanduser().resolve()
+        try:
+            with load_bundle(bundle_path) as bundle:
+                prepared = _prepare_from_bundle(bundle, device=device)
+                model_cfg = prepared.model.config
+                if model_cfg.time_head != "rmtpp":
+                    raise InferenceError("time_head が rmtpp のモデルのみ推論で利用できます")
+                dataset, _ = _build_dataset(patterns, prepared)
+                if len(dataset) == 0:
+                    raise InferenceError("推論対象のシーケンスが存在しません")
+                return _execute_inference(
+                    dataset,
+                    prepared,
+                    output_path=output_path,
+                    audit_path=audit_path,
+                    topk=topk,
+                    device=device,
+                )
+        except ExportError as exc:
+            raise InferenceError(f"エクスポートバンドルの読み込みに失敗しました: {exc}") from exc
+
+    assert checkpoint_path is not None
+    checkpoint_path = checkpoint_path.expanduser().resolve()
+    prepared = _prepare_from_checkpoint(checkpoint_path, calibration_path, device=device)
+    model_cfg = prepared.model.config
+    if model_cfg.time_head != "rmtpp":
+        raise InferenceError("time_head が rmtpp のモデルのみ推論で利用できます")
+    dataset, _ = _build_dataset(patterns, prepared)
+    if len(dataset) == 0:
+        raise InferenceError("推論対象のシーケンスが存在しません")
+    return _execute_inference(
+        dataset,
+        prepared,
+        output_path=output_path,
+        audit_path=audit_path,
+        topk=topk,
+        device=device,
+    )
