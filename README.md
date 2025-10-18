@@ -402,6 +402,20 @@ PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli infer \
 
 各コマンドは `--help` で詳細を確認できます。`dt-preproc transform` の出力 CSV は完全に決定的で、`preprocess` スクリプトは fit/transform の成果物（`stats/preproc_stats.json` と `stats/preproc_meta.json`）を再利用して追加検証を実施します。
 
+### 5.7 dt-lstm 評価 CLI（AUROC/F1/遅延/ECE 等）
+
+`dt-lstm eval` は、教師データ（`anomaly_label` 列を含む CSV）と推論済みスコア CSV（`neglog10_p` / `combined_p` など）を突合し、AUROC・F1・平均検知遅延・TopK 精度・RMTPP 負の対数尤度・ECE を決定論的に算出します。`alarm_active` や `spot_alarm_kofn` 列が存在する場合は K-of-N 判定をそのまま利用し、存在しない場合は F1 最大となるスコア閾値を自動選択します。
+
+```bash
+PYTHONPATH=packages/dt-lstm/src python -m dt_lstm.cli eval \
+  --in data/test_feat/*.csv \
+  --scored out/test_scored.csv \
+  --out out/metrics.json \
+  --bins 15
+```
+
+出力される `metrics.json` は `contract/schema/dt_lstm_metrics.schema.json` に準拠し、再実行してもバイト列が一致します。同一ディレクトリに PR 曲線（`*_pr_curve.png`）と校正図（`*_calibration.png`）も生成されます。
+
 学習期の Δt 統計を固定化し、推論期にバイト完全一致の特徴量付与を行うため、`@logserver/dt-preproc` パッケージには `dt-preproc` CLI を用意しています。
 
 ```bash

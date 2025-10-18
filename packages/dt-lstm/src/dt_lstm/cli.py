@@ -18,6 +18,7 @@ from .infer import InferenceError, run_inference
 from .model_def import ModelDefinition, save_definition
 from .modules import DeltaTimeModel, DeltaTimeModelConfig
 from .online import OnlineError, run_online_stream
+from .eval import EvaluationError, evaluate
 from .train import TrainingConfig, train as train_model
 
 _LOGGER = logging.getLogger("dt_lstm.cli")
@@ -246,6 +247,12 @@ def _build_parser() -> argparse.ArgumentParser:
     online_parser.add_argument("--out", required=True, help="オンライン監視結果CSVの出力先")
     online_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
     online_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
+
+    eval_parser = subparsers.add_parser("eval", help="スコアCSVを評価して指標を算出する")
+    eval_parser.add_argument("--in", dest="inputs", nargs="+", required=True, help="教師データCSVのglobパターン")
+    eval_parser.add_argument("--scored", required=True, help="スコアCSVのパス")
+    eval_parser.add_argument("--out", required=True, help="指標JSONの出力先")
+    eval_parser.add_argument("--bins", type=int, default=15, help="ECE 計算時のビン数")
     return parser
 
 
@@ -521,6 +528,28 @@ def main(argv: Sequence[str] | None = None) -> int:
             "audit_path": summary.audit_path and str(summary.audit_path),
         }
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
+        return 0
+
+    if args.command == "eval":
+        scored_path = Path(args.scored).expanduser().resolve()
+        out_path = Path(args.out).expanduser().resolve()
+        try:
+            payload = evaluate(
+                args.inputs,
+                scored_path=scored_path,
+                metrics_path=out_path,
+                bins=int(args.bins),
+            )
+        except EvaluationError as exc:
+            _LOGGER.error("eval.failed", extra={"error": str(exc)})
+            return 1
+        event_payload = {
+            "event": "eval.completed",
+            "metrics_path": str(out_path),
+            "pr_curve_png": payload["artifacts"]["pr_curve_png"],
+            "calibration_png": payload["artifacts"]["calibration_png"],
+        }
+        sys.stdout.write(json.dumps(event_payload, ensure_ascii=False) + "\n")
         return 0
 
     parser.print_help()
