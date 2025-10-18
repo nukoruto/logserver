@@ -153,6 +153,11 @@ pnpm exec ts-node scripts/simulate.ts \
 - `--persist false` を指定すると、生成結果を標準出力に表示するだけでファイルは生成されない。
 - `--session-spacing` や `--max-steps` を用いてセッション間隔や系列長を制御できる。
 - 実行時には INFO ログでシード値・異常戦略・出力先が記録される。
+- 時間異常注入は既定で **auto モード（局所と伝搬のランダム混合）** となり、
+  `--time-anomaly-mode auto|propagate|local` で挙動を切り替え可能。
+  auto 時の伝搬比率は `--time-anomaly-prop-weight`（0.0..1.0、既定 0.7）で制御する。
+  各注入ごとの選択モードと重みは `meta.jsonl` に JSON Lines 形式で記録され、
+  manifest の `output.meta_path` および `params.time_anomaly` にも保存される。
 
 ## 5. 使い方（CLI の一例）
 

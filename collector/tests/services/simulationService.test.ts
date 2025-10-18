@@ -42,6 +42,8 @@ describe('simulationService.generateScenario', () => {
     expect(result.summary.anomalies.normal).toBeGreaterThan(0);
     expect(result.params.seed).toBe('jest-service');
     expect(result.params.seed_source).toBe('provided');
+    expect(result.params.time_anomaly.mode).toBe('auto');
+    expect(result.params.time_anomaly.weights.propagate).toBeCloseTo(0.7, 5);
     expect(result.scenarioId).toBeTruthy();
 
     const firstEvent = result.events[0];
@@ -63,6 +65,17 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.anomaly_summary.normal).toBeGreaterThan(0);
       expect(manifest.parameters.seed).toBe('jest-service');
       expect(manifest.parameters.seed_source).toBe('provided');
+      if (result.files.metaPath) {
+        expect(manifest.output.meta_path).toBe(result.files.metaPath);
+      }
+    }
+    if (result.files?.metaPath) {
+      expect(existsSync(result.files.metaPath)).toBe(true);
+      const metaContent = readFileSync(result.files.metaPath, 'utf8').trim().split('\n');
+      expect(metaContent.length).toBeGreaterThan(0);
+      const firstMeta = JSON.parse(metaContent[0]);
+      expect(firstMeta).toHaveProperty('propagation_mode');
+      expect(firstMeta).toHaveProperty('weights');
     }
   });
 
@@ -83,6 +96,7 @@ describe('simulationService.generateScenario', () => {
     expect(second.params.seed).toBe('repeatable-seed');
     expect(second.events).toStrictEqual(first.events);
     expect(second.summary).toStrictEqual(first.summary);
+    expect(second.params.time_anomaly).toStrictEqual(first.params.time_anomaly);
   });
 
   it('records generated seeds when none are provided', async () => {

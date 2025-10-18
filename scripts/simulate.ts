@@ -23,6 +23,8 @@ type CliOptions = {
   sessionSpacing?: number;
   maxSteps?: number;
   pretty: boolean;
+  timeAnomalyMode?: string;
+  timeAnomalyPropWeight?: number;
 };
 
 const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
@@ -96,6 +98,17 @@ const main = async (): Promise<void> => {
       type: 'number',
       describe: 'Maximum transitions per session before termination.',
     })
+    .option('time-anomaly-mode', {
+      type: 'string',
+      describe: 'Time anomaly propagation mode (auto|propagate|local).',
+      choices: ['auto', 'propagate', 'local'],
+      default: 'auto',
+    })
+    .option('time-anomaly-prop-weight', {
+      type: 'number',
+      describe: 'Propagation weight for auto mode (0..1).',
+      default: 0.7,
+    })
     .option('pretty', {
       type: 'boolean',
       default: false,
@@ -124,6 +137,8 @@ const main = async (): Promise<void> => {
       startTime: argv.start,
       sessionSpacingSeconds: argv.sessionSpacing,
       maxSteps: argv.maxSteps,
+      timeAnomalyMode: argv.timeAnomalyMode,
+      timeAnomalyPropWeight: argv.timeAnomalyPropWeight,
     });
 
     const indent = argv.pretty ? 2 : 0;

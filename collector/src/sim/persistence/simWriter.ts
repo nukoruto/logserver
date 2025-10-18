@@ -5,6 +5,8 @@ import config from '../../config';
 import { labelSequence } from '../labeler';
 import type { SimulationEvent } from '../../services/simulationService';
 
+const DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT = 0.7;
+
 export type FeatureResolver = (
   event: SimulationEvent,
   index: number,
@@ -37,6 +39,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   outputDir?: string;
   csvFileName?: string;
   manifestFileName?: string;
+  metaFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
@@ -48,6 +51,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
 export interface PersistSimulationResult {
   csvPath: string;
   manifestPath: string;
+  metaPath: string | null;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
@@ -925,6 +929,148 @@ const serializeMetadata = (metadata: unknown): Record<string, unknown> => {
   return metadata as Record<string, unknown>;
 };
 
+const clampWeight = (value: unknown, fallback: number): number => {
+  const numeric = Number(value);
+  if (!Number.isFinite(numeric)) {
+    return fallback;
+  }
+  if (numeric <= 0) {
+    return 0;
+  }
+  if (numeric >= 1) {
+    return 1;
+  }
+  return numeric;
+};
+
+const normalizePropagationModeValue = (
+  value: unknown,
+  fallback: 'propagate' | 'local',
+): 'propagate' | 'local' => {
+  if (typeof value === 'string') {
+    const normalized = value.trim().toLowerCase();
+    if (normalized === 'propagate') {
+      return 'propagate';
+    }
+    if (normalized === 'local') {
+      return 'local';
+    }
+  }
+  return fallback;
+};
+
+const normalizeGapTypeValue = (value: unknown): 'long' | 'short' | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const normalized = value.trim().toLowerCase();
+  if (normalized === 'long' || normalized === 'short') {
+    return normalized;
+  }
+  return null;
+};
+
+const toNumberOrNull = (value: unknown): number | null => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : null;
+};
+
+const resolveTimeAnomalyDefaults = (
+  parameters: Record<string, unknown> | undefined,
+): { mode: string; weights: { propagate: number; local: number } } => {
+  const raw = parameters && typeof parameters === 'object' ? (parameters.time_anomaly as unknown) : null;
+  if (raw && typeof raw === 'object' && !Array.isArray(raw)) {
+    const record = raw as Record<string, unknown>;
+    const weightsRaw = record.weights;
+    const propagate = weightsRaw && typeof weightsRaw === 'object'
+      ? clampWeight((weightsRaw as Record<string, unknown>).propagate, DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT)
+      : DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT;
+    return {
+      mode: typeof record.mode === 'string' ? record.mode : 'auto',
+      weights: {
+        propagate,
+        local: Math.max(0, 1 - propagate),
+      },
+    };
+  }
+  return {
+    mode: 'auto',
+    weights: {
+      propagate: DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT,
+      local: 1 - DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT,
+    },
+  };
+};
+
+const fallbackModeFromConfig = (configMode: string, propagateWeight: number): 'propagate' | 'local' => {
+  const normalized = typeof configMode === 'string' ? configMode.trim().toLowerCase() : '';
+  if (normalized === 'propagate') {
+    return 'propagate';
+  }
+  if (normalized === 'local') {
+    return 'local';
+  }
+  return propagateWeight >= 0.5 ? 'propagate' : 'local';
+};
+
+const buildTimeAnomalyMetaRecords = (
+  events: readonly SimulationEvent[],
+  runId: string,
+  parameters: Record<string, unknown> | undefined,
+): Record<string, unknown>[] => {
+  const defaults = resolveTimeAnomalyDefaults(parameters);
+  const records: Record<string, unknown>[] = [];
+  events.forEach((event, index) => {
+    if (!event || typeof event !== 'object') {
+      return;
+    }
+    const anomalyTagRaw = (event as Record<string, unknown>)._anomalyType;
+    const anomalyTag = typeof anomalyTagRaw === 'string' ? anomalyTagRaw : null;
+    const metadata = serializeMetadata((event as Record<string, unknown>).metadata);
+    const metadataAnomaly = typeof metadata.anomaly === 'string' ? metadata.anomaly : null;
+    const normalizedTag = anomalyTag ? anomalyTag.toLowerCase() : metadataAnomaly ? metadataAnomaly.toLowerCase() : null;
+    if (normalizedTag !== 'timedeviation' && normalizedTag !== 'time_deviation') {
+      return;
+    }
+    const detailsRaw = (event as Record<string, unknown>)._anomalyDetails;
+    const details = detailsRaw && typeof detailsRaw === 'object' && !Array.isArray(detailsRaw)
+      ? (detailsRaw as Record<string, unknown>)
+      : {};
+    const timeMetaRaw = metadata.time_anomaly;
+    const timeMeta = timeMetaRaw && typeof timeMetaRaw === 'object' && !Array.isArray(timeMetaRaw)
+      ? (timeMetaRaw as Record<string, unknown>)
+      : {};
+    const weightsMeta = timeMeta.weights && typeof timeMeta.weights === 'object' && !Array.isArray(timeMeta.weights)
+      ? (timeMeta.weights as Record<string, unknown>)
+      : {};
+    const propagateWeight = clampWeight(details.propagateWeight ?? weightsMeta.propagate, defaults.weights.propagate);
+    const propagationMode = normalizePropagationModeValue(
+      details.propagationMode ?? timeMeta.propagation_mode,
+      fallbackModeFromConfig(defaults.mode, propagateWeight),
+    );
+    const gapType = normalizeGapTypeValue(details.mode ?? timeMeta.gap_type);
+    const desiredDelta = toNumberOrNull(details.desiredDelta ?? timeMeta.desired_delta);
+    const sequenceIndex = toNumberOrNull(metadata.sequence_index);
+    records.push({
+      type: 'time-anomaly',
+      run_id: runId,
+      idx: index,
+      session_id: typeof event.session_id === 'string' ? event.session_id : null,
+      uid: typeof event.uid === 'string' ? event.uid : null,
+      sequence_index: sequenceIndex,
+      propagation_mode: propagationMode,
+      mode_setting: defaults.mode,
+      gap_type: gapType,
+      desired_delta: desiredDelta,
+      weights: {
+        propagate: propagateWeight,
+        local: Math.max(0, 1 - propagateWeight),
+      },
+    });
+  });
+  return records;
+};
+
 const resolveSidFinal = (event: SimulationEvent): unknown => {
   if (!event || typeof event !== 'object') {
     return null;
@@ -1014,6 +1160,7 @@ export const persistSimulationRun = async (
   const generatedAt = new Date().toISOString();
   const outputDir = input?.outputDir ? path.resolve(input.outputDir) : config.simLogRoot;
   const featureAugmenter = resolveFeatureAugmenterFromInput(input);
+  let metaPath: string | null = null;
 
   await ensureDirectory(outputDir);
 
@@ -1112,9 +1259,25 @@ export const persistSimulationRun = async (
     encoding: 'utf8',
   });
 
+  const anomalyMetaRecords = buildTimeAnomalyMetaRecords(labeled, runId, input?.parameters);
+  if (anomalyMetaRecords.length > 0) {
+    const metaFileName = input?.metaFileName || 'meta.jsonl';
+    const resolvedMetaPath = path.join(outputDir, metaFileName);
+    const metaContent = anomalyMetaRecords.map((record) => JSON.stringify(record)).join('\n').concat('\n');
+    await fs.writeFile(resolvedMetaPath, metaContent, { encoding: 'utf8' });
+    metaPath = resolvedMetaPath;
+    const outputSection = (manifest.output ?? {}) as Record<string, unknown>;
+    outputSection.meta_path = resolvedMetaPath;
+    manifest.output = outputSection;
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: 'utf8',
+    });
+  }
+
   return {
     csvPath,
     manifestPath,
+    metaPath,
     runId,
     events: labeled,
     manifest,
