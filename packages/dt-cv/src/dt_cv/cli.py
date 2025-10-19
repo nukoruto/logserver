@@ -66,6 +66,46 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     run_all.add_argument("--seed", type=int, default=42, help="Seed override")
     run_all.add_argument("--gpu-mode", choices=["ada6000", "4060", "cpu"], default="ada6000", help="GPU mode")
 
+    fuse_parser = subparsers.add_parser("fuse", help="Fuse dt-anom and dt-lstm scores in probability space")
+    fuse_parser.add_argument("--anom", required=True, help="Path to dt-anom scores CSV")
+    fuse_parser.add_argument("--lstm", required=True, help="Path to dt-lstm scores CSV")
+    fuse_parser.add_argument(
+        "--method",
+        choices=["fisher"],
+        default="fisher",
+        help="Fusion strategy in probability space",
+    )
+    fuse_parser.add_argument(
+        "--weights",
+        nargs=2,
+        type=float,
+        metavar=("W_ANOM", "W_LSTM"),
+        help="Optional non-negative weights for Fisher combination",
+    )
+    fuse_parser.add_argument(
+        "--dev-calib",
+        required=True,
+        help="Calibration JSON path (created on dev, reused on test)",
+    )
+    fuse_parser.add_argument("--out", required=True, help="Output CSV for fused scores")
+    fuse_parser.add_argument(
+        "--label-col",
+        default="anomaly_label",
+        help="Label column used for calibration metrics (dev only)",
+    )
+    fuse_parser.add_argument(
+        "--objective",
+        choices=["f1", "budget"],
+        default="f1",
+        help="Calibration objective: maximize F1 or satisfy alarm budget",
+    )
+    fuse_parser.add_argument(
+        "--budget",
+        type=float,
+        default=None,
+        help="Alarm budget (fraction of events) when objective=budget",
+    )
+
     return parser.parse_args(argv)
 
 
@@ -147,6 +187,23 @@ def main(argv: Sequence[str] | None = None) -> int:
         )
         report_path = run_report(splits_path)
         _LOGGER.info("run_all.completed", extra={"report": str(report_path)})
+        return 0
+
+    if args.command == "fuse":
+        from .fusion import fuse_scores
+
+        fuse_scores(
+            anom_path=Path(args.anom).expanduser().resolve(),
+            lstm_path=Path(args.lstm).expanduser().resolve(),
+            out_path=Path(args.out).expanduser().resolve(),
+            calib_path=Path(args.dev_calib).expanduser().resolve(),
+            method=args.method,
+            weights=None if args.weights is None else (float(args.weights[0]), float(args.weights[1])),
+            label_column=args.label_col,
+            objective=args.objective,
+            budget=args.budget,
+        )
+        _LOGGER.info("fuse.completed", extra={"out": str(Path(args.out).expanduser().resolve())})
         return 0
 
     _LOGGER.error("unknown.command", extra={"command": args.command})
