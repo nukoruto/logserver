@@ -7,12 +7,14 @@ describe('simulate CLI', () => {
   const collectorDir = path.resolve(__dirname, '../..');
   const repoRoot = path.resolve(collectorDir, '..');
   const scriptPath = path.resolve(repoRoot, 'scripts/simulate.ts');
+  const jwtKey = 'c2ltdWxhdGVkLWp3dC1zZWNyZXQ=';
+  const saltB64 = 'AAECAwQFBgcICQoLDA0ODw==';
 
   const runSimulate = (args: string[], env: NodeJS.ProcessEnv = {}) =>
     spawnSync(process.execPath, ['-r', 'ts-node/register/transpile-only', scriptPath, ...args], {
       cwd: collectorDir,
       encoding: 'utf8',
-      env: { ...process.env, ...env },
+      env: { ...process.env, JWT_HMAC_KEY: jwtKey, SID_SALT_B64: saltB64, ...env },
     });
 
   it('shows help', () => {

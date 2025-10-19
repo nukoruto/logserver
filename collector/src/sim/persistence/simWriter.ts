@@ -16,6 +16,8 @@ const DEFAULT_AUDIT_FILE = 'audit.jsonl';
 const DEFAULT_SCHEMA_FILE = 'schema.json';
 const SCHEMA_VERSION = '1.0.0';
 const SCHEMA_ID = 'https://logserver.dev/schemas/session-run/1-0-0';
+const DEFAULT_DATASET_KEY_LENGTH = 32;
+const DEFAULT_CRYPTO_ALGO_VERSION = 'sid-hkdf-sha256-v1';
 const RFC3339_UTC_PATTERN =
   '^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})T(?:[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]{1,3})?Z$';
 
@@ -214,6 +216,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   extraMetadata?: Record<string, unknown>;
   includeFeaturesCsv?: boolean;
   kid?: string | null;
+  crypto?: SessionCryptoMetadata | null;
 }
 
 export interface PersistSimulationResult {
@@ -272,6 +275,15 @@ export interface FeatureAugmenterOptions {
   clipBounds: FeatureAugmenterClipBounds;
 }
 
+export interface SessionCryptoMetadata {
+  kid: string;
+  kdf: string;
+  info: string;
+  salt_b64: string;
+  keylen: number;
+  algo_ver: string;
+}
+
 export interface AuditRecord {
   idx: number;
   sid_final: string | null;
@@ -324,6 +336,7 @@ export interface RunMeta {
     gpu_mode: string | null;
   };
   kid: string | null;
+  crypto: SessionCryptoMetadata;
 }
 
 export type ClipBoundInput =
@@ -1093,6 +1106,36 @@ const sanitizeKid = (value: unknown): string | null => {
   return trimmed.replace(/[^a-zA-Z0-9_.:-]+/g, '-').slice(0, 64);
 };
 
+const sanitizeCryptoMetadata = (
+  value: SessionCryptoMetadata | null | undefined,
+  fallbackKid: string | null,
+): SessionCryptoMetadata => {
+  const source = value && typeof value === 'object' ? value : null;
+  const typed = (source ?? {}) as Partial<SessionCryptoMetadata>;
+  const resolvedKid = sanitizeKid(typed.kid) ?? (fallbackKid ?? '');
+  const resolvedKdf = typeof typed.kdf === 'string' && typed.kdf.trim().length > 0
+    ? typed.kdf.trim()
+    : 'hkdf-sha256';
+  const resolvedInfo = typeof typed.info === 'string' && typed.info.trim().length > 0
+    ? typed.info.trim()
+    : 'sid';
+  const saltB64 = typeof typed.salt_b64 === 'string' ? typed.salt_b64.trim() : '';
+  const resolvedKeyLen = typeof typed.keylen === 'number' && Number.isFinite(typed.keylen)
+    ? Math.max(1, Math.trunc(typed.keylen))
+    : DEFAULT_DATASET_KEY_LENGTH;
+  const resolvedAlgo = typeof typed.algo_ver === 'string' && typed.algo_ver.trim().length > 0
+    ? typed.algo_ver.trim()
+    : DEFAULT_CRYPTO_ALGO_VERSION;
+  return {
+    kid: resolvedKid,
+    kdf: resolvedKdf,
+    info: resolvedInfo,
+    salt_b64: saltB64,
+    keylen: resolvedKeyLen,
+    algo_ver: resolvedAlgo,
+  } satisfies SessionCryptoMetadata;
+};
+
 const generateRunId = (): string => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `sim-${timestamp}`;
@@ -1617,6 +1660,7 @@ interface BuildRunMetaInput {
   env: string;
   gpuMode: string | null;
   kid: string | null;
+  crypto: SessionCryptoMetadata;
 }
 
 export const buildRunMeta = (input: BuildRunMetaInput): RunMeta => {
@@ -1676,6 +1720,14 @@ export const buildRunMeta = (input: BuildRunMetaInput): RunMeta => {
         : null,
     },
     kid: input.kid ?? null,
+    crypto: {
+      kid: input.crypto.kid,
+      kdf: input.crypto.kdf,
+      info: input.crypto.info,
+      salt_b64: input.crypto.salt_b64,
+      keylen: input.crypto.keylen,
+      algo_ver: input.crypto.algo_ver,
+    },
   } satisfies RunMeta;
 };
 
@@ -1863,6 +1915,18 @@ export const persistSimulationRun = async (
   let metaPath: string | null = null;
   const includeFeaturesCsv = Boolean(input?.includeFeaturesCsv);
   const kid = sanitizeKid(input?.kid ?? input?.manifest?.kid ?? null);
+  const cryptoMetadata = sanitizeCryptoMetadata(input?.crypto ?? null, kid);
+  if (!cryptoMetadata.kid && kid) {
+    cryptoMetadata.kid = kid;
+  }
+  const manifestCrypto = {
+    kid: cryptoMetadata.kid,
+    kdf: cryptoMetadata.kdf,
+    info: cryptoMetadata.info,
+    salt_b64: cryptoMetadata.salt_b64,
+    keylen: cryptoMetadata.keylen,
+    algo_ver: cryptoMetadata.algo_ver,
+  } satisfies SessionCryptoMetadata;
 
   await ensureDirectory(outputDir);
 
@@ -1962,6 +2026,7 @@ export const persistSimulationRun = async (
   if (kid) {
     manifest.kid = kid;
   }
+  manifest.crypto = manifestCrypto;
 
   manifest.schema_sha256 = schemaSha256;
 
@@ -2076,6 +2141,7 @@ export const persistSimulationRun = async (
     env: config.env,
     gpuMode: typeof process.env.GPU_MODE === 'string' ? process.env.GPU_MODE : null,
     kid,
+    crypto: cryptoMetadata,
   });
 
   await fs.writeFile(runMetaPath, `${JSON.stringify(runMeta, null, 2)}\n`, { encoding: 'utf8' });

@@ -45,6 +45,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   extraMetadata?: Record<string, unknown>;
   includeFeaturesCsv?: boolean;
   kid?: string | null;
+  crypto?: SessionCryptoMetadata | null;
 }
 
 export interface PersistSimulationResult {
@@ -124,6 +125,15 @@ export interface FeatureAugmenterOptions {
   clipBounds: FeatureAugmenterClipBounds;
 }
 
+export interface SessionCryptoMetadata {
+  kid: string;
+  kdf: string;
+  info: string;
+  salt_b64: string;
+  keylen: number;
+  algo_ver: string;
+}
+
 export interface RunMeta {
   run_id: string;
   created_at_utc: string;
@@ -167,6 +177,7 @@ export interface RunMeta {
     gpu_mode: string | null;
   };
   kid: string | null;
+  crypto: SessionCryptoMetadata;
 }
 
 export function augmentRows<T extends SimulationEvent>(
@@ -219,6 +230,7 @@ export function buildRunMeta(input: {
   env: string;
   gpuMode: string | null;
   kid: string | null;
+  crypto: SessionCryptoMetadata;
 }): RunMeta;
 
 declare const simWriter: {
