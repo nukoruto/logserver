@@ -1,4 +1,4 @@
-timestamp_utc,session_id,uid,event,method,path,status_code,latency_ms,response_bytes,referer,user_agent,ip,op_category
-2024-05-01T12:00:00Z,sess-demo-001,uid-demo-001,login,POST,/api/login,200,120,512,https://app.example/login,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,AUTH
-2024-05-01T12:00:05Z,sess-demo-001,uid-demo-001,browse,GET,/api/resource,200,95,2048,https://app.example/dashboard,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,READ
-2024-05-01T12:00:12Z,sess-demo-001,uid-demo-001,logout,POST,/api/logout,200,110,256,https://app.example/dashboard,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,AUTH
+timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category
+2024-05-01T12:00:00Z,uid-demo-001,sess-demo-001,POST,/api/login,https://app.example/login,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,AUTH
+2024-05-01T12:00:05Z,uid-demo-001,sess-demo-001,GET,/api/resource,https://app.example/dashboard,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,READ
+2024-05-01T12:00:12Z,uid-demo-001,sess-demo-001,POST,/api/logout,https://app.example/dashboard,"Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7)",192.0.2.10,AUTH

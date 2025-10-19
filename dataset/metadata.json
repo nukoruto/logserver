@@ -10,13 +10,7 @@
     "referer": "string",
     "user_agent": "string",
     "ip": "string (RFC 5737 documentation range)",
-    "op_category": "string ∈ {AUTH, READ, UPDATE}",
-    "event": "string",
-    "status": "integer",
-    "latency_ms": "integer",
-    "delta_t": "float (seconds)",
-    "anomaly_score": "float",
-    "anomaly_label": "integer {0,1}"
+    "op_category": "string ∈ {AUTH, READ, UPDATE}"
   },
   "collection_purpose": "Reproduce Δt-aware LSTM anomaly detection experiments for session operations, aligning with SRS.md section 1.",
   "pseudonymization": {
@@ -42,6 +36,16 @@
     "trainer_config_digest": "sha256:8377ebbe432aed767c5bed66f84fb02f119a5e9e841112f03d48f61a07db44a5",
     "docker_image": "node:20-alpine",
     "python_version": "3.11"
+  },
+  "downstream_derivations": {
+    "description": "Derived features such as Δt statistics, latency summaries, anomaly_score, and anomaly_label are produced from the 9-column contract CSV via deterministic preprocessing and trainer pipelines.",
+    "pipeline": [
+      "pnpm --filter @logserver/dt-preproc run build",
+      "pnpm exec dt-preproc fit --in data/train/*.csv --out stats/preproc_stats.json --meta stats/preproc_meta.json",
+      "pnpm exec dt-preproc transform --in data/train/*.csv --stats stats/preproc_stats.json --out data/processed/train_feat.csv",
+      "python -m trainer.scripts.score --config trainer/configs/default.yaml",
+      "python -m trainer.scripts.threshold --config trainer/configs/default.yaml"
+    ]
   },
   "random_seeds": {
     "collector_seed": "0x5eedc0de",

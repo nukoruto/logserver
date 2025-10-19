@@ -26,12 +26,7 @@
   | `user_agent` | string | ユーザエージェント
   | `ip` | string | RFC5737 のドキュメントレンジ (例: 198.51.100.0/24)
   | `op_category` | string | `AUTH/READ/UPDATE`
-  | `event` | string | `login/browse/edit/logout/...`
-  | `status` | int | HTTP ステータス
-  | `latency_ms` | int | 応答遅延 (ms)
-  | `delta_t` | float | 隣接イベント間隔 (秒)
-  | `anomaly_score` | float | LSTM 由来の異常スコア
-  | `anomaly_label` | int | 閾値判定 (0:正常, 1:異常)
+- **派生列**: Δt 系列、latency、異常スコア、ラベル等は 9 列契約 CSV を `dt-preproc`→`trainer.scripts.score`→`trainer.scripts.threshold` で生成し、`data/processed/` に保存する。
 
 ## 4. 再利用性 (Reusable)
 - **収集目的**: Web セッション操作系列の Δt を含む LSTM 制御モデル評価 (SRS.md §1, §6-§8)。
