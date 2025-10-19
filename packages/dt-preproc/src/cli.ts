@@ -207,6 +207,7 @@ function toCsvRecord(row: LogRowWithFeats, quantileColumns: readonly string[]): 
     ip: row.ip,
     op_category: row.op_category,
     row_index: row.row_index,
+    dt_sec: row.delta_seconds ?? '',
     delta_seconds: row.delta_seconds ?? '',
     delta_clipped_seconds: row.delta_clipped_seconds ?? '',
     delta_robust_z: row.delta_robust_z ?? '',

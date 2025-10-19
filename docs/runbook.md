@@ -278,6 +278,19 @@ PY
    - `sha256sum` が一致し、`spot_tau_t`・`tau_hi`・`spot_alarm_kofn`・`alarm` 列がヘッダに含まれていることを確認する。
    - `out/spot_audit.jsonl` を確認し、`flagged` としきい値メタ情報（`spot_tau`、`p_upper_spot` など）が記録されているか検証する。
 
+### 8.5 最短パイプライン回帰テスト（dt-preproc → dt-anom → dt-lstm）
+
+1. Python 依存（`torch`, `numpy`, `pyyaml`, `pandas`, `matplotlib`）が導入済みであることを確認し、GPU を利用しない場合は `GPU_MODE=cpu` を設定する。
+2. リポジトリルートで次を実行し、Vitest が `packages/dt-preproc/tests/e2e.pipeline.spec.ts` を単体実行する。
+   ```bash
+   pnpm test --filter dt-preproc -- tests/e2e.pipeline.spec.ts
+   ```
+3. テストは `packages/dt-preproc/test/fixtures/pipeline_small.csv` を入力として、
+   `dt-preproc transform` → `dt-anom fit/score` → `dt-lstm fit/train/infer` の順に CLI を起動する。
+   - 生成された中間 CSV に `dt_sec` 列が付与され、`delta_seconds` と同値であることをアサートする。
+   - `dt-anom fit` の `base_column`、`dt-lstm train` の完了ログ、`dt-lstm infer` の出力 CSV までを確認する。
+4. Vitest の完了メッセージが `1 passed` であることをもって、Δt 列名のエイリアスと LSTM パイプラインの最短経路が再現できたと判断する。
+
 ---
 
 ## 9. トラブルシュート
