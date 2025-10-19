@@ -1,0 +1,47 @@
+{
+  "simulation": {
+    "Ts": 0.01,
+    "stop_time": 10.0,
+    "forceUniformGrid": true,
+    "settle_band": 0.02
+  },
+  "plant": {
+    "K": 1.0,
+    "tau": 0.5
+  },
+  "pid": {
+    "Kp": 1.2,
+    "Ki": 0.8,
+    "Kd": 0.05
+  },
+  "lstm": {
+    "sequence_length": 50,
+    "hidden_units": 128,
+    "delta_t_normalization": "robust_z"
+  },
+  "signals": {
+    "reference": "reference_signal",
+    "disturbance": "disturbance_signal"
+  },
+  "threshold": {
+    "method": "quantile",
+    "quantile": 0.99,
+    "k_of_n": {
+      "k": 3,
+      "n": 5,
+      "release_ratio": 0.5
+    },
+    "hysteresis": 1.2
+  },
+  "gpu": {
+    "mode_env": "GPU_MODE",
+    "modes": {
+      "ada6000": {
+        "cuda_visible_devices": "0"
+      },
+      "4060": {
+        "cuda_visible_devices": "1"
+      }
+    }
+  }
+}

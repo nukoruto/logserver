@@ -29,6 +29,8 @@ node_modules/
 # Monorepo outputs
 artifacts/*
 !artifacts/.gitkeep
+!artifacts/sim/
+!artifacts/**/.gitkeep
 outputs/*
 !outputs/.gitkeep
 # Collector dependencies
