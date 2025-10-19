@@ -45,7 +45,8 @@
     "k_of_n": {
       "k": 3,
       "n": 5,
-      "release": 1
+      "hyst_up": 3,
+      "hyst_down": 1
     }
   },
   "simulation": {
@@ -64,7 +65,8 @@
       "iae_lstm",
       "ise_lstm",
       "itae_lstm",
-      "check_flags"
+      "check_flags",
+      "k_of_n_count"
     ]
   }
 }

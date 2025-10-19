@@ -322,58 +322,141 @@ end
 """
 
     contents[util_dir / "choose_info_fn.m"] = HEADER + """
-function fn = choose_info_fn(method)
-%CHOOSE_INFO_FN Select an information function handle based on method name.
-%
-%   FN = CHOOSE_INFO_FN(METHOD) returns a function handle that computes the
-%   requested metric between reference and response signals.
+function [info_fn, method] = choose_info_fn(time_vector, reference, settling_threshold)
+%CHOOSE_INFO_FN Select appropriate transient metric evaluator based on input type.
+%   [FN, METHOD] = CHOOSE_INFO_FN(TIME_VECTOR, REFERENCE, SETTLING_THRESHOLD)
+%   returns a function handle FN that accepts a response signal and
+%   delegates to either STEPINFO or LSIMINFO depending on whether the
+%   reference resembles a step input. METHOD is the string identifier of
+%   the chosen function.
 
 arguments
-    method (1, 1) string {mustBeMember(method, ["rmse", "nrmse", "mae", "mape"])}
+    time_vector (:, 1) double
+    reference (:, 1) double
+    settling_threshold (1, 1) double {mustBePositive}
 end
 
-switch method
-    case "rmse"
-        fn = @(ref, resp) sqrt(mean((resp - ref).^2));
-    case "nrmse"
-        fn = @(ref, resp) sqrt(mean((resp - ref).^2)) / max(max(ref) - min(ref), eps);
-    case "mae"
-        fn = @(ref, resp) mean(abs(resp - ref));
-    case "mape"
-        fn = @(ref, resp) mean(abs((resp - ref) ./ max(ref, eps)));
-    otherwise
-        error('choose_info_fn:UnsupportedMethod', 'Unsupported method: %s', method);
+if numel(time_vector) ~= numel(reference)
+    error('choose_info_fn:LengthMismatch', ...
+        'Time vector and reference signal must have identical lengths.');
 end
+
+if is_step_like(reference)
+    method = "stepinfo";
+    final_value = reference(end);
+    info_fn = @(response) stepinfo(response, time_vector, final_value, ...
+        'SettlingTimeThreshold', settling_threshold);
+else
+    method = "lsiminfo";
+    info_fn = @(response) lsiminfo(response, time_vector, reference, ...
+        'SettlingTimeThreshold', settling_threshold);
+end
+end
+
+function flag = is_step_like(reference)
+if isempty(reference)
+    flag = true;
+    return;
+end
+ref = reference(:);
+scale = max(1.0, max(abs(ref)));
+tol = 1e-9 * scale;
+deltas = diff(ref);
+change_idx = find(abs(deltas) > tol);
+if isempty(change_idx)
+    flag = true;
+    return;
+end
+first_change = change_idx(1);
+last_change = change_idx(end);
+if first_change ~= last_change
+    flag = false;
+    return;
+end
+pre_segment = ref(1:first_change);
+post_segment = ref(first_change+1:end);
+flag = max(abs(pre_segment - pre_segment(1))) <= tol && ...
+       max(abs(post_segment - post_segment(1))) <= tol;
 end
 """
 
     contents[util_dir / "k_of_n_latch.m"] = HEADER + """
-function [alarm, state] = k_of_n_latch(flags, k, state)
-%K_OF_N_LATCH MATLAB Function block helper implementing K-of-N logic with hysteresis.
+function [alarm, countK] = k_of_n_latch(viol, K, N, hyst_up, hyst_down)
+%K_OF_N_LATCH Sliding-window K-of-N latch with hysteresis for MATLAB Function blocks.
+%   [ALARM, COUNTK] = K_OF_N_LATCH(VIOL, K, N, HYST_UP, HYST_DOWN) raises
+%   ALARM when at least K (or the hysteresis-up threshold) violations are
+%   observed within the latest N samples. The latch resets when the
+%   violation count falls to or below the hysteresis-down threshold.
+%   COUNTK returns the current count of violations in the active window.
 %
-%   [ALARM, STATE] = K_OF_N_LATCH(FLAGS, K, STATE) raises ALARM when at
-%   least K elements of FLAGS are true. STATE is a struct with fields
-%   'latched' and 'release_ratio'.
-
+%   HYST_UP/HYST_DOWN can be specified either as counts (>= 1) or as ratios
+%   (<= 1) relative to N.
+%#codegen
 arguments
-    flags (:, 1) logical
-    k (1, 1) double {mustBeInteger, mustBePositive}
-    state (1, 1) struct = struct('latched', false, 'release_ratio', 0.5)
+    viol (1, 1) double
+    K (1, 1) double {mustBePositive, mustBeInteger}
+    N (1, 1) double {mustBePositive, mustBeInteger}
+    hyst_up (1, 1) double {mustBeNonnegative}
+    hyst_down (1, 1) double {mustBeNonnegative}
 end
 
-if k > numel(flags)
-    error('k_of_n_latch:InvalidK', 'k must not exceed the number of flags.');
+persistent buffer;
+persistent index;
+persistent count;
+persistent filled;
+persistent latched;
+
+if isempty(buffer) || numel(buffer) ~= N
+    buffer = false(N, 1);
+    index = 1;
+    count = 0;
+    filled = 0;
+    latched = false;
 end
 
-countTrue = sum(flags);
-if state.latched
-    releaseThreshold = ceil(k * state.release_ratio);
-    alarm = countTrue >= releaseThreshold;
-    state.latched = alarm;
+viol_flag = viol ~= 0;
+if filled < N
+    buffer(index) = viol_flag;
+    count = count + double(viol_flag);
+    filled = filled + 1;
 else
-    alarm = countTrue >= k;
-    state.latched = alarm;
+    removed = buffer(index);
+    buffer(index) = viol_flag;
+    count = count + double(viol_flag) - double(removed);
 end
+
+index = index + 1;
+if index > N
+    index = 1;
+end
+
+set_threshold = resolve_threshold(hyst_up, K, N);
+release_threshold = resolve_threshold(hyst_down, 0, N);
+release_threshold = min(release_threshold, set_threshold - 1);
+release_threshold = max(release_threshold, 0);
+
+if ~latched
+    if count >= set_threshold
+        latched = true;
+    end
+else
+    if count <= release_threshold
+        latched = false;
+    end
+end
+
+alarm = latched;
+countK = count;
+end
+
+function threshold = resolve_threshold(value, base, N)
+if value <= 1
+    threshold = ceil(value * N);
+else
+    threshold = ceil(value);
+end
+threshold = max(base, threshold);
+threshold = min(N, threshold);
 end
 """
 
@@ -417,10 +500,36 @@ classdef test_pid_vs_lstm < matlab.unittest.TestCase
             testCase.assertTrue(isfolder(artifactsDir));
         end
 
-        function test_choose_info_fn_rmse(testCase)
-            fn = choose_info_fn("rmse");
-            val = fn([0; 1], [0; 1]);
-            testCase.verifyEqual(val, 0);
+        function test_choose_info_fn_step(testCase)
+            t = (0:4)';
+            ref = [zeros(2, 1); ones(3, 1)];
+            [fn, method] = choose_info_fn(t, ref, 0.02);
+            testCase.verifyEqual(method, "stepinfo");
+            info = fn(ref);
+            testCase.verifyClass(info, 'struct');
+        end
+
+        function test_choose_info_fn_lsim(testCase)
+            t = (0:4)';
+            ref = sin(t);
+            [fn, method] = choose_info_fn(t, ref, 0.02);
+            testCase.verifyEqual(method, "lsiminfo");
+            resp = ref;
+            info = fn(resp);
+            testCase.verifyClass(info, 'struct');
+        end
+
+        function test_k_of_n_latch_hysteresis(testCase)
+            clear k_of_n_latch; %#ok<CLFUNC>
+            inputs = [0 1 1 1 0 0 0];
+            alarms = false(size(inputs));
+            counts = zeros(size(inputs));
+            for idx = 1:numel(inputs)
+                [alarms(idx), counts(idx)] = k_of_n_latch(inputs(idx), 3, 5, 3, 1);
+            end
+            testCase.verifyTrue(alarms(4));
+            testCase.verifyFalse(alarms(end));
+            testCase.verifyGreaterThanOrEqual(max(counts), 3);
         end
     end
 end
