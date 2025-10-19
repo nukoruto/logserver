@@ -2,12 +2,13 @@ import { describe, expect, it } from 'vitest';
 
 import {
   StreamingFeatureTransformer,
+  attachTemplate,
   fitRobustStats,
   type LogRow
 } from '../src/index.js';
 
 function createRow(uid: string, sessionId: string, epochSeconds: number, index: number): LogRow {
-  return {
+  return attachTemplate({
     timestamp_utc: new Date(epochSeconds * 1000).toISOString(),
     timestamp_epoch_seconds: epochSeconds,
     uid,
@@ -19,7 +20,7 @@ function createRow(uid: string, sessionId: string, epochSeconds: number, index: 
     ip: '127.0.0.1',
     op_category: 'READ',
     row_index: index
-  };
+  });
 }
 
 describe('StreamingFeatureTransformer delta sanitisation', () => {

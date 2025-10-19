@@ -14,6 +14,7 @@ import { parseCsv } from '@logserver/csv-schema';
 import {
   DEFAULT_FEATURE_OPTIONS,
   StreamingFeatureTransformer,
+  attachTemplate,
   thawFittedStats,
   type LogRowWithFeats,
   type SerializedPreprocStats
@@ -138,7 +139,7 @@ async function computeRowsWithStats(stats: StatsPayload, inputPath: string): Pro
   const rows: LogRowWithFeats[] = [];
   const parser = parseCsv(inputPath, { validateSchema: true });
   for await (const raw of parser) {
-    rows.push(transformer.process(raw));
+    rows.push(transformer.process(attachTemplate(raw)));
   }
   return rows;
 }

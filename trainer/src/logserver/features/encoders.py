@@ -42,6 +42,16 @@ DT_FEATURE_CANDIDATES: Dict[str, Tuple[str, ...]] = {
 }
 
 
+def _event_tokens(df: pd.DataFrame) -> pd.Series:
+    if "template_id" in df.columns:
+        series = df["template_id"]
+    elif "event" in df.columns:
+        series = df["event"]
+    else:
+        raise ValueError("Input dataframe must include 'template_id' or 'event' column")
+    return series.fillna("").astype(str).str.strip()
+
+
 @dataclass
 class EventVocabulary:
     """Vocabulary helper mapping events to integer ids."""
@@ -196,7 +206,8 @@ def _discover_dt_features(df: pd.DataFrame) -> List[Tuple[str, str, ContinuousNo
 
 
 def build_feature_pack(df: pd.DataFrame, extra_features: Optional[Sequence[str]] = None) -> FeaturePack:
-    vocab = EventVocabulary.build(df["event"].tolist())
+    events = _event_tokens(df)
+    vocab = EventVocabulary.build(events.tolist())
     delta_values = df["delta_t"].fillna(0.0).astype(float).to_numpy()
     delta = ContinuousNormalizer.fit(delta_values.tolist())
     latency = ContinuousNormalizer.fit(df["latency_ms"].fillna(0.0).astype(float).tolist())
@@ -239,7 +250,8 @@ def build_feature_pack(df: pd.DataFrame, extra_features: Optional[Sequence[str]]
 
 
 def encode_dataframe(df: pd.DataFrame, pack: FeaturePack) -> Dict[str, np.ndarray]:
-    event_ids = np.array([pack.event_vocab.to_index(token) for token in df["event"]], dtype=np.int64)
+    events = _event_tokens(df)
+    event_ids = np.array([pack.event_vocab.to_index(token) for token in events], dtype=np.int64)
     delta_column = pack.feature_sources.get("delta_t", "delta_t")
     delta_series = df.get(delta_column, pd.Series([0.0] * len(df)))
     delta = pack.delta_normalizer.transform(delta_series.fillna(0.0).astype(float).tolist())

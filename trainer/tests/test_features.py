@@ -29,6 +29,25 @@ def test_encode_dataframe_returns_arrays() -> None:
     assert "response_bytes" not in pack.numeric_features
 
 
+def test_build_feature_pack_accepts_template_only() -> None:
+    df = pd.DataFrame(
+        {
+            "template_id": [
+                "AUTH::GET::login",
+                "READ::GET::dashboard",
+                "AUTH::POST::logout",
+            ],
+            "delta_t": [0.0, 5.0, 7.0],
+            "latency_ms": [120, 130, 110],
+            "status": [200, 200, 200],
+        }
+    )
+    pack = build_feature_pack(df)
+    encoded = encode_dataframe(df, pack)
+    assert encoded["event_id"].shape[0] == len(df)
+    assert pack.event_vocab.to_index("AUTH::GET::login") != pack.event_vocab.to_index("<unk>")
+
+
 def test_encode_dataframe_with_optional_response_bytes() -> None:
     df = pd.DataFrame(
         {

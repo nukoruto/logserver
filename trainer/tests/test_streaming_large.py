@@ -44,15 +44,41 @@ else:
 
 def _make_large_raw_csv(path: Path, rows: int = ROWS) -> None:
     rng = np.random.default_rng(42)
-    timestamps = pd.date_range("2024-01-01", periods=rows, freq="s", tz="UTC")
+    timestamps = pd.date_range("2024-01-01", periods=rows, freq="s", tz="UTC").strftime("%Y-%m-%dT%H:%M:%SZ")
     events = np.array(["login", "view", "edit", "logout"], dtype=object)
     event_seq = events[rng.integers(0, len(events), size=rows)]
     uids = np.array([f"user_{i % 1000}" for i in range(rows)], dtype=object)
+    session_ids = np.array([f"session_{i // 5}" for i in range(rows)], dtype=object)
+    template_map = {
+        "login": ("POST", "/api/login", "AUTH"),
+        "view": ("GET", "/dashboard", "READ"),
+        "edit": ("POST", "/api/edit", "UPDATE"),
+        "logout": ("POST", "/api/logout", "AUTH"),
+    }
+    methods = []
+    paths = []
+    categories = []
+    for event in event_seq:
+        method, path_value, category = template_map.get(event, ("GET", "/unknown", "READ"))
+        methods.append(method)
+        paths.append(path_value)
+        categories.append(category)
+    referers = np.array(["" for _ in range(rows)], dtype=object)
+    user_agents = np.array(["load-test-agent" for _ in range(rows)], dtype=object)
+    ip_pool = np.array(["192.0.2.10", "198.51.100.20", "203.0.113.30"], dtype=object)
+    ips = ip_pool[rng.integers(0, len(ip_pool), size=rows)]
     df = pd.DataFrame(
         {
-            "timestamp": timestamps,
+            "timestamp_utc": timestamps,
             "uid": uids,
             "event": event_seq,
+            "session_id": session_ids,
+            "method": methods,
+            "path": paths,
+            "referer": referers,
+            "user_agent": user_agents,
+            "ip": ips,
+            "op_category": categories,
             "latency_ms": rng.integers(50, 150, size=rows),
             "status": np.full(rows, 200, dtype=np.int32),
             "response_bytes": rng.integers(256, 4096, size=rows),

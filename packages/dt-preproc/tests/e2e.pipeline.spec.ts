@@ -119,6 +119,52 @@ function parseJsonPayload(output: string): unknown {
 }
 
 describe.sequential('Δt pipeline integration', () => {
+  test('transform derives template_id for contract CSV input', async () => {
+    const tempDir = await mkdtemp(join(tmpdir(), 'dt-contract-'));
+    try {
+      const contractCsvPath = join(tempDir, 'contract.csv');
+      const statsPath = join(tempDir, 'stats.json');
+      const outputPath = join(tempDir, 'transformed.csv');
+      const csvContent = [
+        'timestamp_utc,uid,session_id,method,path,referer,user_agent,ip,op_category',
+        '2024-01-01T00:00:00Z,u-1,s-1,GET,/login,-,UA,127.0.0.1,AUTH',
+        '2024-01-01T00:00:05Z,u-1,s-1,POST,/logout,-,UA,127.0.0.1,AUTH'
+      ].join('\n');
+      await writeFile(contractCsvPath, `${csvContent}\n`, 'utf8');
+
+      const fitResult = await runPreprocCli([
+        'fit',
+        '--in',
+        contractCsvPath,
+        '--out',
+        statsPath,
+        '--pretty'
+      ]);
+      expect(fitResult.code).toBe(0);
+
+      const transformResult = await runPreprocCli([
+        'transform',
+        '--in',
+        contractCsvPath,
+        '--stats',
+        statsPath,
+        '--out',
+        outputPath
+      ]);
+      expect(transformResult.code).toBe(0);
+
+      const transformedCsv = await readFile(outputPath, 'utf8');
+      const records = parseCsv(transformedCsv, { columns: true, skip_empty_lines: true }) as Record<string, string>[];
+      expect(records).toHaveLength(2);
+      expect(records[0].template_id).toBe('AUTH::GET::login');
+      expect(records[0].event).toBe('AUTH::GET::login');
+      expect(records[1].template_id).toBe('AUTH::POST::logout');
+      expect(records[1].event).toBe('AUTH::POST::logout');
+    } finally {
+      await rm(tempDir, { recursive: true, force: true });
+    }
+  }, 20000);
+
   test(
     'dt-preproc → dt-anom → dt-lstm CLI pipeline maintains dt_sec alias',
     async () => {
@@ -179,6 +225,9 @@ describe.sequential('Δt pipeline integration', () => {
         const records = parseCsv(transformedCsv, { columns: true, skip_empty_lines: true }) as Record<string, string>[];
         expect(records.length).toBeGreaterThan(0);
         for (const row of records) {
+          expect(row).toHaveProperty('template_id');
+          expect(row.template_id?.length ?? 0).toBeGreaterThan(0);
+          expect(row.event).toBe(row.template_id);
           expect(row).toHaveProperty('dt_sec');
           expect(row.dt_sec).toBe(row.delta_seconds);
         }
