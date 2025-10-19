@@ -245,8 +245,18 @@ def _split_sessions(
     session_keys: List[str],
     config: TrainerConfig,
     split: Optional[SessionSplit] = None,
+    *,
+    session_order: Optional[Sequence[str]] = None,
+    session_timestamps: Optional[Sequence[object]] = None,
 ) -> Tuple[List[SessionSlice], List[SessionSlice]]:
-    effective_split = split or create_session_split(session_keys, config)
+    if split is None:
+        if session_order is None or session_timestamps is None:
+            raise ValueError(
+                "session_order and session_timestamps are required when split is not provided"
+            )
+        effective_split = create_session_split(session_order, session_timestamps, config)
+    else:
+        effective_split = split
     mapping = {slice_.key: slice_ for slice_ in slices}
     train_sessions = [mapping[key] for key in effective_split.train_ids if key in mapping]
     val_sessions = [mapping[key] for key in effective_split.val_ids if key in mapping]
@@ -263,9 +273,17 @@ def _prepare_dataloaders(
     config: TrainerConfig,
     numeric_keys: Sequence[str],
     split: Optional[SessionSplit] = None,
+    session_timestamps: Optional[Sequence[object]] = None,
 ) -> Tuple[DataLoader, DataLoader, List[str]]:
     slices, session_keys, ordered_numeric = build_sessions(encoded, session_ids, numeric_keys)
-    train_slices, val_slices = _split_sessions(slices, session_keys, config, split)
+    train_slices, val_slices = _split_sessions(
+        slices,
+        session_keys,
+        config,
+        split,
+        session_order=session_ids,
+        session_timestamps=session_timestamps,
+    )
     loader = create_array_session_loader(encoded, ordered_numeric)
     train_dataset = SessionDataset(train_slices, loader, shuffle=True, seed=config.seed)
     eval_slices = val_slices if val_slices else train_slices
@@ -333,11 +351,17 @@ def train_model(
     output_dir: Path,
     config: TrainerConfig,
     split: Optional[SessionSplit] = None,
+    session_timestamps: Optional[Sequence[object]] = None,
 ) -> Dict[str, List[float]]:
     _set_seed(config.seed)
     numeric_keys = feature_pack.numeric_features
     train_loader, val_loader, ordered_numeric = _prepare_dataloaders(
-        encoded, session_ids, config, numeric_keys, split
+        encoded,
+        session_ids,
+        config,
+        numeric_keys,
+        split,
+        session_timestamps=session_timestamps,
     )
     try:
         delta_index = ordered_numeric.index("delta_t")
