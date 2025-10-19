@@ -301,6 +301,9 @@ def _ensure_timestamp(df: pd.DataFrame, tz: str) -> pd.DataFrame:
     if timestamps.isna().any():
         raise SessionizeError("Invalid timestamp encountered during conversion")
     df["timestamp"] = timestamps
+    df["timestamp_utc"] = timestamps.map(
+        lambda ts: ts.isoformat().replace("+00:00", "Z") if pd.notna(ts) else ""
+    )
     return df
 
 

@@ -146,3 +146,24 @@ def test_sessionize_event_column_backwards_compatible(tmp_path: Path) -> None:
     assert processed.loc[0, "event"] == "custom_login"
     assert processed.loc[1, "event"] == "AUTH::POST::logout"
     assert processed.loc[1, "template_id"] == "AUTH::POST::logout"
+
+
+def test_timestamp_utc_follows_timezone_conversion(tmp_path: Path) -> None:
+    raw_path = tmp_path / "raw.csv"
+    df = pd.DataFrame(
+        {
+            "timestamp": ["2024-01-01T00:00:00+09:00"],
+            "uid": ["u1"],
+            "session_id": ["s1"],
+            "method": ["GET"],
+            "path": ["/login"],
+            "referer": [""],
+            "user_agent": ["ua"],
+            "ip": ["127.0.0.1"],
+            "op_category": ["AUTH"],
+        }
+    )
+    df.to_csv(raw_path, index=False)
+    processed = sessionize(raw_path, tmp_path, SessionConfig(tz="Asia/Tokyo"))
+    timestamp_value = processed.loc[0, "timestamp"]
+    assert processed.loc[0, "timestamp_utc"] == timestamp_value.isoformat().replace("+00:00", "Z")
