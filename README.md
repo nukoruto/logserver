@@ -193,6 +193,20 @@ cp logs/sample.csv data/raw/
    python -m dt_cv.cli report --splits outputs/cv_runs/run1/splits.yaml
    ```
 
+   `tscv eval` 実行後はフォールドごとの `metrics/*.json` に AP / ROC-AUC / F1（検証固定しきい値）/ 平均検知遅延 / TopK 精度 / RMTPP NLL / ECE と
+   ユーザマクロ平均が保存され、`fisher/*.csv` には `prediction_dt_anom` などの二値判定列が追加される。既存成果物から評価のみ再集計する場
+   合は次のように台帳を生成できる。
+
+   ```bash
+   python -m dt_cv.cli eval \
+     --fold-artifacts outputs/cv_runs/run1 \
+     --bootstrap stationary --block-mean 128 --bootstrap-samples 500 \
+     --out outputs/cv_runs/run1/summary
+   ```
+
+   出力される `summary/metrics_summary.json` にはフォールド平均・標準偏差・95% CI（ステーショナリ・ブートストラップ、平均ブロック長指
+   定）およびユーザマクロ平均が含まれ、dt-anom については α/q 校正曲線（目標 vs. 実測）も併記される。
+
 4. **fuse** – Rolling-origin の dev/test それぞれで `dt-anom` / `dt-lstm` の確率スコアを結合。dev では `--dev-calib` に指定した JSON へ
    F1 最大（もしくは `--objective budget` によるアラーム率制約）で求めたしきい値を保存し、test では同ファイルを再利用してリークなし
    に `alarm_fisher` 列を生成します。単位変換（例：Δt 秒→ミリ秒）を行っても、スコア差分は `Δneglog10_p ≤ 0.02` 以内に収まるよう、
