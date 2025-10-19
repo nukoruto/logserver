@@ -172,6 +172,30 @@
     --out data/processed/sample_feat.csv
   ```
 
+#### Rolling-origin 時系列CV 分割
+
+Rolling-origin + Purged/Embargo 付きの時系列クロスバリデーション分割は `trainer.scripts.tscv` CLI で生成できます。セッションを時刻昇順に並べ、ユーザ（GroupKFold 相当）を考慮して `train/dev/test/embargo` を YAML 化します。
+
+```bash
+python -m trainer.scripts.tscv split \
+  --in "data/all/*.csv" \
+  --group uid \
+  --session-column session_id \
+  --timestamp-column timestamp_utc \
+  --rolling expanding \
+  --window_l 0 \
+  --horizon 1 \
+  --embargo auto \
+  --folds 5 \
+  --out artifacts/splits/splits.yaml
+```
+
+- `--rolling expanding|fixed` と `--window_l` で訓練ウィンドウを制御。`window_l = 0` の場合、`train_sessions = total_sessions - folds * (2 * horizon)` を採用します。
+- `--embargo auto` では `embargo_auto = max(DeltaT_session_max, 2 * median_delta_t)` を用い、実際に用いた秒数をマニフェストへ記録します。
+- 各 fold のセッション ID / ユーザ一覧、時間境界、イベント・ラベル統計、seed を完全保存し、`train ∩ {dev, test, embargo} = ∅` を検証してから書き出します。
+
+生成物は `artifacts/splits/splits.yaml` など任意パスに保存でき、学習・推論パイプラインの前処理に再利用できます。
+
 - 追加の生ログを取得する際は、決定的シードでシミュレータを実行して `artifacts/<run>/` 以下に CSV・manifest・ハッシュ（`checksums.txt`）を保存する。例：
 
   ```bash
