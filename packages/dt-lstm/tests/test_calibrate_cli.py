@@ -5,6 +5,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 torch = pytest.importorskip("torch")  # noqa: F401 - インポート成否でスキップ
 
@@ -150,17 +151,23 @@ def test_cli_calibrate_generates_deterministic_artifact(tmp_path, capsys):
     config_path = ckpt_dir / "config.json"
     config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    cfg_path = tmp_path / "calib_config.yaml"
+    cfg_payload = {"calibration": {"batch_size": 2, "bins": 6, "max_k": 4}}
+    cfg_path.write_text(yaml.safe_dump(cfg_payload), encoding="utf-8")
+
     out_path = tmp_path / "ml" / "artifacts" / "calib.json"
     args = [
         "calibrate",
-        "--val",
+        "--dev",
         str(val_path),
-        "--ckpt",
+        "--model",
         str(ckpt_path),
         "--out",
         str(out_path),
-        "--batch-size",
-        "2",
+        "--cfg",
+        str(cfg_path),
+        "--seed",
+        "321",
     ]
     exit_code = cli.main(args)
     assert exit_code == 0
@@ -168,9 +175,11 @@ def test_cli_calibrate_generates_deterministic_artifact(tmp_path, capsys):
     payload = json.loads(stdout)
     assert payload["event"] == "calibrate.completed"
     assert payload["temperature"] > 0
+    assert payload["config_source"] == str(cfg_path.resolve())
 
     artifact = json.loads(out_path.read_text(encoding="utf-8"))
     assert artifact["ece"]["after"] <= artifact["ece"]["before"]
+    assert artifact["ece"]["bins"] == 6
     assert "k3" in artifact["coverage"]["comparison"]
     assert artifact["coverage"]["comparison"]["k3"]["k"] == 3
 

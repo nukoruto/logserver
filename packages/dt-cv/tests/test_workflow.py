@@ -102,6 +102,8 @@ def test_train_eval_report_pipeline(tmp_path: Path) -> None:
         index_path = preproc_dir / "artifacts_index.json"
         payload = json.loads(index_path.read_text(encoding="utf-8"))
         assert any(entry["name"].endswith("preproc.fit") for entry in payload["entries"])
+        lstm_dir = fold_dir / "lstm"
+        assert (lstm_dir / "calib.json").exists()
 
     assert (
         cli_main(

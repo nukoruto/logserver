@@ -37,6 +37,24 @@ def infer_command(args: argparse.Namespace) -> None:
             score = 0.5 + 0.5 * label + 0.02 * idx
             row["neglog10_p_lstm"] = f"{score:.6f}"
             writer.writerow(row)
+    if args.audit:
+        Path(args.audit).write_text("{}\n", encoding="utf-8")
+
+
+def calibrate_command(args: argparse.Namespace) -> None:
+    out_path = Path(args.out)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    payload = {
+        "temperature": 1.0,
+        "ece": {"before": 0.2, "after": 0.1, "bins": 10},
+        "coverage": {
+            "selected_k": 3,
+            "coverage_rate": 0.8,
+            "curve": [],
+            "comparison": {},
+        },
+    }
+    out_path.write_text(json.dumps(payload) + "\n", encoding="utf-8")
 
 
 def main() -> None:
@@ -45,23 +63,38 @@ def main() -> None:
 
     train_parser = subparsers.add_parser("train")
     train_parser.add_argument("--train", nargs="+", required=True)
-    train_parser.add_argument("--val", nargs="+", required=True)
+    train_parser.add_argument("--val", "--dev", dest="val", nargs="+", required=True)
     train_parser.add_argument("--numeric-cols", nargs="+", default=[])
     train_parser.add_argument("--delta-col", default="dt_sec")
     train_parser.add_argument("--out", required=True)
     train_parser.add_argument("--epochs")
     train_parser.add_argument("--bs")
     train_parser.add_argument("--seed")
+    train_parser.add_argument("--cfg")
 
     infer_parser = subparsers.add_parser("infer")
-    infer_parser.add_argument("--in", dest="inputs", nargs="+", required=True)
+    infer_parser.add_argument("--in", "--test", dest="inputs", nargs="+", required=True)
     infer_parser.add_argument("--ckpt")
+    infer_parser.add_argument("--model")
+    infer_parser.add_argument("--calib")
     infer_parser.add_argument("--out", required=True)
+    infer_parser.add_argument("--audit")
     infer_parser.add_argument("--seed")
+    infer_parser.add_argument("--cfg")
+
+    calibrate_parser = subparsers.add_parser("calibrate")
+    calibrate_parser.add_argument("--val", "--dev", dest="val", nargs="+", required=True)
+    calibrate_parser.add_argument("--ckpt")
+    calibrate_parser.add_argument("--model")
+    calibrate_parser.add_argument("--out", required=True)
+    calibrate_parser.add_argument("--cfg")
+    calibrate_parser.add_argument("--seed")
 
     args = parser.parse_args()
     if args.command == "train":
         train_command(args)
+    elif args.command == "calibrate":
+        calibrate_command(args)
     elif args.command == "infer":
         infer_command(args)
     else:
