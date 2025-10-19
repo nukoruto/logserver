@@ -1,0 +1,70 @@
+{
+  "model_name": "pid_vs_lstm",
+  "model_path": "models/pid_vs_lstm.slx",
+  "Ts": 0.1,
+  "category_count": 5,
+  "signals": {
+    "ref_variable": "ref_sig",
+    "lstm_variable": "y_lstm_sig",
+    "pid_variable": "y_pid_sig"
+  },
+  "data": {
+    "ref_csv": "data/ref_normal.csv",
+    "lstm_csv": "data/lstm_out.csv",
+    "vocab_json": "data/vocab.json",
+    "output_dir": "data/processed"
+  },
+  "lstm_output_mode": "probabilities",
+  "rate_transition": {
+    "enable": false,
+    "out_sample_time": "Ts"
+  },
+  "pid": {
+    "form": "Parallel",
+    "sample_time": "Ts",
+    "p": 1.0,
+    "i": 0.5,
+    "d": 0.1,
+    "n": 100.0,
+    "anti_windup": "Back-calculation",
+    "initial_integrator": 0.0,
+    "initial_filter": 0.0,
+    "upper_saturation": 1.0,
+    "lower_saturation": -1.0
+  },
+  "plant": {
+    "gain": 1.0,
+    "time_constant": 0.5,
+    "initial_state": 0.0
+  },
+  "check": {
+    "settling_time": 2.0,
+    "settling_percentage": 2.0,
+    "rise_time": 0.5,
+    "overshoot": 5.0,
+    "k_of_n": {
+      "k": 3,
+      "n": 5,
+      "release": 1
+    }
+  },
+  "simulation": {
+    "stop_time_offset": 0.0,
+    "run_id": "default",
+    "artifact_root": "artifacts/sim",
+    "to_workspace": [
+      "ref_sig",
+      "y_lstm_sig",
+      "y_pid_sig",
+      "e_pid",
+      "e_lstm",
+      "iae_pid",
+      "ise_pid",
+      "itae_pid",
+      "iae_lstm",
+      "ise_lstm",
+      "itae_lstm",
+      "check_flags"
+    ]
+  }
+}

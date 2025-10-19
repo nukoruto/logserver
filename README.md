@@ -823,13 +823,15 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 
 ## 9. Simulink 連携ワークフロー
 
-1. **重みエクスポート**：`src/simulink/export_weights.py` で `.mat` 等に LSTM 重みを出力。
-2. **Simulink 取込**：`src/simulink/import_lstm.m` で Deep Learning Toolbox の LSTM Network として読み込み。
-3. **評価シナリオ**：同じ参照入力（正常テンポ/遅延/外乱）で **LSTM** と **PID** を並走。
-4. **可視化**：出力応答（追従誤差、立上り時間、整定時間、オーバーシュート）を数値比較。
-5. **ユーザ別制御ブロック**：ユーザセグメント毎に LSTM ブロックを切替（例：ルックアップテーブル + スイッチ）。
+1. **データ整形**：`scripts/prepare_timeseries.m` で `data/ref_normal.csv` / `data/lstm_out.csv` を構造体（Structure with Time）へ変換し、`config/sim_config.json` の出力先に保存。
+2. **モデル生成**：`scripts/build_pid_vs_lstm_model.m` を実行し、`config/sim_config.json` に基づいて `models/pid_vs_lstm.slx` を固定ステップ離散モデルとして再構築。
+3. **重みエクスポート**：`src/simulink/export_weights.py` で `.mat` 等に LSTM 重みを出力。
+4. **Simulink 取込**：`src/simulink/import_lstm.m` で Deep Learning Toolbox の LSTM Network として読み込み。
+5. **固定ステップ実行**：`scripts/run_simulation.m` で `pid_vs_lstm` モデルをシミュレーションし、`artifacts/sim/<run_id>/raw/` に To Workspace 出力を保存。
+6. **可視化**：出力応答（追従誤差、立上り時間、整定時間、オーバーシュート）を数値比較。
+7. **ユーザ別制御ブロック**：ユーザセグメント毎に LSTM ブロックを切替（例：ルックアップテーブル + スイッチ）。
 
-> 図はリポジトリには含めませんが、Simulink モデルは `src/simulink/models/` に配置してください。
+> 図はリポジトリには含めませんが、Simulink モデルは `models/pid_vs_lstm.slx` に配置してください。
 
 ---
 
