@@ -9,7 +9,10 @@ import {
   DEFAULT_FEATURE_AUGMENTER,
   validateContractColumns,
 } from '../../src/sim/persistence/simWriter';
-import type { AugmentedSimulationEvent } from '../../src/sim/persistence/simWriter';
+import type {
+  AugmentedSimulationEvent,
+  SessionCryptoMetadata,
+} from '../../src/sim/persistence/simWriter';
 import { CLIPPING_EVENTS, makeEventCopies } from './persistence/fixtures';
 
 const DEFAULT_FEATURE_COLUMNS = [
@@ -54,6 +57,15 @@ const FEATURE_FILE_ADDITIONAL_COLUMNS = [
 ];
 
 const CSV_TRAILING_COLUMN = 'sid_final';
+
+const DEFAULT_CRYPTO_METADATA: SessionCryptoMetadata = {
+  kid: 'abcd1234abcd1234',
+  kdf: 'hkdf-sha256',
+  info: 'sid',
+  salt_b64: '',
+  keylen: 32,
+  algo_ver: 'sid-hkdf-sha256-v1',
+};
 
 const parseCsvRow = (row: string): string[] => {
   const fields: string[] = [];
@@ -150,6 +162,7 @@ describe('simWriter.persistSimulationRun', () => {
       notes: 'unit test manifest verification',
       includeFeaturesCsv: true,
       kid: 'KID-UNIT-001',
+      crypto: DEFAULT_CRYPTO_METADATA,
     });
 
     expect(result.runId).toBe('unit-test-001');
@@ -276,6 +289,14 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.output.audit_path).toBe(result.auditPath);
     expect(manifest.output.schema_path).toBe(result.schemaPath);
     expect(manifest.schema_sha256).toBe(result.schemaSha256);
+    expect(manifest.crypto).toEqual({
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      kdf: DEFAULT_CRYPTO_METADATA.kdf,
+      info: DEFAULT_CRYPTO_METADATA.info,
+      salt_b64: DEFAULT_CRYPTO_METADATA.salt_b64,
+      keylen: DEFAULT_CRYPTO_METADATA.keylen,
+      algo_ver: DEFAULT_CRYPTO_METADATA.algo_ver,
+    });
     expect(manifest.source.sim_log_dir).toBe(tempDir);
     expect(manifest.timing).toMatchObject({
       epsilon_seconds: expect.any(Number),
@@ -328,6 +349,14 @@ describe('simWriter.persistSimulationRun', () => {
     });
     expect(runMeta.environment.node_version).toMatch(/^v\d+/);
     expect(runMeta.kid).toBe('KID-UNIT-001');
+    expect(runMeta.crypto).toEqual({
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      kdf: 'hkdf-sha256',
+      info: 'sid',
+      salt_b64: '',
+      keylen: 32,
+      algo_ver: 'sid-hkdf-sha256-v1',
+    });
     expect(/authorization|cookie|set-cookie|eyJ/i.test(runMetaContent)).toBe(false);
 
     expect(result.schemaPath).toBeDefined();
@@ -407,6 +436,8 @@ describe('simWriter.persistSimulationRun', () => {
       transitionTableVersion: 'v-test',
       runId: 'utc-header',
       outputDir: tempDir,
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      crypto: DEFAULT_CRYPTO_METADATA,
     });
 
     expect(result.featuresCsvPath).toBeNull();
@@ -499,6 +530,8 @@ describe('simWriter.persistSimulationRun', () => {
       runId: 'eps-fine',
       outputDir: tempDir,
       includeFeaturesCsv: true,
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      crypto: DEFAULT_CRYPTO_METADATA,
     });
 
     const coarseResult = await persistSimulationRun({
@@ -507,6 +540,8 @@ describe('simWriter.persistSimulationRun', () => {
       outputDir: tempDir,
       parameters: { epsilon_t: 0.01 },
       includeFeaturesCsv: true,
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      crypto: DEFAULT_CRYPTO_METADATA,
     });
 
     const fineTiming = fineResult.manifest.timing as Record<string, number>;
@@ -540,7 +575,13 @@ describe('simWriter.persistSimulationRun', () => {
       },
     ];
 
-    const result = await persistSimulationRun({ events, runId: '  spaced run:id  ', outputDir: tempDir });
+    const result = await persistSimulationRun({
+      events,
+      runId: '  spaced run:id  ',
+      outputDir: tempDir,
+      kid: DEFAULT_CRYPTO_METADATA.kid,
+      crypto: DEFAULT_CRYPTO_METADATA,
+    });
     expect(result.runId).toBe('spaced-run-id');
     expect(path.basename(result.csvPath)).toBe('simEvents-spaced-run-id.csv');
 

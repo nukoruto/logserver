@@ -6,11 +6,19 @@ import { generateScenario } from '../../src/services/simulationService';
 describe('simulationService.generateScenario', () => {
   let tempDir: string;
   let originalSimLogDir: string | undefined;
+  let originalJwtKey: string | undefined;
+  let originalSidSalt: string | undefined;
+  const jwtHeaderPrefix = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
+  const expectedSaltB64 = 'AAECAwQFBgcICQoLDA0ODw';
 
   beforeEach(() => {
     tempDir = mkdtempSync(path.join(os.tmpdir(), 'sim-service-'));
     originalSimLogDir = process.env.SIM_LOG_DIR;
     process.env.SIM_LOG_DIR = tempDir;
+    originalJwtKey = process.env.JWT_HMAC_KEY;
+    originalSidSalt = process.env.SID_SALT_B64;
+    process.env.JWT_HMAC_KEY = 'c2ltdWxhdGVkLWp3dC1zZWNyZXQ=';
+    process.env.SID_SALT_B64 = 'AAECAwQFBgcICQoLDA0ODw==';
   });
 
   afterEach(() => {
@@ -18,6 +26,16 @@ describe('simulationService.generateScenario', () => {
       delete process.env.SIM_LOG_DIR;
     } else {
       process.env.SIM_LOG_DIR = originalSimLogDir;
+    }
+    if (originalJwtKey === undefined) {
+      delete process.env.JWT_HMAC_KEY;
+    } else {
+      process.env.JWT_HMAC_KEY = originalJwtKey;
+    }
+    if (originalSidSalt === undefined) {
+      delete process.env.SID_SALT_B64;
+    } else {
+      process.env.SID_SALT_B64 = originalSidSalt;
     }
     rmSync(tempDir, { recursive: true, force: true });
   });
@@ -70,6 +88,15 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.output.run_meta_path).toBe(result.files?.runMetaPath);
       expect(manifest.output.schema_path).toBe(result.files?.schemaPath);
       expect(manifest.output.audit_path).toBe(result.files?.auditPath);
+      expect(manifest.kid).toBe('SERVICE-KID-001');
+      expect(manifest.crypto).toEqual({
+        kid: result.run_meta?.crypto.kid,
+        kdf: 'hkdf-sha256',
+        info: 'sid',
+        salt_b64: expectedSaltB64,
+        keylen: 32,
+        algo_ver: 'sid-hkdf-sha256-v1',
+      });
       if (result.files.metaPath) {
         expect(manifest.output.meta_path).toBe(result.files.metaPath);
       }
@@ -78,6 +105,14 @@ describe('simulationService.generateScenario', () => {
     if (result.run_meta) {
       expect(result.run_meta.kid).toBe('SERVICE-KID-001');
       expect(result.run_meta.data_fingerprint.schema_sha256).toBe(result.files?.schemaSha256 ?? null);
+      expect(result.run_meta.crypto).toMatchObject({
+        kdf: 'hkdf-sha256',
+        info: 'sid',
+        salt_b64: expectedSaltB64,
+        keylen: 32,
+        algo_ver: 'sid-hkdf-sha256-v1',
+      });
+      expect(result.run_meta.crypto.kid).toMatch(/^[0-9a-f]{16}$/);
     }
     if (result.files?.runMetaPath) {
       expect(existsSync(result.files.runMetaPath)).toBe(true);
@@ -96,6 +131,54 @@ describe('simulationService.generateScenario', () => {
       expect(firstMeta).toHaveProperty('propagation_mode');
       expect(firstMeta).toHaveProperty('weights');
     }
+  });
+
+  it('derives deterministic uids and avoids persisting raw JWT tokens', async () => {
+    const baseOptions = {
+      count: 10,
+      anomalies: ['timeDeviation'],
+      seed: 'jwt-deterministic',
+      outputDir: tempDir,
+      runId: 'jwt-deterministic',
+      csvFileName: 'events.csv',
+      manifestFileName: 'manifest.json',
+      runMetaFileName: 'run_meta.json',
+      includeFeaturesCsv: true,
+    } as const;
+
+    const first = await generateScenario(baseOptions);
+    const second = await generateScenario(baseOptions);
+
+    const firstUids = first.events.map((event) => event.uid);
+    const secondUids = second.events.map((event) => event.uid);
+    expect(firstUids).toHaveLength(first.events.length);
+    expect(secondUids).toEqual(firstUids);
+    firstUids.forEach((uid) => {
+      expect(uid).toMatch(/^[0-9a-f]{64}$/);
+    });
+
+    expect(first.run_meta).toBeDefined();
+    expect(first.run_meta?.crypto.kid).toMatch(/^[0-9a-f]{16}$/);
+    expect(first.run_meta?.crypto).toMatchObject({
+      kdf: 'hkdf-sha256',
+      info: 'sid',
+      salt_b64: expectedSaltB64,
+      keylen: 32,
+      algo_ver: 'sid-hkdf-sha256-v1',
+    });
+
+    const pathsToVerify = [
+      first.files?.csvPath,
+      first.files?.manifestPath,
+      first.files?.runMetaPath,
+      first.files?.auditPath,
+      first.files?.featuresCsvPath ?? undefined,
+    ].filter((candidate): candidate is string => typeof candidate === 'string');
+
+    pathsToVerify.forEach((filePath) => {
+      const content = readFileSync(filePath, 'utf8');
+      expect(content).not.toContain(jwtHeaderPrefix);
+    });
   });
 
   it('produces identical sequences when the same seed is supplied', async () => {

@@ -62,6 +62,103 @@ const DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT = 0.7;
 const MIN_DELTA_EPSILON = 1e-6;
 const MAX_DELTA_EPSILON = 1;
 const DEFAULT_DELTA_EPSILON = Math.min(Math.max(config.deltaEpsilon, MIN_DELTA_EPSILON), MAX_DELTA_EPSILON);
+const SID_INFO = Buffer.from('sid', 'utf8');
+const SESSION_DATASET_KEY_LENGTH = 32;
+const SESSION_CRYPTO_ALGO_VERSION = 'sid-hkdf-sha256-v1';
+const JWT_HEADER_B64URL = Buffer.from('{"alg":"HS256","typ":"JWT"}', 'utf8')
+  .toString('base64')
+  .replace(/\+/g, '-')
+  .replace(/\//g, '_')
+  .replace(/=+$/u, '');
+
+interface SessionCryptoMaterial {
+  datasetKey: Buffer;
+  salt: Buffer;
+  saltB64: string;
+  kid: string;
+  algoVersion: string;
+}
+
+const HEX_PATTERN = /^[0-9a-f]+$/iu;
+
+const base64UrlEncode = (data: Buffer): string =>
+  data
+    .toString('base64')
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/u, '');
+
+const decodeBase64Input = (raw: string, label: string): Buffer => {
+  const normalized = raw.replace(/\s+/g, '').replace(/-/g, '+').replace(/_/g, '/');
+  const padding = normalized.length % 4 === 0 ? 0 : 4 - (normalized.length % 4);
+  const padded = normalized.concat('='.repeat(padding));
+  try {
+    const decoded = Buffer.from(padded, 'base64');
+    if (decoded.length === 0) {
+      throw new Error(`${label} decoded to empty buffer`);
+    }
+    return decoded;
+  } catch (error) {
+    throw new Error(`${label} must be base64/base64url encoded`);
+  }
+};
+
+const parseKeyMaterial = (raw: string, label: string): Buffer => {
+  const trimmed = raw.trim();
+  if (!trimmed) {
+    throw new Error(`${label} cannot be empty`);
+  }
+  if (HEX_PATTERN.test(trimmed) && trimmed.length % 2 === 0) {
+    const hexBuffer = Buffer.from(trimmed, 'hex');
+    if (hexBuffer.length === 0) {
+      throw new Error(`${label} decoded to empty buffer`);
+    }
+    return hexBuffer;
+  }
+  return decodeBase64Input(trimmed, label);
+};
+
+let cachedSessionCryptoMaterial: SessionCryptoMaterial | null = null;
+
+const resolveSessionCryptoMaterial = (): SessionCryptoMaterial => {
+  if (cachedSessionCryptoMaterial) {
+    return cachedSessionCryptoMaterial;
+  }
+  const jwtHmacKeyRaw = process.env.JWT_HMAC_KEY;
+  if (typeof jwtHmacKeyRaw !== 'string' || jwtHmacKeyRaw.trim().length === 0) {
+    throw new Error('JWT_HMAC_KEY environment variable is required to derive session identifiers');
+  }
+  const ikm = parseKeyMaterial(jwtHmacKeyRaw, 'JWT_HMAC_KEY');
+  const saltRaw = normalizeNullableString(process.env.SID_SALT_B64 ?? null);
+  const salt = saltRaw ? decodeBase64Input(saltRaw, 'SID_SALT_B64') : Buffer.alloc(0);
+  const derivedKey = crypto.hkdfSync('sha256', ikm, salt, SID_INFO, SESSION_DATASET_KEY_LENGTH);
+  const datasetKey = Buffer.isBuffer(derivedKey)
+    ? Buffer.from(derivedKey)
+    : Buffer.from(derivedKey as ArrayBuffer);
+  const kid = crypto.createHmac('sha256', datasetKey).update('kid', 'utf8').digest('hex').slice(0, 16);
+  const saltB64 = salt.length > 0 ? base64UrlEncode(salt) : '';
+  cachedSessionCryptoMaterial = {
+    datasetKey,
+    salt,
+    saltB64,
+    kid,
+    algoVersion: SESSION_CRYPTO_ALGO_VERSION,
+  } as SessionCryptoMaterial;
+  return cachedSessionCryptoMaterial;
+};
+
+const mintSessionJwt = (seed: string, index: number, datasetKey: Buffer): string => {
+  const base = normalizeString(seed) || 'sim';
+  const payload = {
+    seed: base,
+    index,
+  } as Record<string, unknown>;
+  const payloadB64 = base64UrlEncode(Buffer.from(JSON.stringify(payload), 'utf8'));
+  const signingInput = `${JWT_HEADER_B64URL}.${payloadB64}`;
+  const signature = crypto.createHmac('sha256', datasetKey).update(signingInput, 'utf8').digest();
+  const signatureB64 = base64UrlEncode(signature);
+  return `${signingInput}.${signatureB64}`;
+};
 
 interface EventBlueprint {
   method: string;
@@ -541,10 +638,13 @@ const createSessionIdentifiers = (seed: string, index: number): SessionIdentifie
   const base = normalizeString(seed) || 'sim';
   const suffix = (index + 1).toString().padStart(3, '0');
   const sanitizedBase = base.replace(/[^a-zA-Z0-9]+/g, '-');
+  const cryptoMaterial = resolveSessionCryptoMaterial();
+  const rawToken = mintSessionJwt(seed, index, cryptoMaterial.datasetKey);
+  const uid = crypto.createHmac('sha256', cryptoMaterial.datasetKey).update(rawToken, 'utf8').digest('hex');
   return {
     sessionId: `sess-${sanitizedBase}-${suffix}`,
     userId: `user-${sanitizedBase}-${suffix}`,
-    uid: `uid-${sanitizedBase}-${(index + 1).toString(16).padStart(3, '0')}`,
+    uid,
     userAgent: computeSessionUserAgent(index),
     ip: computeSessionIp(index),
     refererHost: computeRefererHost(index),
@@ -803,6 +903,18 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const includeFeaturesCsv = parseBoolean(options.includeFeaturesCsv, false);
   const featureCsvFileName = normalizeNullableString(options.featureCsvFileName ?? null);
 
+  const sessionCryptoMaterial = resolveSessionCryptoMaterial();
+  const derivedKid = sessionCryptoMaterial.kid;
+  const resolvedKid = normalizeNullableString(options.kid ?? null) ?? derivedKid;
+  const cryptoMetadata = {
+    kid: sessionCryptoMaterial.kid,
+    kdf: 'hkdf-sha256',
+    info: 'sid',
+    salt_b64: sessionCryptoMaterial.saltB64,
+    keylen: SESSION_DATASET_KEY_LENGTH,
+    algo_ver: sessionCryptoMaterial.algoVersion,
+  } as const;
+
   const scenarioDefinition = scenario.loadScenario(scenarioPath) as ScenarioDefinition;
   const scenarioId = normalizeString((scenarioDefinition as Record<string, unknown>).id) || 'default-flow';
   const scenarioVersionRaw = (scenarioDefinition as Record<string, unknown>).version;
@@ -873,7 +985,6 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const resolvedFeatureAugmenter = featureAugmenterInput && typeof featureAugmenterInput === 'object'
     ? resolveFeatureAugmenterOptions(featureAugmenterInput as Record<string, unknown>)
     : cloneFeatureAugmenterOptions(DEFAULT_FEATURE_AUGMENTER);
-  const resolvedKid = normalizeNullableString(options.kid ?? null);
   const parameters = defaultParameters({
     count,
     anomalies,
@@ -1020,6 +1131,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       sessionIds: Array.from(sessionIds),
       includeFeaturesCsv,
       kid: resolvedKid,
+      crypto: cryptoMetadata,
       extraMetadata: lastTimeDeviationResult
         ? {
             time_deviation: {
