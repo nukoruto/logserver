@@ -2,7 +2,7 @@
 import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join, resolve, relative } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { stderr } from 'node:process';
 import { format } from 'fast-csv';
@@ -148,9 +148,7 @@ function globToRegExp(pattern: string): RegExp {
 
 function normalizeForManifest(path: string): string {
   const absolute = resolve(path);
-  const rel = relative(process.cwd(), absolute);
-  const base = rel && !rel.startsWith('..') ? rel : absolute;
-  return base.replace(/\\/g, '/');
+  return absolute.replace(/\\/g, '/');
 }
 
 function computePathHash(path: string): string {
