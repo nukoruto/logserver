@@ -471,8 +471,8 @@ const baseExtrasResolvers: Record<string, FeatureResolver | null> = BASE_EXTRA_C
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'uid',
   'session_id',
+  'uid',
   'method',
   'path',
   'referer',
@@ -1195,8 +1195,8 @@ const resolveCsvRowPayload = (
   const featureValues = featureColumns.map((column) => (safeEvent as Record<string, unknown>)[column] ?? null);
   const baseValues = [
     timestampUtc,
-    uid,
     sessionId,
+    uid,
     method,
     pathValue,
     refererValue,

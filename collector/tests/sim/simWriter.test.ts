@@ -34,8 +34,8 @@ const DEFAULT_FEATURE_COLUMNS = [
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'uid',
   'session_id',
+  'uid',
   'method',
   'path',
   'referer',
