@@ -223,6 +223,85 @@ describe('dt-anom pipeline', () => {
     }
   });
 
+  it('scores multiple input CSV files sequentially', async () => {
+    const dir = await createTempDir();
+    const inputPath = join(dir, 'train.csv');
+    const csv = [
+      'timestamp_utc,uid,session_id,method,path,referer,user_agent,op_category,dt_sec,log_dt,z,z_clipped,z_deseas',
+      '2024-01-01T00:00:00Z,u1,s1,GET,/login,-,UA1,AUTH,1.0,0.0,0.2,0.2,0.1',
+      '2024-01-01T00:00:01Z,u1,s1,POST,/login,-,UA1,AUTH,1.2,0.18,0.3,0.3,0.0',
+      '2024-01-01T00:00:06Z,u1,s1,POST,/admin,-,UA1,UPDATE,5.0,0.70,4.5,4.5,4.0',
+      '2024-01-01T00:00:07Z,u1,s1,GET,/dashboard,-,UA1,READ,0.9,0.0,0.1,0.1,0.05',
+      '2024-01-01T00:00:09Z,u1,s1,POST,/update,-,UA1,UPDATE,2.5,0.40,2.1,2.1,1.9',
+      '2024-01-01T00:00:14Z,u1,s1,POST,/admin/delete,-,UA1,UPDATE,6.2,0.79,4.2,4.2,3.9',
+      '2024-01-01T00:00:15Z,u1,s1,GET,/logout,-,UA1,AUTH,0.8,-0.10,0.05,0.05,0.02'
+    ].join('\n');
+    await writeFile(inputPath, csv, 'utf8');
+    const statsOut = join(dir, 'anom_stats.json');
+    const metaOut = join(dir, 'anom_meta.json');
+    await fitAnomalyModel({
+      inputs: [inputPath],
+      statsOut,
+      metaOut,
+      baseColumn: 'dt_sec',
+      quantiles: [0.1, 0.9, 0.95, 0.99],
+      quantileLower: 0.1,
+      quantileUpper: 0.9,
+      minQuantileSamples: 2,
+      budgetTotal: 0.05,
+      budgetWeightMode: 'count',
+      spotDomain: 'log_dt',
+      spotCalibCount: 5,
+      spotQuantileCandidates: [0.9, 0.95, 0.99],
+      minTailCount: 2,
+      flagTailProbability: 1e-3,
+      alpha: 0.6,
+      q: 0.995,
+      calibWindow: 500,
+      declusterR: 3,
+      kofn: [1, 3],
+      H: 1.3,
+      reestimateEvery: 4,
+      minExceed: 2,
+      poolStrategy: 'per-user',
+      xiEps: 1e-4,
+      upperCapPerDay: 20,
+      lowerClip: -4,
+      seeds: [42],
+      preprocHash: 'multi-input-test'
+    });
+    const extraRow = '2024-01-01T00:00:20Z,u1,s1,POST,/admin/purge,-,UA1,UPDATE,7.5,0.88,5.1,5.1,4.6';
+    const combinedRows = (csv + '\n' + extraRow).split('\n');
+    const header = combinedRows[0];
+    const dataRows = combinedRows.slice(1);
+    const midpoint = Math.ceil(dataRows.length / 2);
+    const part1 = [header, ...dataRows.slice(0, midpoint)].join('\n');
+    const part2 = [header, ...dataRows.slice(midpoint)].join('\n');
+    const scoreInput1 = join(dir, 'score_part1.csv');
+    const scoreInput2 = join(dir, 'score_part2.csv');
+    await writeFile(scoreInput1, part1, 'utf8');
+    await writeFile(scoreInput2, part2, 'utf8');
+    const outputPath = join(dir, 'scored_multi.csv');
+    const auditPath = join(dir, 'audit_multi.jsonl');
+    const summary = await scoreStream({
+      input: [scoreInput1, scoreInput2],
+      output: outputPath,
+      statsPath: statsOut,
+      metaPath: metaOut,
+      auditPath
+    });
+    expect(summary.processedRows).toBe(dataRows.length);
+    const scored = await readFile(outputPath, 'utf8');
+    const lines = scored.trim().split('\n');
+    expect(lines.length).toBe(dataRows.length + 1);
+    const headerColumns = lines[0].split(',');
+    expect(headerColumns).toContain('neglog10_p');
+    const firstData = lines[1];
+    const lastData = lines[lines.length - 1];
+    expect(firstData.startsWith(dataRows[0])).toBe(true);
+    expect(lastData.startsWith(dataRows[dataRows.length - 1])).toBe(true);
+  });
+
   it('annotates tier usage for sparse and abundant aggregates', async () => {
     const dir = await createTempDir();
     const inputPath = join(dir, 'tier_train.csv');

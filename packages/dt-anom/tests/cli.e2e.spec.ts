@@ -79,9 +79,9 @@ describe('dt-anom CLI end-to-end', () => {
 
       const fitResult = await runCli([
         'fit',
-        '-i',
+        '--in',
         inputPath,
-        '-s',
+        '--out',
         statsPath,
         '-m',
         metaPath,
@@ -103,7 +103,7 @@ describe('dt-anom CLI end-to-end', () => {
         '0.9,0.95,0.99',
         '--min-tail',
         '2',
-        '--flag-tail-prob',
+        '--spot-q',
         '0.001',
         '--alpha',
         '0.6',
@@ -158,16 +158,18 @@ describe('dt-anom CLI end-to-end', () => {
 
       const scoreResult = await runCli([
         'score',
-        '-i',
+        '--in',
         scoreInputPath,
-        '-o',
+        '--out',
         scoreOutputPath,
         '--stats',
         statsPath,
         '--meta',
         metaPath,
         '--audit',
-        auditPath
+        auditPath,
+        '--mode',
+        'batch'
       ]);
 
       expect(scoreResult.code).toBe(0);

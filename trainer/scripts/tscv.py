@@ -1,5 +1,5 @@
 # -*- coding: utf-8 -*-
-"""CLI for rolling-origin time-series cross validation splits."""
+"""CLI for rolling-origin time-series cross-validation (splits & inner-CV search)."""
 
 from __future__ import annotations
 
@@ -12,9 +12,20 @@ from typing import List, Optional, Sequence
 import pandas as pd
 import yaml
 
+# --- split サブコマンドに必要 ---
 from trainer.logserver.cv import RollingSplitConfig, generate_rolling_origin_splits
 
+# --- search サブコマンドに必要（内側CVまで） ---
+from trainer.logserver.dataio.processed import load_processed_events
+from trainer.logserver.training.search import (
+    load_search_space,
+    load_split_plan,
+    run_random_search,
+)
 
+# -----------------------------
+# 共通：エイリアス解決ユーティリティ
+# -----------------------------
 _ALIAS_MAP = {
     "user": "uid",
     "users": "uid",
@@ -31,7 +42,7 @@ def _resolve_column(name: str, available: Sequence[str]) -> str:
     alias = _ALIAS_MAP.get(name)
     if alias and alias in available:
         return alias
-    raise ValueError(f"column '{name}' not found in input data")
+    raise ValueError(f"column '{name}' not found in input data (available: {list(available)})")
 
 
 def _expand_inputs(patterns: Sequence[str]) -> List[Path]:
@@ -44,7 +55,7 @@ def _expand_inputs(patterns: Sequence[str]) -> List[Path]:
             candidate = Path(pattern)
             if candidate.exists():
                 paths.append(candidate)
-    unique_paths = []
+    unique_paths: List[Path] = []
     seen = set()
     for path in paths:
         resolved = path.resolve()
@@ -62,21 +73,25 @@ def _load_events(paths: Sequence[Path]) -> pd.DataFrame:
     return pd.concat(frames, ignore_index=True)
 
 
-def _build_config(args: argparse.Namespace, columns: Sequence[str]) -> RollingSplitConfig:
+# -----------------------------
+# split サブコマンド実装
+# -----------------------------
+def _build_split_config(args: argparse.Namespace, columns: Sequence[str]) -> RollingSplitConfig:
     timestamp_col = _resolve_column(args.timestamp_column, columns)
     group_col = _resolve_column(args.group, columns)
     session_col = _resolve_column(args.session_column, columns)
     label_col: Optional[str] = None
     if args.label_column:
         label_col = _resolve_column(args.label_column, columns)
-    embargo_value: Optional[float]
-    if args.embargo.lower() == "auto":
-        embargo_value = None
+
+    if isinstance(args.embargo, str) and args.embargo.lower() == "auto":
+        embargo_value: Optional[float] = None
     else:
         try:
             embargo_value = float(args.embargo)
-        except ValueError as exc:  # pragma: no cover - argparse should prevent this
-            raise ValueError("embargo must be 'auto' or a numeric value") from exc
+        except Exception as exc:
+            raise ValueError("embargo must be 'auto' or a numeric value (seconds)") from exc
+
     seed_value: Optional[int] = args.seed
     return RollingSplitConfig(
         rolling=args.rolling,
@@ -92,7 +107,7 @@ def _build_config(args: argparse.Namespace, columns: Sequence[str]) -> RollingSp
     )
 
 
-def _command_split(args: argparse.Namespace) -> int:
+def _cmd_split(args: argparse.Namespace) -> int:
     input_patterns = args.input_patterns or []
     if not input_patterns:
         raise ValueError("at least one --in/--input pattern is required")
@@ -101,8 +116,9 @@ def _command_split(args: argparse.Namespace) -> int:
         raise ValueError("no files matched the provided --in/--input patterns")
     paths = sorted(paths)
     events = _load_events(paths)
-    config = _build_config(args, events.columns)
-    result = generate_rolling_origin_splits(events, config, sources=[str(path) for path in paths])
+    config = _build_split_config(args, events.columns)
+    result = generate_rolling_origin_splits(events, config, sources=[str(p) for p in paths])
+
     out_path = Path(args.out)
     out_path.parent.mkdir(parents=True, exist_ok=True)
     with out_path.open("w", encoding="utf-8") as handle:
@@ -110,11 +126,55 @@ def _command_split(args: argparse.Namespace) -> int:
     return 0
 
 
-def _create_parser() -> argparse.ArgumentParser:
-    parser = argparse.ArgumentParser(prog="tscv", description="Time-series cross validation utilities")
+# -----------------------------
+# search サブコマンド実装（内側CV）
+# -----------------------------
+def _resolve_log_path(out_path: Path, log_path: Optional[str]) -> Path:
+    if log_path:
+        return Path(log_path)
+    if out_path.suffix:
+        return out_path.with_suffix(f"{out_path.suffix}l")
+    return out_path.with_name(out_path.name + ".jsonl")
+
+
+def _cmd_search(args: argparse.Namespace) -> int:
+    split_path = Path(args.splits)
+    plan = load_split_plan(split_path)
+
+    dataset = load_processed_events(plan.processed_dir)
+    if isinstance(dataset, pd.DataFrame):
+        df = dataset
+    else:
+        df = pd.concat(list(dataset), ignore_index=True) if dataset else pd.DataFrame()
+
+    search_space = load_search_space(Path(args.space))
+    out_path = Path(args.out)
+    log_path = _resolve_log_path(out_path, args.log)
+
+    run_random_search(
+        df,
+        plan,
+        search_space,
+        n_trials=args.n_trials,
+        metric=args.metric,
+        out_path=out_path,
+        log_path=log_path,
+        base_seed=args.seed,
+    )
+    return 0
+
+
+# -----------------------------
+#  Parser / Main
+# -----------------------------
+def build_parser() -> argparse.ArgumentParser:
+    parser = argparse.ArgumentParser(
+        prog="tscv", description="Time-series cross-validation utilities (splits & inner-CV search)"
+    )
     subparsers = parser.add_subparsers(dest="command", required=True)
 
-    split = subparsers.add_parser("split", help="Generate rolling-origin purged splits")
+    # split
+    split = subparsers.add_parser("split", help="Generate rolling-origin purged/embargoed splits")
     split.add_argument("--in", dest="input_patterns", action="append", help="Input CSV glob pattern")
     split.add_argument("--input", dest="input_patterns", action="append", help="Alias of --in")
     split.add_argument("--out", required=True, help="Path to write the YAML split manifest")
@@ -128,17 +188,35 @@ def _create_parser() -> argparse.ArgumentParser:
     split.add_argument("--folds", type=int, default=5, help="Number of CV folds")
     split.add_argument("--embargo", default="auto", help="Embargo seconds or 'auto'")
     split.add_argument("--seed", type=int, default=None, help="Seed to record in the manifest")
+    split.set_defaults(func=_cmd_split)
+
+    # search
+    search = subparsers.add_parser("search", help="Run random search with rolling-origin inner CV")
+    search.add_argument("--splits", required=True, help="YAML file describing inner CV folds")
+    search.add_argument("--space", required=True, help="YAML search space definition")
+    search.add_argument("--n_trials", type=int, default=10, help="Number of random trials")
+    search.add_argument(
+        "--metric",
+        choices=["ap", "roc_auc"],
+        default="ap",
+        help="Primary metric for model selection",
+    )
+    search.add_argument("--out", required=True, help="Path to write best-trial summary JSON")
+    search.add_argument("--log", help="Optional path for JSONL trial log")
+    search.add_argument("--seed", type=int, default=42, help="Base random seed for reproducibility")
+    search.set_defaults(func=_cmd_search)
 
     return parser
 
 
 def main(argv: Optional[Sequence[str]] = None) -> int:
-    parser = _create_parser()
+    parser = build_parser()
     args = parser.parse_args(argv)
     try:
-        if args.command == "split":
-            return _command_split(args)
-        parser.error("unknown command")
+        if hasattr(args, "func"):
+            return int(args.func(args))
+        parser.print_help()
+        return 2
     except Exception as error:  # pragma: no cover - CLI guard
         print(str(error), file=sys.stderr)
         return 1

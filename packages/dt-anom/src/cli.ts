@@ -31,8 +31,10 @@ const parseIntArg = (value: string): number => {
 };
 
 interface FitCommandOptions {
-  readonly input: string[];
-  readonly statsOut: string;
+  readonly input?: string[];
+  readonly in?: string[];
+  readonly statsOut?: string;
+  readonly out?: string;
   readonly metaOut: string;
   readonly column: string;
   readonly quantile?: string;
@@ -48,6 +50,7 @@ interface FitCommandOptions {
   readonly spotP0: string;
   readonly minTail?: number;
   readonly flagTailProb?: number;
+  readonly spotQ?: number;
   readonly alpha?: number;
   readonly q?: number;
   readonly calibWindow?: number;
@@ -65,11 +68,14 @@ interface FitCommandOptions {
 }
 
 interface ScoreCommandOptions {
-  readonly input: string;
-  readonly output: string;
+  readonly input?: string[];
+  readonly in?: string[];
+  readonly output?: string;
+  readonly out?: string;
   readonly stats: string;
   readonly meta: string;
   readonly audit: string;
+  readonly mode?: string;
 }
 
 interface KOfNParams {
@@ -95,8 +101,10 @@ program
 
 program
   .command('fit')
-  .requiredOption('-i, --input <files...>', 'Input CSV files (dt-preproc output)')
-  .requiredOption('-s, --stats-out <path>', 'Output anomaly stats JSON')
+  .option('-i, --input <files...>', 'Input CSV files (dt-preproc output)')
+  .option('--in <files...>', 'Alias for --input (deprecated)')
+  .option('-s, --stats-out <path>', 'Output anomaly stats JSON')
+  .option('--out <path>', 'Alias for --stats-out (deprecated)')
   .requiredOption('-m, --meta-out <path>', 'Output anomaly meta JSON')
   .option('-c, --column <name>', 'Base column to score', 'dt_sec')
   .option('--quantile <values>', 'Quantile levels (comma-separated)')
@@ -120,6 +128,7 @@ program
   )
   .option('--min-tail <count>', 'Minimum tail sample count', parseIntArg)
   .option('--flag-tail-prob <value>', 'Tail probability threshold for flagging', parseFloatArg)
+  .option('--spot-q <value>', 'Alias for --flag-tail-prob (deprecated)', parseFloatArg)
   .option('--alpha <value>', 'Score combination coefficient', parseFloatArg)
   .option('--q <value>', 'Quantile target for control rules', parseFloatArg)
   .option('--calib-window <value>', 'Calibration window length', parseIntArg)
@@ -145,6 +154,15 @@ program
         .map((item) => parser(item.trim()))
         .filter((item) => Number.isFinite(item));
     };
+    const legacyInputs = (cmdOpts as FitCommandOptions & { in?: string[] }).in ?? [];
+    const inputFiles = (cmdOpts.input ?? legacyInputs).map((item) => item.trim()).filter((item) => item.length > 0);
+    if (inputFiles.length === 0) {
+      throw new Error('At least one input CSV must be provided via --input');
+    }
+    const statsOut = cmdOpts.statsOut ?? (cmdOpts as FitCommandOptions & { out?: string }).out;
+    if (!statsOut) {
+      throw new Error('Output path is required via --stats-out');
+    }
     const quantiles = parseQuantileLevels(
       cmdOpts.quantile ? parseList(cmdOpts.quantile, parseFloatArg) : [0.9, 0.95, 0.99, 0.995]
     );
@@ -160,7 +178,8 @@ program
     const minQuantileSamples = cmdOpts.minQuantileSamples ?? 30;
     const budgetTotal = cmdOpts.budgetTotal ?? 1e-2;
     const minTailCount = cmdOpts.minTail ?? 50;
-    const flagTailProbability = cmdOpts.flagTailProb ?? 1e-3;
+    const flagTailProbability =
+      cmdOpts.flagTailProb ?? (cmdOpts as FitCommandOptions & { spotQ?: number }).spotQ ?? 1e-3;
     const alpha = cmdOpts.alpha ?? 0.5;
     const q = cmdOpts.q ?? 0.99;
     const calibWindow = cmdOpts.calibWindow ?? 1000;
@@ -172,8 +191,8 @@ program
     const upperCapPerDay = cmdOpts.upperCapPerDay ?? 50;
     const lowerClip = cmdOpts.lowerClip ?? -5;
     const result = await fitAnomalyModel({
-      inputs: cmdOpts.input,
-      statsOut: cmdOpts.statsOut,
+      inputs: inputFiles,
+      statsOut,
       metaOut: cmdOpts.metaOut,
       baseColumn: cmdOpts.column,
       quantiles,
@@ -218,19 +237,36 @@ program
 
 program
   .command('score')
-  .requiredOption('-i, --input <path>', 'Input CSV to score')
-  .requiredOption('-o, --output <path>', 'Output CSV with anomaly columns appended')
+  .option('-i, --input <paths...>', 'Input CSV file(s) to score')
+  .option('--in <paths...>', 'Alias for --input (deprecated)')
+  .option('-o, --output <path>', 'Output CSV with anomaly columns appended')
+  .option('--out <path>', 'Alias for --output (deprecated)')
   .requiredOption('--stats <path>', 'Fitted anomaly stats JSON')
   .requiredOption('--meta <path>', 'Fitted anomaly meta JSON')
   .requiredOption('--audit <path>', 'Audit JSONL output for SPOT decisions')
+  .option('--mode <mode>', 'Scoring mode (batch|online)', 'batch')
   .action(async (rawOptions: unknown) => {
     const cmdOpts = rawOptions as ScoreCommandOptions;
+    const legacyInputs = cmdOpts.in ?? [];
+    const inputs = (cmdOpts.input ?? legacyInputs).map((value) => value.trim()).filter((value) => value.length > 0);
+    if (inputs.length === 0) {
+      throw new Error('At least one input CSV must be provided via --input');
+    }
+    const outputPath = cmdOpts.output ?? cmdOpts.out;
+    if (!outputPath) {
+      throw new Error('Output path is required via --output');
+    }
+    const mode = (cmdOpts.mode ?? 'batch').toLowerCase();
+    if (mode !== 'batch') {
+      throw new Error(`Unsupported scoring mode: ${mode}. Only batch mode is implemented.`);
+    }
     const summary = await scoreStream({
-      input: cmdOpts.input,
-      output: cmdOpts.output,
+      input: inputs,
+      output: outputPath,
       statsPath: cmdOpts.stats,
       metaPath: cmdOpts.meta,
-      auditPath: cmdOpts.audit
+      auditPath: cmdOpts.audit,
+      mode: 'batch'
     });
     process.stdout.write(JSON.stringify(summary, null, 2) + '\n');
   });

@@ -35,6 +35,8 @@
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
 - **Electron GUI ブリッジ**：`apps/lstm-gui` 経由で dt-lstm CLI (`fit`/`train`/`calibrate`/`infer`/`online`) を IPC 呼び出しし、進捗ログと生成物
   を GUI に反映（CLI 単体実行とバイト一致を保証）
+- **時系列CV オーケストレーター**：Python パッケージ `dt-cv` の CLI `tscv` で Rolling-origin（purged/embargo 付き）クロスバリデーションを決定論的に再現。
+  `dt-preproc` / `dt-anom` / `dt-lstm` を束ねつつ、各サブプロセスの環境変数と引数を `env.txt` / `artifacts_index.json` に保存し、完全な監査トレースを提供。
 
 ---
 
@@ -155,21 +157,61 @@
 
   ```bash
   mkdir -p data/raw
-  cp logs/sample.csv data/raw/
-  ```
+cp logs/sample.csv data/raw/
+```
 
-- 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。
+### 4.3 Rolling-origin クロスバリデーション（`tscv`）
+
+`packages/dt-cv` の CLI `tscv` を用いると、Rolling-origin（Purged/Embargo 付き）クロスバリデーションを完全に決定論的な手順で実行
+できます。基本的な利用フローは以下の通りです。
+
+1. **split** – 生ログをセッション順に分割し、`fold_*/raw/*.csv` と `splits.yaml` を生成。
+
+   ```bash
+   python -m dt_cv.cli split \
+     --input data/raw/sample.csv \
+     --output outputs/cv_runs/run1 \
+     --train-size 1000 --val-size 200 --test-size 200 \
+     --step-size 100 --purge 10 --embargo 5 --seed 42
+   ```
+
+2. **train** – 各フォールドで `dt-preproc` → `dt-anom fit` → `dt-lstm train` をサブプロセス実行。乱数・CUDA・TF32 が固定され、各コマ
+   ンドの環境変数と引数は `preproc/`、`anom/`、`lstm/` 配下の `env.txt` / `artifacts_index.json` に保存される。
+
+   ```bash
+   python -m dt_cv.cli train \
+     --splits outputs/cv_runs/run1/splits.yaml \
+     --dt-preproc dt-preproc --dt-anom dt-anom --dt-lstm dt-lstm \
+     --seed 42 --gpu-mode ada6000
+   ```
+
+3. **eval / report** – `dt-anom score` と `dt-lstm infer` を走らせ、AUPRC（主指標）/ ROC-AUC（補助）と Fisher 結合スコアを算出し、`cv_report.json`
+   に折れ線平均をまとめる。
+
+   ```bash
+   python -m dt_cv.cli eval --splits outputs/cv_runs/run1/splits.yaml
+   python -m dt_cv.cli report --splits outputs/cv_runs/run1/splits.yaml
+   ```
+
+同じ `splits.yaml` と `--seed` を用いれば、各フォールドの成果物（特徴 CSV、異常統計、LSTM モデル、スコア CSV）はバイトレベルで一致
+します。生成物の所在は `splits.yaml` の `folds[].paths` に記録され、追加のアーティファクト管理を行う際も追跡可能です。
+
+- 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。`dt-preproc` の `--in` や `--fit-manifest` 引数では `@list.txt` 形式でファイル一覧を参照でき、行頭 `#` はコメントとして無視される。
 
   ```bash
   pnpm --filter @logserver/dt-preproc run build
+  printf 'data/raw/sample.csv\n' > stats/train_manifest.txt
   pnpm exec dt-preproc fit \
-    --in data/raw/sample.csv \
+    --in @stats/train_manifest.txt \
     --out stats/preproc_stats.json \
-    --meta stats/preproc_meta.json
+    --meta stats/preproc_meta.json \
+    --fold-id fold0
   pnpm exec dt-preproc transform \
     --in data/raw/sample.csv \
     --stats stats/preproc_stats.json \
-    --out data/processed/sample_feat.csv
+    --out data/processed/sample_feat.csv \
+    --fold-id fold0 \
+    --fit-manifest @stats/train_manifest.txt
   ```
 
 #### Rolling-origin 時系列CV 分割
@@ -195,6 +237,7 @@ python -m trainer.scripts.tscv split \
 - 各 fold のセッション ID / ユーザ一覧、時間境界、イベント・ラベル統計、seed を完全保存し、`train ∩ {dev, test, embargo} = ∅` を検証してから書き出します。
 
 生成物は `artifacts/splits/splits.yaml` など任意パスに保存でき、学習・推論パイプラインの前処理に再利用できます。
+  `fit` コマンドが生成する統計 JSON には、学習に利用したファイル一覧のハッシュ（`source_manifest_hash`）と fold 識別子（`fold_id`）が保存される。`transform` 実行時に `--fold-id` と `--fit-manifest` を指定すると、誤った fold の統計や訓練セットを流用しようとした場合に即座にエラーとなり、Rolling-origin のリークを防止できる。
 
 - 追加の生ログを取得する際は、決定的シードでシミュレータを実行して `artifacts/<run>/` 以下に CSV・manifest・ハッシュ（`checksums.txt`）を保存する。例：
 
@@ -836,6 +879,24 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 6. 閾値と説明: python -m scripts.threshold --config configs/default.yaml → python -m scripts.explain --config configs/default.yaml
 
 参照: SRS.md / CONSTRAINTS.md / dev_prompt.md
+
+### 内側CVランダムサーチ（dt-lstm）
+外側foldごとの学習データに対して、Rolling-origin + Purge/Embargo 付きの時系列CVでハイパーパラメータを探索します。
+
+```bash
+tscv search \
+  --splits artifacts/splits/splits.yaml \
+  --space configs/search_space.yaml \
+  --n_trials 50 \
+  --metric ap \
+  --out artifacts/search_results.json
+```
+
+- `--splits`: foldごとの `train_sessions` / `validation_sessions` を記述したYAML。`dataset.processed_dir` `label_column` `timestamp_column` を含める。
+- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。
+- 出力: ベスト構成を `--out` にJSONで書き出し、同階層に `<out>.jsonl` の全試行ログ（各trialのseed・fold指標・AP/ROC-AUC）を生成。種を固定すればベスト構成が再現できます。
+
+探索中の特徴エンコーダはfoldごとの学習データでfit→検証へ凍結適用され、リークを防止します。
 
 ### 5.10 dt-lstm Electron ブリッジ（自己診断）
 - ビルドと起動:

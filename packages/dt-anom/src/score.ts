@@ -79,11 +79,12 @@ function evaluateEmpiricalCdf(points: readonly EmpiricalCdfPoint[], value: numbe
 }
 
 export interface ScoreOptions {
-  readonly input: string;
+  readonly input: string | readonly string[];
   readonly output: string;
   readonly statsPath: string;
   readonly metaPath: string;
   readonly auditPath: string;
+  readonly mode?: 'batch' | 'online';
 }
 
 export interface ScoreSummary {
@@ -217,6 +218,15 @@ function applyCalibrateResult(state: SpotRuntimeState, result: SpotCalibrateResu
 }
 
 export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> {
+  const inputPathsRaw = Array.isArray(options.input) ? options.input : [options.input];
+  const inputPaths = inputPathsRaw.map((path) => path.trim()).filter((path) => path.length > 0);
+  if (inputPaths.length === 0) {
+    throw new Error('At least one input CSV path must be provided');
+  }
+  const mode = options.mode ?? 'batch';
+  if (mode !== 'batch') {
+    throw new Error(`Unsupported scoring mode: ${mode}`);
+  }
   const stats = await readAnomalyStats(options.statsPath);
   const meta = await readAnomalyMeta(options.metaPath);
   const baseColumn = stats.base_column;
@@ -322,24 +332,23 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
   const reestimateEvery = meta.reestimate_every;
   const minExceed = meta.min_exceed;
   const spotStates = new Map<string, SpotRuntimeState>();
+  const formatter = format({ headers: true });
+  const output = createWriteStream(options.output, { encoding: 'utf8' });
+  const finishPromise = new Promise<void>((resolve, reject) => {
+    formatter.on('finish', resolve);
+    formatter.on('error', reject);
+    output.on('error', reject);
+  });
+  formatter.pipe(output);
   const audit = new SpotAuditLogger(options.auditPath);
   let processed = 0;
   let flagged = 0;
-  try {
-    await new Promise<void>((resolve, reject) => {
-      const parser = parse({ headers: true, ignoreEmpty: true, trim: true });
-      const formatter = format({ headers: true });
-      const output = createWriteStream(options.output, { encoding: 'utf8' });
-      formatter.pipe(output).on('error', reject);
-      formatter.on('error', reject);
-      formatter.on('finish', () => resolve());
-      parser.on('error', reject);
-      parser.on('data', (row: Record<string, string>) => {
-        processed += 1;
-        const uid = row.uid;
-        const opCategory = row.op_category;
-        if (!uid || !opCategory) {
-          throw new Error(`Missing uid/op_category at row ${processed}`);
+  const processRow = (row: Record<string, string>): void => {
+      processed += 1;
+      const uid = row.uid;
+      const opCategory = row.op_category;
+      if (!uid || !opCategory) {
+        throw new Error(`Missing uid/op_category at row ${processed}`);
         }
         const value = toFiniteNumber(row[baseColumn], baseColumn);
         const quantile = resolveQuantile(uid, opCategory);
@@ -538,8 +547,8 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
           state.exceedSinceReestimate = 0;
           state.exceedSamples = [];
         }
-        if (reestimateEvent) {
-          const deltaU = reestimateEvent.current.u - reestimateEvent.previous.u;
+    if (reestimateEvent) {
+      const deltaU = reestimateEvent.current.u - reestimateEvent.previous.u;
           const deltaXi = reestimateEvent.current.xi - reestimateEvent.previous.xi;
           const deltaBeta = reestimateEvent.current.beta - reestimateEvent.previous.beta;
           const deltaPref = reestimateEvent.current.pRef - reestimateEvent.previous.pRef;
@@ -608,12 +617,46 @@ export async function scoreStream(options: ScoreOptions): Promise<ScoreSummary> 
             }
           });
         }
+  };
+  try {
+    for (const path of inputPaths) {
+      await new Promise<void>((resolve, reject) => {
+        let settled = false;
+        const parser = parse({ headers: true, ignoreEmpty: true, trim: true });
+        const input = createReadStream(path);
+        const finalize = (error?: unknown) => {
+          if (settled) {
+            return;
+          }
+          settled = true;
+          if (error instanceof Error) {
+            reject(error);
+          } else if (error) {
+            reject(new Error(String(error)));
+          } else {
+            resolve();
+          }
+        };
+        parser.on('error', finalize);
+        input.on('error', finalize);
+        parser.on('data', (row: Record<string, string>) => {
+          if (settled) {
+            return;
+          }
+          try {
+            processRow(row);
+          } catch (error) {
+            input.destroy(error as Error);
+            parser.destroy(error as Error);
+            finalize(error);
+          }
+        });
+        parser.on('end', () => finalize());
+        input.pipe(parser);
       });
-      parser.on('end', () => {
-        formatter.end();
-      });
-      createReadStream(options.input).pipe(parser).on('error', reject);
-    });
+    }
+    formatter.end();
+    await finishPromise;
     return { processedRows: processed, flaggedRows: flagged };
   } finally {
     await audit.close();
