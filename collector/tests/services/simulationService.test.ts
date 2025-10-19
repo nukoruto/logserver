@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, readFileSync, existsSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, existsSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import os from 'node:os';
 import { generateScenario } from '../../src/services/simulationService';
@@ -8,6 +8,8 @@ describe('simulationService.generateScenario', () => {
   let originalSimLogDir: string | undefined;
   let originalJwtKey: string | undefined;
   let originalSidSalt: string | undefined;
+  let originalNtpStatePath: string | undefined;
+  let ntpStateDir: string | null = null;
   const jwtHeaderPrefix = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9';
   const expectedSaltB64 = 'AAECAwQFBgcICQoLDA0ODw';
 
@@ -17,8 +19,13 @@ describe('simulationService.generateScenario', () => {
     process.env.SIM_LOG_DIR = tempDir;
     originalJwtKey = process.env.JWT_HMAC_KEY;
     originalSidSalt = process.env.SID_SALT_B64;
+    originalNtpStatePath = process.env.NTP_STATE_PATH;
     process.env.JWT_HMAC_KEY = 'c2ltdWxhdGVkLWp3dC1zZWNyZXQ=';
     process.env.SID_SALT_B64 = 'AAECAwQFBgcICQoLDA0ODw==';
+    ntpStateDir = mkdtempSync(path.join(os.tmpdir(), 'sim-service-ntp-'));
+    const ntpStatePath = path.join(ntpStateDir, 'ntp.json');
+    writeFileSync(ntpStatePath, JSON.stringify({ p95_ms: 20, lastMeasuredAt: new Date().toISOString() }));
+    process.env.NTP_STATE_PATH = ntpStatePath;
   });
 
   afterEach(() => {
@@ -36,6 +43,15 @@ describe('simulationService.generateScenario', () => {
       delete process.env.SID_SALT_B64;
     } else {
       process.env.SID_SALT_B64 = originalSidSalt;
+    }
+    if (originalNtpStatePath === undefined) {
+      delete process.env.NTP_STATE_PATH;
+    } else {
+      process.env.NTP_STATE_PATH = originalNtpStatePath;
+    }
+    if (ntpStateDir) {
+      rmSync(ntpStateDir, { recursive: true, force: true });
+      ntpStateDir = null;
     }
     rmSync(tempDir, { recursive: true, force: true });
   });

@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { spawn } from 'node:child_process';
-import { mkdtemp, readFile, rm, cp } from 'node:fs/promises';
+import { mkdtemp, readFile, rm, cp, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { once } from 'node:events';
@@ -60,6 +60,23 @@ async function runNodeScript(
   return { code: code ?? 0, stdout, stderr };
 }
 
+async function createTempNtpState(
+  p95Ms: number,
+  lastMeasuredAt: Date = new Date()
+): Promise<{ statePath: string; cleanup: () => Promise<void> }> {
+  const stateDir = await mkdtemp(path.join(tmpdir(), 'ntp-state-'));
+  const statePath = path.join(stateDir, 'ntp.json');
+  await writeFile(
+    statePath,
+    JSON.stringify({ p95_ms: p95Ms, lastMeasuredAt: lastMeasuredAt.toISOString() }),
+    'utf8'
+  );
+  const cleanup = async () => {
+    await rm(stateDir, { recursive: true, force: true });
+  };
+  return { statePath, cleanup };
+}
+
 function sanitizeForFilename(value: string): string {
   return value.replace(/[^a-zA-Z0-9._-]+/g, '_');
 }
@@ -112,6 +129,7 @@ for (const scenario of SPLIT_SCENARIOS) {
     const outputPath = path.join(tempDir, 'output.csv');
     const metaPath = path.join(tempDir, 'meta.json');
     const reportDir = path.join(tempDir, 'reports');
+    const ntpState = await createTempNtpState(20);
 
     try {
       await cp(inputSource, inputPath, { dereference: true });
@@ -131,6 +149,7 @@ for (const scenario of SPLIT_SCENARIOS) {
 
       const { code, stdout, stderr } = await runNodeScript(SPLIT_SESSIONS_BIN, args, {
         JWT_HMAC_KEY: JWT_KEY,
+        NTP_STATE_PATH: ntpState.statePath,
       });
 
       assert.equal(code, 0, `split-sessions exited with ${code}. stderr=${stderr}`);
@@ -186,6 +205,7 @@ for (const scenario of SPLIT_SCENARIOS) {
       }
     } finally {
       await rm(tempDir, { recursive: true, force: true });
+      await ntpState.cleanup();
     }
   });
 }
@@ -198,6 +218,7 @@ test('session-splitter CLI respects ntp offset and secrecy', { concurrency: fals
   const expectedStdoutPath = path.join(scenarioRoot, 'expected', 'stdout.jsonl');
 
   const tempDir = await mkdtemp(path.join(tmpdir(), `session-splitter-${scenario}-`));
+  const ntpState = await createTempNtpState(25);
   const inputPath = path.join(tempDir, 'input.csv');
   const metaPath = path.join(tempDir, 'meta.json');
 
@@ -210,12 +231,13 @@ test('session-splitter CLI respects ntp offset and secrecy', { concurrency: fals
       '--thresholds',
       '--meta', metaPath,
       '--epsilon', '0.001',
-      '--ntp-p95-ms', '1250',
+      '--ntp-p95-ms', '20',
       '--ingress-jitter-ms', '45',
     ];
 
     const { code, stdout, stderr } = await runNodeScript(SESSION_SPLITTER_BIN, args, {
       JWT_HMAC_KEY: JWT_KEY,
+      NTP_STATE_PATH: ntpState.statePath,
     });
 
     assert.equal(code, 0, `session-splitter exited with ${code}. stderr=${stderr}`);
@@ -232,6 +254,7 @@ test('session-splitter CLI respects ntp offset and secrecy', { concurrency: fals
     ensureNoJwt('session-splitter meta', JSON.stringify(actualMeta));
   } finally {
     await rm(tempDir, { recursive: true, force: true });
+    await ntpState.cleanup();
   }
 });
 
@@ -266,6 +289,69 @@ test('split-sessions fails fast when JWT key is missing', { concurrency: false }
     assert.equal(stdout, '', 'split-sessions should not emit stdout on error');
     assert.match(stderr, /JWT_HMAC_KEY environment variable is required/);
     ensureNoJwt('split-sessions stderr (missing key)', stderr);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('session-splitter CLI enforces NTP gate success path', { concurrency: false }, async () => {
+  const scenario = 'ntp_offset';
+  const scenarioRoot = path.join(FIXTURES_ROOT, scenario);
+  const inputSource = path.join(scenarioRoot, 'input.csv');
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'session-splitter-ntp-ok-'));
+  const inputPath = path.join(tempDir, 'input.csv');
+  const metaPath = path.join(tempDir, 'meta.json');
+
+  try {
+    await cp(inputSource, inputPath, { dereference: true });
+    const args = [
+      '--input', inputPath,
+      '--format', 'ndjson',
+      '--thresholds',
+      '--meta', metaPath,
+      '--ntp-p95-ms', '20',
+    ];
+    const { code, stdout, stderr } = await runNodeScript(SESSION_SPLITTER_BIN, args, {
+      JWT_HMAC_KEY: JWT_KEY,
+    });
+    assert.equal(code, 0, `session-splitter exited with ${code}. stderr=${stderr}`);
+    assert.ok(stdout.length > 0, 'session-splitter should emit NDJSON rows');
+    assert.equal(stderr.trim(), '', 'session-splitter should not emit stderr when NTP is healthy');
+    const meta = JSON.parse(await readFile(metaPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(meta.ntp_p95_ms, 20);
+  } finally {
+    await rm(tempDir, { recursive: true, force: true });
+  }
+});
+
+test('session-splitter CLI aborts when NTP drift exceeds limit', { concurrency: false }, async () => {
+  const scenario = 'ntp_offset';
+  const scenarioRoot = path.join(FIXTURES_ROOT, scenario);
+  const inputSource = path.join(scenarioRoot, 'input.csv');
+  const tempDir = await mkdtemp(path.join(tmpdir(), 'session-splitter-ntp-ng-'));
+  const inputPath = path.join(tempDir, 'input.csv');
+  const metaPath = path.join(tempDir, 'meta.json');
+
+  try {
+    await cp(inputSource, inputPath, { dereference: true });
+    const args = [
+      '--input', inputPath,
+      '--format', 'ndjson',
+      '--thresholds',
+      '--meta', metaPath,
+      '--ntp-p95-ms', '80',
+    ];
+    const { code, stdout, stderr } = await runNodeScript(SESSION_SPLITTER_BIN, args, {
+      JWT_HMAC_KEY: JWT_KEY,
+    });
+    assert.equal(code, 2, `session-splitter should exit with 2 when NTP is unhealthy (stderr=${stderr})`);
+    assert.equal(stdout, '', 'session-splitter should not emit stdout when NTP gate fails');
+    assert.ok(stderr.includes('ntp_p95_ms=80'), 'stderr should describe the NTP failure');
+    const metaExists = await readFile(metaPath, 'utf8').then(
+      () => true,
+      () => false,
+    );
+    assert.equal(metaExists, false, 'meta.json should not be created on NTP failure');
   } finally {
     await rm(tempDir, { recursive: true, force: true });
   }

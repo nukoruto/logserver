@@ -3,6 +3,14 @@ import config from '../config';
 import logger from '../utils/logger';
 import sim from '../sim';
 import {
+  assertHealthy,
+  coerceNumber as coerceHealthNumber,
+  coerceTimestamp as coerceHealthTimestamp,
+  HealthError,
+  readNtpState,
+  type NtpMeasurement,
+} from '../healthGate';
+import {
   buildAnomalySummary,
   DEFAULT_FEATURE_AUGMENTER,
   resolveFeatureAugmenterOptions,
@@ -293,6 +301,12 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   runMetaFileName?: string | null;
   auditFileName?: string | null;
   schemaFileName?: string | null;
+  ntpP95Ms?: number | string | null;
+  ntpLastMeasuredAt?: number | string | Date | null;
+  ntpFreshnessMs?: number | string | null;
+  ntpStatePath?: string | null;
+  healthNow?: number | string | Date | null;
+  healthValidated?: boolean;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -340,6 +354,10 @@ export interface SimulationParameters extends Record<string, unknown> {
     mode: TimeDeviationMode;
     weights: { propagate: number; local: number };
   };
+  ntp_health?: {
+    p95_ms: number;
+    last_measured_at: string;
+  } | null;
   kid?: string | null;
 }
 
@@ -880,10 +898,53 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
       local: Math.max(0, 1 - input.timeAnomalyPropWeight),
     },
   },
+  ntp_health: null,
   kid: input.kid,
 });
 
 export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
+  const resolveFreshness = (value: unknown): number => {
+    if (value === null || value === undefined) {
+      return 120_000;
+    }
+    const numeric = coerceHealthNumber(value, 'ntpFreshnessMs');
+    if (numeric < 0) {
+      throw new HealthError('METRICS_INCONSISTENT', 'ntpFreshnessMs must be non-negative');
+    }
+    return numeric;
+  };
+
+  const resolveNow = (value: unknown): number => {
+    if (value === null || value === undefined) {
+      return Date.now();
+    }
+    return coerceHealthTimestamp(value, 'healthNow');
+  };
+
+  const healthFreshnessMs = resolveFreshness(options.ntpFreshnessMs ?? null);
+  const healthNow = resolveNow(options.healthNow ?? null);
+  const healthValidated = options.healthValidated === true;
+
+  const resolveMeasurement = async (): Promise<NtpMeasurement> => {
+    if (options.ntpP95Ms !== undefined || options.ntpLastMeasuredAt !== undefined) {
+      if (options.ntpP95Ms === undefined || options.ntpLastMeasuredAt === undefined) {
+        throw new HealthError('METRICS_INCONSISTENT', 'ntpP95Ms and ntpLastMeasuredAt must both be provided');
+      }
+      const ntpP95 = coerceHealthNumber(options.ntpP95Ms, 'ntpP95Ms');
+      const lastMeasuredAt = coerceHealthTimestamp(options.ntpLastMeasuredAt, 'ntpLastMeasuredAt');
+      if (!healthValidated) {
+        assertHealthy(ntpP95, lastMeasuredAt, healthNow, healthFreshnessMs);
+      }
+      return { ntpP95Ms: ntpP95, lastMeasuredAt };
+    }
+    const statePath = (options.ntpStatePath as string | null | undefined) ?? process.env.NTP_STATE_PATH ?? null;
+    const measurement = await readNtpState(statePath);
+    assertHealthy(measurement.ntpP95Ms, measurement.lastMeasuredAt, healthNow, healthFreshnessMs);
+    return measurement;
+  };
+
+  const ntpMeasurement = await resolveMeasurement();
+
   const count = Number.isInteger(options.count) && (options.count as number) > 0 ? (options.count as number) : DEFAULT_EVENT_COUNT;
   const maxSteps = Number.isInteger(options.maxSteps) && (options.maxSteps as number) > 0 ? (options.maxSteps as number) : DEFAULT_MAX_STEPS;
   const sessionSpacingSeconds = parsePositiveNumber(options.sessionSpacingSeconds, DEFAULT_SESSION_SPACING_SECONDS);
@@ -1011,6 +1072,10 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeAnomalyPropWeight: resolvedTimeAnomalyPropWeight,
     kid: resolvedKid,
   });
+  parameters.ntp_health = {
+    p95_ms: ntpMeasurement.ntpP95Ms,
+    last_measured_at: new Date(ntpMeasurement.lastMeasuredAt).toISOString(),
+  };
 
   const selectedStrategies = buildStrategyOverrides(
     anomalies,

@@ -2,7 +2,9 @@ import path from 'node:path';
 import process from 'node:process';
 import { createRequire } from 'node:module';
 import collectorConfig from '../collector/src/config';
-import { generateScenario, normalizeAnomalyList } from '../collector/src/services/simulationService';
+import { normalizeAnomalyList } from '../collector/src/services/simulationService';
+import { HealthError } from '../collector/src/healthGate';
+import { runSimulation, type SimulationRunnerOptions } from '../collector/src/simRunner';
 
 const requireFromCollector = createRequire(path.resolve(__dirname, '../collector/package.json'));
 const yargs = requireFromCollector('yargs/yargs');
@@ -29,6 +31,10 @@ type CliOptions = {
   deltaEpsilon?: number;
   includeFeatures?: boolean;
   featureFile?: string;
+  ntpP95Ms?: string;
+  ntpLastMeasuredAt?: string;
+  ntpStatePath?: string;
+  ntpFreshnessMs?: number;
 };
 
 const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
@@ -90,6 +96,23 @@ const main = async (): Promise<void> => {
       type: 'string',
       describe: 'Custom filename for the derived feature CSV (requires --include-features).',
     })
+    .option('ntp-p95-ms', {
+      type: 'string',
+      describe: 'NTP 95th percentile offset in milliseconds or "auto" to read from state/ntp.json.',
+      default: 'auto',
+    })
+    .option('ntp-last-measured-at', {
+      type: 'string',
+      describe: 'ISO8601 or epoch milliseconds timestamp for the NTP measurement.',
+    })
+    .option('ntp-state-path', {
+      type: 'string',
+      describe: 'Path to the NTP measurement JSON file (default: ./state/ntp.json).',
+    })
+    .option('ntp-freshness-ms', {
+      type: 'number',
+      describe: 'Override freshness window (milliseconds) before the NTP measurement is considered stale.',
+    })
     .option('run-id', {
       type: 'string',
       describe: 'Run identifier for manifest naming.',
@@ -140,7 +163,11 @@ const main = async (): Promise<void> => {
 
   try {
     const anomalies = normalizeAnomaliesArg(argv.anomalies);
-    const result = await generateScenario({
+    const ntpOverrideRaw = typeof argv.ntpP95Ms === 'string' ? argv.ntpP95Ms.trim() : undefined;
+    const shouldOverrideNtp =
+      typeof ntpOverrideRaw === 'string' && ntpOverrideRaw.length > 0 && ntpOverrideRaw.toLowerCase() !== 'auto';
+
+    const simulationOptions: SimulationRunnerOptions = {
       count: argv.count,
       anomalies,
       seed: argv.seed,
@@ -160,14 +187,26 @@ const main = async (): Promise<void> => {
       timeAnomalyPropWeight: argv.timeAnomalyPropWeight,
       deltaEpsilon: argv.deltaEpsilon,
       includeFeaturesCsv: argv.includeFeatures,
-    });
+      ntpStatePath: argv.ntpStatePath,
+      freshnessMs: argv.ntpFreshnessMs,
+    };
+
+    if (shouldOverrideNtp && ntpOverrideRaw !== undefined) {
+      const numericOverride = Number(ntpOverrideRaw);
+      simulationOptions.ntpP95MsOverride = Number.isFinite(numericOverride) ? numericOverride : ntpOverrideRaw;
+      simulationOptions.ntpLastMeasuredAtOverride = argv.ntpLastMeasuredAt ?? new Date().toISOString();
+    } else if (argv.ntpLastMeasuredAt) {
+      simulationOptions.ntpLastMeasuredAtOverride = argv.ntpLastMeasuredAt;
+    }
+
+    const result = await runSimulation(simulationOptions);
 
     const indent = argv.pretty ? 2 : 0;
     process.stdout.write(`${JSON.stringify(result, null, indent)}\n`);
   } catch (error) {
     const message = error instanceof Error ? error.message : String(error);
     console.error(`[simulate] ${message}`);
-    process.exitCode = 1;
+    process.exitCode = error instanceof HealthError ? 2 : 1;
   }
 };
 

@@ -1,7 +1,7 @@
 {
   "algo_ver": "otsu+kneedle-v1",
   "epsilon": 0.001,
-  "ntp_p95_ms": 1250,
+  "ntp_p95_ms": 20,
   "ingress_jitter_ms": 45,
   "fd_bins": {
     "ntp-1": 0,
