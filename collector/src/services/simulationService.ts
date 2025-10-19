@@ -157,8 +157,10 @@ export interface SimulationSummary {
 
 export interface SimulationFiles {
   csvPath: string;
+  featuresCsvPath?: string | null;
   manifestPath: string;
-  hash: string;
+  csvHash: string;
+  featuresCsvHash?: string | null;
   metaPath?: string | null;
 }
 
@@ -173,6 +175,7 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   runId?: string | null;
   outputDir?: string;
   csvFileName?: string;
+  featureCsvFileName?: string | null;
   manifestFileName?: string;
   sessionSpacingSeconds?: number;
   scenarioPath?: string | null;
@@ -184,6 +187,7 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   timeAnomalyMode?: TimeDeviationMode | string | null;
   timeAnomalyPropWeight?: number | string | null;
   deltaEpsilon?: number | string | null;
+  includeFeaturesCsv?: boolean | string | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -198,6 +202,8 @@ export interface SimulationParameters extends Record<string, unknown> {
   persist: boolean;
   max_steps: number;
   delta_epsilon: number;
+  include_features_csv: boolean;
+  feature_csv_file_name: string | null;
   feature_augmenter: {
     window_size: number;
     quantiles: number[];
@@ -269,6 +275,8 @@ interface DefaultParameterInput {
   persist: boolean;
   maxSteps: number;
   deltaEpsilon: number;
+  includeFeaturesCsv: boolean;
+  featureCsvFileName: string | null;
   featureAugmenter: FeatureAugmenterOptions;
   timeDeviationMethod: string;
   timeDeviationQuantile: number | null;
@@ -726,6 +734,8 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   persist: input.persist,
   max_steps: input.maxSteps,
   delta_epsilon: input.deltaEpsilon,
+  include_features_csv: input.includeFeaturesCsv,
+  feature_csv_file_name: input.featureCsvFileName,
   feature_augmenter: {
     window_size: input.featureAugmenter.windowSize,
     quantiles: [...input.featureAugmenter.quantiles],
@@ -778,6 +788,8 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT,
   );
   const resolvedDeltaEpsilon = resolveDeltaEpsilonOption(options.deltaEpsilon, DEFAULT_DELTA_EPSILON);
+  const includeFeaturesCsv = parseBoolean(options.includeFeaturesCsv, false);
+  const featureCsvFileName = normalizeNullableString(options.featureCsvFileName ?? null);
 
   const scenarioDefinition = scenario.loadScenario(scenarioPath) as ScenarioDefinition;
   const scenarioId = normalizeString((scenarioDefinition as Record<string, unknown>).id) || 'default-flow';
@@ -861,6 +873,8 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     persist,
     maxSteps,
     deltaEpsilon: resolvedDeltaEpsilon,
+    includeFeaturesCsv,
+    featureCsvFileName,
     featureAugmenter: resolvedFeatureAugmenter,
     timeDeviationMethod: resolvedTimeDeviationMethod,
     timeDeviationQuantile: parameterQuantile,
@@ -983,9 +997,11 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       runId: options.runId ?? null,
       outputDir: (options.outputDir as string | undefined) || config.simLogRoot,
       csvFileName: options.csvFileName as string | undefined,
+      featureCsvFileName: featureCsvFileName ?? undefined,
       manifestFileName: options.manifestFileName as string | undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
+      includeFeaturesCsv,
       extraMetadata: lastTimeDeviationResult
         ? {
             time_deviation: {
@@ -1034,8 +1050,10 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   if (persistenceResult) {
     response.files = {
       csvPath: persistenceResult.csvPath,
+      featuresCsvPath: persistenceResult.featuresCsvPath,
       manifestPath: persistenceResult.manifestPath,
-      hash: persistenceResult.hash,
+      csvHash: persistenceResult.csvHash,
+      featuresCsvHash: persistenceResult.featuresCsvHash,
       metaPath: persistenceResult.metaPath,
     };
     response.manifest = persistenceResult.manifest;

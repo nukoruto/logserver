@@ -27,6 +27,8 @@ type CliOptions = {
   timeAnomalyMode?: string;
   timeAnomalyPropWeight?: number;
   deltaEpsilon?: number;
+  includeFeatures?: boolean;
+  featureFile?: string;
 };
 
 const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
@@ -78,6 +80,15 @@ const main = async (): Promise<void> => {
     .option('manifest-file', {
       type: 'string',
       describe: 'Custom manifest filename.',
+    })
+    .option('include-features', {
+      type: 'boolean',
+      default: false,
+      describe: 'Emit derived feature columns into a separate CSV alongside the contract CSV.',
+    })
+    .option('feature-file', {
+      type: 'string',
+      describe: 'Custom filename for the derived feature CSV (requires --include-features).',
     })
     .option('run-id', {
       type: 'string',
@@ -138,6 +149,7 @@ const main = async (): Promise<void> => {
       anomalyCount: argv.anomalyCount,
       outputDir: argv.outputDir,
       csvFileName: argv.csvFile,
+      featureCsvFileName: argv.featureFile,
       manifestFileName: argv.manifestFile,
       runId: argv.runId,
       persist: argv.persist,
@@ -147,6 +159,7 @@ const main = async (): Promise<void> => {
       timeAnomalyMode: argv.timeAnomalyMode,
       timeAnomalyPropWeight: argv.timeAnomalyPropWeight,
       deltaEpsilon: argv.deltaEpsilon,
+      includeFeaturesCsv: argv.includeFeatures,
     });
 
     const indent = argv.pretty ? 2 : 0;
