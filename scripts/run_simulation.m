@@ -11,6 +11,8 @@ end
 cfg = jsondecode(fileread(config_path));
 base_dir = fileparts(mfilename('fullpath'));
 addpath(base_dir);
+addpath(fullfile(base_dir, '..', 'util'));
+addpath(fullfile(base_dir, '..', 'matlab', 'util'));
 
 ref_payload = load(fullfile(cfg.data.output_dir, 'ref_sig.mat'));
 y_payload = load(fullfile(cfg.data.output_dir, 'y_lstm_sig.mat'));
