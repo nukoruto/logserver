@@ -209,6 +209,7 @@ def train(
     seed: int,
     time_objective: str,
     class_weights: Optional[Mapping[str, float]] = None,
+    config_source: Optional[Path] = None,
 ) -> Dict[str, object]:
     torch.manual_seed(seed)
     vocab = load_vocabulary(vocab_path) if vocab_path else None
@@ -399,6 +400,8 @@ def train(
     }
     if val_meta is not None:
         config_payload["validation"] = val_meta
+    if config_source is not None:
+        config_payload["config_source"] = str(Path(config_source).resolve())
     config_path = output_dir / "config.json"
     config_path.write_text(json.dumps(config_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 

@@ -6,15 +6,16 @@ import json
 import math
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Dict, Iterable, List, Mapping, MutableMapping, Sequence
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional, Sequence
 
 import numpy as np
 import torch
 from torch import Tensor
 from torch.utils.data import DataLoader
 
-from .data import collate_batch, load_sequence_dataset, load_vocabulary
-from .modules import DeltaTimeModel, DeltaTimeModelConfig
+from .data import collate_batch, load_sequence_dataset
+from .export import ExportError, load_bundle
+from .infer import _prepare_from_bundle, _prepare_from_checkpoint
 
 
 @dataclass
@@ -159,38 +160,53 @@ def _comparison_entries(
 def calibrate_temperature(
     val_patterns: Sequence[str],
     *,
-    checkpoint_path: Path,
+    checkpoint_path: Path | None,
+    bundle_path: Path | None = None,
     output_path: Path,
     device: torch.device,
     batch_size: int,
     bins: int,
     max_k: int,
 ) -> Mapping[str, object]:
-    config_path = checkpoint_path.with_name("config.json")
-    if not config_path.exists():
-        raise CalibrationError(f"構成ファイルが見つかりません: {config_path}")
-    config = json.loads(config_path.read_text(encoding="utf-8"))
-    model_cfg = DeltaTimeModelConfig.from_dict(config["model"])
-    vocab_path = config.get("vocab")
-    vocabulary = load_vocabulary(Path(vocab_path)) if vocab_path else None
-    data_meta = config.get("validation") or config.get("data")
-    if data_meta is None:
-        raise CalibrationError("config.json に data または validation 情報がありません")
-    delta_column = str(data_meta.get("delta_column", "dt_sec"))
-    numeric_columns = data_meta.get("numeric_columns")
-    if not numeric_columns:
-        raise CalibrationError("numeric_columns が構成に含まれていません")
-    dataset, meta = load_sequence_dataset(
-        val_patterns,
-        numeric_columns=list(numeric_columns),
-        delta_column=delta_column,
-        vocab=vocabulary,
-        idle_timeout=float(config.get("data", {}).get("idle_timeout", 1800.0)),
-    )
-    if meta["numeric_dim"] != model_cfg.numeric_dim:
-        raise CalibrationError(
-            "モデル設定とデータの連続特徴次元が一致しません"
+    if checkpoint_path is None and bundle_path is None:
+        raise CalibrationError("checkpoint または bundle のいずれかを指定してください")
+    if checkpoint_path is not None and bundle_path is not None:
+        raise CalibrationError("checkpoint と bundle は同時に指定できません")
+
+    prepared = None
+    dataset = None
+    meta: Mapping[str, object] | None = None
+
+    if bundle_path is not None:
+        bundle_path = bundle_path.expanduser().resolve()
+        try:
+            with load_bundle(bundle_path) as bundle:
+                prepared = _prepare_from_bundle(bundle, device=device)
+                dataset, meta = load_sequence_dataset(
+                    val_patterns,
+                    numeric_columns=list(prepared.numeric_columns),
+                    delta_column=prepared.delta_column,
+                    vocab=prepared.vocabulary,
+                    idle_timeout=prepared.idle_timeout,
+                )
+        except ExportError as exc:
+            raise CalibrationError(f"エクスポートバンドルの読み込みに失敗しました: {exc}") from exc
+    else:
+        assert checkpoint_path is not None
+        checkpoint_path = checkpoint_path.expanduser().resolve()
+        prepared = _prepare_from_checkpoint(checkpoint_path, calibration_path=None, device=device)
+        dataset, meta = load_sequence_dataset(
+            val_patterns,
+            numeric_columns=list(prepared.numeric_columns),
+            delta_column=prepared.delta_column,
+            vocab=prepared.vocabulary,
+            idle_timeout=prepared.idle_timeout,
         )
+
+    assert prepared is not None and dataset is not None and meta is not None
+    if int(meta["numeric_dim"]) != prepared.model.config.numeric_dim:
+        raise CalibrationError("モデル設定とデータの連続特徴次元が一致しません")
+
     loader = DataLoader(
         dataset,
         batch_size=batch_size,
@@ -199,10 +215,7 @@ def calibrate_temperature(
         collate_fn=collate_batch,
         pin_memory=False,
     )
-    model = DeltaTimeModel(model_cfg)
-    state = torch.load(checkpoint_path, map_location=device)
-    model.load_state_dict(state)
-    model.to(device)
+    model = prepared.model
     model.eval()
     logits_list: List[Tensor] = []
     targets_list: List[Tensor] = []
@@ -271,6 +284,7 @@ def calibrate_temperature(
             },
         },
     }
+    model.cpu()
     output_path.parent.mkdir(parents=True, exist_ok=True)
     output_path.write_text(json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True), encoding="utf-8")
     return payload

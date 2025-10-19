@@ -207,6 +207,21 @@ cp logs/sample.csv data/raw/
    出力される `summary/metrics_summary.json` にはフォールド平均・標準偏差・95% CI（ステーショナリ・ブートストラップ、平均ブロック長指
    定）およびユーザマクロ平均が含まれ、dt-anom については α/q 校正曲線（目標 vs. 実測）も併記される。
 
+4. **fuse** – Rolling-origin の dev/test それぞれで `dt-anom` / `dt-lstm` の確率スコアを結合。dev では `--dev-calib` に指定した JSON へ
+   F1 最大（もしくは `--objective budget` によるアラーム率制約）で求めたしきい値を保存し、test では同ファイルを再利用してリークなし
+   に `alarm_fisher` 列を生成します。単位変換（例：Δt 秒→ミリ秒）を行っても、スコア差分は `Δneglog10_p ≤ 0.02` 以内に収まるよう、
+   すべて float64 で計算します。
+
+   ```bash
+   python -m dt_cv.cli fuse \
+     --anom artifacts/folds/k/test_anom_scores.csv \
+     --lstm artifacts/folds/k/test_lstm_scores.csv \
+     --method fisher \
+     --dev-calib artifacts/folds/k/dev_fuse_calib.json \
+     --out artifacts/folds/k/test_fused_scores.csv \
+     --objective f1
+   ```
+
 同じ `splits.yaml` と `--seed` を用いれば、各フォールドの成果物（特徴 CSV、異常統計、LSTM モデル、スコア CSV）はバイトレベルで一致
 します。生成物の所在は `splits.yaml` の `folds[].paths` に記録され、追加のアーティファクト管理を行う際も追跡可能です。
 

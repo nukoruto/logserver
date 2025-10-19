@@ -17,6 +17,10 @@ from .runner import CommandSpec, build_deterministic_env, run_command
 from .splitter import load_splits
 
 
+REPO_ROOT = Path(__file__).resolve().parents[4]
+DEFAULT_LSTM_CFG = REPO_ROOT / "configs" / "best_from_search.yaml"
+
+
 class WorkflowError(RuntimeError):
     """Raised when workflow execution fails."""
 
@@ -177,31 +181,20 @@ def run_train(
                 outputs={"stats": paths.anomaly_stats, "meta": paths.anomaly_meta},
             )
         )
+        if not DEFAULT_LSTM_CFG.exists():
+            raise WorkflowError(f"dt-lstm 設定ファイルが見つかりません: {DEFAULT_LSTM_CFG}")
         # dt-lstm train
         lstm_dir = paths.lstm_dir
         lstm_dir.mkdir(parents=True, exist_ok=True)
-        numeric_columns = [
-            "delta_seconds",
-            "delta_clipped_seconds",
-            "delta_robust_z",
-            "delta_z_deseas_clipped",
-            "delta_log_burst",
-        ]
         argv_lstm_train = [
             dt_lstm_bin,
             "train",
             "--train",
             str(paths.features_train),
-            "--val",
+            "--dev",
             str(paths.features_validation),
-            "--numeric-cols",
-            *numeric_columns,
-            "--delta-col",
-            "dt_sec",
-            "--epochs",
-            "5",
-            "--bs",
-            "64",
+            "--cfg",
+            str(DEFAULT_LSTM_CFG),
             "--seed",
             str(seed),
             "--out",
@@ -214,6 +207,31 @@ def run_train(
                 cwd=lstm_dir,
                 env=env,
                 outputs={"dir": lstm_dir},
+            )
+        )
+        # dt-lstm calibrate
+        calib_path = lstm_dir / "calib.json"
+        argv_lstm_calibrate = [
+            dt_lstm_bin,
+            "calibrate",
+            "--dev",
+            str(paths.features_validation),
+            "--model",
+            str(lstm_dir / "model.pt"),
+            "--out",
+            str(calib_path),
+            "--cfg",
+            str(DEFAULT_LSTM_CFG),
+            "--seed",
+            str(seed),
+        ]
+        run_command(
+            CommandSpec(
+                name=f"fold{fold_id}.lstm.calibrate",
+                argv=argv_lstm_calibrate,
+                cwd=lstm_dir,
+                env=env,
+                outputs={"calib": calib_path},
             )
         )
 
@@ -352,15 +370,26 @@ def _score_subset(
     )
     # dt-lstm infer
     lstm_ckpt = paths.lstm_dir / "model.pt"
+    calib_path = paths.lstm_dir / "calib.json"
+    if not calib_path.exists():
+        raise WorkflowError(f"Calibration artifact not found: {calib_path}")
+    lstm_audit = paths.lstm_dir / "audit" / f"{subset}_lstm_audit.jsonl"
+    _ensure_parent(lstm_audit)
     argv_lstm_infer = [
         dt_lstm_bin,
         "infer",
-        "--in",
+        "--test",
         str(feature_path),
-        "--ckpt",
+        "--model",
         str(lstm_ckpt),
+        "--calib",
+        str(calib_path),
         "--out",
         str(lstm_output),
+        "--audit",
+        str(lstm_audit),
+        "--cfg",
+        str(DEFAULT_LSTM_CFG),
         "--seed",
         str(env.get("DT_GLOBAL_SEED", "0")),
     ]
@@ -370,7 +399,7 @@ def _score_subset(
             argv=argv_lstm_infer,
             cwd=paths.lstm_dir,
             env=env,
-            outputs={"scores": lstm_output},
+            outputs={"scores": lstm_output, "audit": lstm_audit},
         )
     )
     # Metrics computation
