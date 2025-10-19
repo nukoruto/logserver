@@ -7,11 +7,12 @@ import json
 import logging
 import sys
 from pathlib import Path
-from typing import Sequence
+from typing import Any, Mapping, Optional, Sequence
 
 import torch
+import yaml
 
-from .calibrate import calibrate_temperature
+from .calibrate import CalibrationError, calibrate_temperature
 from .engine import DTLSTMEngine
 from .export import DEFAULT_ALGO_VERSION, ExportError, export_bundle
 from .fit import FitError, main as fit_main
@@ -82,6 +83,95 @@ def _parse_kofn(spec: str) -> tuple[int, int]:
     if k_value > n_value:
         raise ValueError("K は N 以下である必要があります")
     return k_value, n_value
+
+
+def _load_yaml_config(path: Path) -> Mapping[str, Any]:
+    try:
+        content = path.read_text(encoding="utf-8")
+    except FileNotFoundError as exc:
+        raise ValueError(f"設定ファイルが見つかりません: {path}") from exc
+    try:
+        data = yaml.safe_load(content) or {}
+    except yaml.YAMLError as exc:  # pragma: no cover - 例外系
+        raise ValueError(f"設定ファイルの解析に失敗しました: {path}: {exc}") from exc
+    if not isinstance(data, Mapping):
+        raise ValueError("設定ファイルのルート要素はマッピングである必要があります")
+    return data
+
+
+def _optional_sequence(value: Any, desc: str) -> Optional[Sequence[Any]]:
+    if value is None:
+        return None
+    if isinstance(value, (str, bytes)):
+        raise ValueError(f"{desc} は配列形式で指定してください")
+    if isinstance(value, Sequence):
+        return value
+    raise ValueError(f"{desc} は配列形式で指定してください")
+
+
+def _optional_int(value: Any, desc: str) -> Optional[int]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{desc} は整数で指定してください")
+    try:
+        return int(value)
+    except Exception as exc:  # pragma: no cover - 異常入力
+        raise ValueError(f"{desc} は整数で指定してください") from exc
+
+
+def _optional_float(value: Any, desc: str) -> Optional[float]:
+    if value is None:
+        return None
+    if isinstance(value, bool):
+        raise ValueError(f"{desc} は数値で指定してください")
+    try:
+        return float(value)
+    except Exception as exc:  # pragma: no cover - 異常入力
+        raise ValueError(f"{desc} は数値で指定してください") from exc
+
+
+def _optional_str(value: Any, desc: str) -> Optional[str]:
+    if value is None:
+        return None
+    try:
+        return str(value)
+    except Exception as exc:  # pragma: no cover - 異常入力
+        raise ValueError(f"{desc} は文字列で指定してください") from exc
+
+
+def _coerce_bool(value: Any, desc: str, default: bool) -> bool:
+    if value is None:
+        return default
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return bool(value)
+    if isinstance(value, str):
+        lowered = value.strip().lower()
+        if lowered in {"true", "yes", "on", "1"}:
+            return True
+        if lowered in {"false", "no", "off", "0"}:
+            return False
+    raise ValueError(f"{desc} は真偽値で指定してください")
+
+
+def _resolve_model_paths(*, ckpt: Optional[str], bundle: Optional[str], model: Optional[str]) -> tuple[Optional[Path], Optional[Path]]:
+    ckpt_path = Path(ckpt).expanduser().resolve() if ckpt else None
+    bundle_path = Path(bundle).expanduser().resolve() if bundle else None
+    if model:
+        candidate = Path(model).expanduser().resolve()
+        if candidate.suffix.lower() == ".tar":
+            if bundle_path is not None or ckpt_path is not None:
+                raise ValueError("checkpoint/bundle と model を同時指定できません")
+            bundle_path = candidate
+        else:
+            if ckpt_path is not None or bundle_path is not None:
+                raise ValueError("checkpoint/bundle と model を同時指定できません")
+            ckpt_path = candidate
+    if ckpt_path is not None and bundle_path is not None:
+        raise ValueError("checkpoint と bundle は同時指定できません")
+    return ckpt_path, bundle_path
 
 
 def _build_parser() -> argparse.ArgumentParser:
@@ -158,7 +248,7 @@ def _build_parser() -> argparse.ArgumentParser:
 
     train_parser = subparsers.add_parser("train", help="Δt-aware LSTM を学習する")
     train_parser.add_argument("--train", dest="train", nargs="+", required=True, help="学習用CSVのglobパターン")
-    train_parser.add_argument("--val", dest="val", nargs="+", default=None, help="検証用CSVのglobパターン")
+    train_parser.add_argument("--val", "--dev", dest="val", nargs="+", default=None, help="検証用CSVのglobパターン")
     train_parser.add_argument("--numeric-cols", nargs="*", default=["z_clipped", "lburst", "m25", "m50", "m75", "z_deseas", "dt_sec"], help="連続特徴量列名")
     train_parser.add_argument("--delta-col", default="dt_sec", help="Δt 列名")
     train_parser.add_argument("--vocab", default=None, help="dt-lstm fit で生成した語彙JSON")
@@ -191,21 +281,29 @@ def _build_parser() -> argparse.ArgumentParser:
     train_parser.add_argument("--num-workers", type=int, default=0, help="DataLoader のワーカー数")
     train_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
     train_parser.add_argument("--out", required=True, help="出力ディレクトリ")
+    train_parser.add_argument("--cfg", default=None, help="YAML 設定ファイル")
 
     calibrate_parser = subparsers.add_parser(
         "calibrate", help="温度スケーリングで ECE を最小化し、Top-K 被覆を評価する"
     )
     calibrate_parser.add_argument(
         "--val",
+        "--dev",
         dest="val",
         nargs="+",
         required=True,
         help="検証用特徴量CSVのglobパターン",
     )
-    calibrate_parser.add_argument(
+    source_group = calibrate_parser.add_mutually_exclusive_group(required=True)
+    source_group.add_argument(
         "--ckpt",
-        required=True,
         help="学習済みモデルのチェックポイント (model.pt)",
+    )
+    source_group.add_argument("--bundle", dest="bundle", help="dt-lstm export で生成したバンドルtar")
+    source_group.add_argument(
+        "--model",
+        dest="model",
+        help="チェックポイント (model.pt) またはバンドル (model.tar)",
     )
     calibrate_parser.add_argument("--out", required=True, help="温度スケーリング結果JSONの出力先")
     calibrate_parser.add_argument("--batch-size", type=int, default=64, help="評価時のバッチサイズ")
@@ -217,6 +315,7 @@ def _build_parser() -> argparse.ArgumentParser:
         default=10,
         help="被覆–冗長曲線で計算する最大 Top-K",
     )
+    calibrate_parser.add_argument("--cfg", default=None, help="YAML 設定ファイル")
 
     export_parser = subparsers.add_parser("export", help="学習済みチェックポイントを単一tarにバンドルする")
     export_parser.add_argument("--ckpt", required=True, help="学習済みモデルのチェックポイント (model.pt)")
@@ -231,10 +330,15 @@ def _build_parser() -> argparse.ArgumentParser:
     export_parser.add_argument("--out", required=True, help="出力tarパス")
 
     infer_parser = subparsers.add_parser("infer", help="Δt-aware LSTM でバッチ推論を実行する")
-    infer_parser.add_argument("--in", dest="inputs", nargs="+", required=True, help="入力CSVパス (glob対応)")
+    infer_parser.add_argument("--in", "--test", dest="inputs", nargs="+", required=True, help="入力CSVパス (glob対応)")
     source_group = infer_parser.add_mutually_exclusive_group(required=True)
     source_group.add_argument("--ckpt", help="学習済みモデルのチェックポイント (model.pt)")
-    source_group.add_argument("--bundle", help="dt-lstm export で生成したバンドルtar")
+    source_group.add_argument("--bundle", dest="bundle", help="dt-lstm export で生成したバンドルtar")
+    source_group.add_argument(
+        "--model",
+        dest="model",
+        help="チェックポイント (model.pt) またはバンドル (model.tar)",
+    )
     infer_parser.add_argument(
         "--calib",
         default=None,
@@ -244,6 +348,7 @@ def _build_parser() -> argparse.ArgumentParser:
     infer_parser.add_argument("--out", required=True, help="スコアCSVの出力先")
     infer_parser.add_argument("--audit", default=None, help="監査JSONLの出力先")
     infer_parser.add_argument("--seed", type=int, default=42, help="乱数シード")
+    infer_parser.add_argument("--cfg", default=None, help="YAML 設定ファイル")
 
     online_parser = subparsers.add_parser(
         "online", help="Δt-aware LSTM によるオンライン到着前アラーム監視を実行する"
@@ -371,64 +476,220 @@ def main(argv: Sequence[str] | None = None) -> int:
         engine = DTLSTMEngine(seed=args.seed)
         runtime = engine.configure()
         output_dir = Path(args.out).expanduser().resolve()
-        numeric_cols = list(args.numeric_cols or [])
-        if args.delta_col not in numeric_cols:
-            numeric_cols = [args.delta_col, *numeric_cols]
-        # Preserve order while removing duplicates
-        seen = set()
-        deduped_numeric = []
-        for col in numeric_cols:
-            if col in seen:
+        cfg_path = Path(args.cfg).expanduser().resolve() if args.cfg else None
+        cfg_data: Optional[Mapping[str, Any]] = None
+        if cfg_path is not None:
+            try:
+                cfg_data = _load_yaml_config(cfg_path)
+            except ValueError as exc:
+                _LOGGER.error("train.invalid_config", extra={"error": str(exc)})
+                return 1
+
+        numeric_cols: Sequence[Any] = list(args.numeric_cols or [])
+        delta_column = args.delta_col
+        idle_timeout = float(args.idle_timeout)
+        arch = args.arch
+        time_head = args.time_head
+        embedding_dim = int(args.emb_dim)
+        hidden_size = int(args.hidden)
+        num_layers = int(args.layers)
+        dropout = float(args.dropout)
+        mlp_hidden = tuple(args.mlp_hidden) if args.mlp_hidden else tuple()
+        mlp_activation = args.mlp_activation
+        mlp_dropout = float(args.mlp_dropout)
+        delta_index = int(args.delta_index)
+        rmtpp_eps = float(args.rmtpp_eps)
+
+        epochs = int(args.epochs)
+        batch_size = int(args.bs)
+        learning_rate = float(args.lr)
+        min_lr = float(args.min_lr)
+        scheduler_name = args.scheduler
+        early_stopping = int(args.early)
+        clip_grad = float(args.clip_grad)
+        amp_level = str(args.amp)
+        scheduled_sampling = max(0.0, min(1.0, float(args.scheduled_sampling)))
+        uncertainty = args.uncertainty_weight == "on"
+        focal_gamma = args.focal_gamma
+        label_smoothing = max(0.0, min(1.0, float(args.label_smoothing)))
+        num_workers = int(args.num_workers)
+        time_objective = args.time_objective
+        class_weights: Optional[Mapping[str, float]] = None
+
+        if cfg_data is not None:
+            try:
+                data_cfg = cfg_data.get("data") if isinstance(cfg_data, Mapping) else None
+                if isinstance(data_cfg, Mapping):
+                    seq = _optional_sequence(data_cfg.get("numeric_columns"), "data.numeric_columns")
+                    if seq is not None:
+                        numeric_cols = [str(item) for item in seq]
+                    delta_override = _optional_str(data_cfg.get("delta_column"), "data.delta_column")
+                    if delta_override is not None:
+                        delta_column = delta_override
+                    idle_override = _optional_float(data_cfg.get("idle_timeout"), "data.idle_timeout")
+                    if idle_override is not None:
+                        idle_timeout = float(idle_override)
+
+                model_cfg_section = cfg_data.get("model") if isinstance(cfg_data, Mapping) else None
+                if isinstance(model_cfg_section, Mapping):
+                    arch_override = _optional_str(model_cfg_section.get("arch"), "model.arch")
+                    if arch_override is not None:
+                        arch = arch_override
+                    head_override = _optional_str(model_cfg_section.get("time_head"), "model.time_head")
+                    if head_override is not None:
+                        time_head = head_override
+                    emb_override = _optional_int(model_cfg_section.get("embedding_dim"), "model.embedding_dim")
+                    if emb_override is not None:
+                        embedding_dim = emb_override
+                    hidden_override = _optional_int(model_cfg_section.get("hidden_size"), "model.hidden_size")
+                    if hidden_override is not None:
+                        hidden_size = hidden_override
+                    layer_override = _optional_int(model_cfg_section.get("num_layers"), "model.num_layers")
+                    if layer_override is not None:
+                        num_layers = layer_override
+                    dropout_override = _optional_float(model_cfg_section.get("dropout"), "model.dropout")
+                    if dropout_override is not None:
+                        dropout = float(dropout_override)
+                    mlp_override = _optional_sequence(model_cfg_section.get("mlp_hidden"), "model.mlp_hidden")
+                    if mlp_override is not None:
+                        hidden_dims = []
+                        for idx, value in enumerate(mlp_override):
+                            try:
+                                hidden_dims.append(int(value))
+                            except Exception as exc:  # pragma: no cover - 異常入力
+                                raise ValueError(f"model.mlp_hidden[{idx}] は整数で指定してください") from exc
+                        mlp_hidden = tuple(hidden_dims)
+                    activation_override = _optional_str(model_cfg_section.get("mlp_activation"), "model.mlp_activation")
+                    if activation_override is not None:
+                        mlp_activation = activation_override
+                    mlp_dropout_override = _optional_float(model_cfg_section.get("mlp_dropout"), "model.mlp_dropout")
+                    if mlp_dropout_override is not None:
+                        mlp_dropout = float(mlp_dropout_override)
+                    delta_index_override = _optional_int(model_cfg_section.get("delta_index"), "model.delta_index")
+                    if delta_index_override is not None:
+                        delta_index = delta_index_override
+                    rmtpp_override = _optional_float(model_cfg_section.get("rmtpp_eps"), "model.rmtpp_eps")
+                    if rmtpp_override is not None:
+                        rmtpp_eps = float(rmtpp_override)
+
+                train_cfg_section = cfg_data.get("training") if isinstance(cfg_data, Mapping) else None
+                if isinstance(train_cfg_section, Mapping):
+                    epochs_override = _optional_int(train_cfg_section.get("epochs"), "training.epochs")
+                    if epochs_override is not None:
+                        epochs = epochs_override
+                    batch_override = _optional_int(train_cfg_section.get("batch_size"), "training.batch_size")
+                    if batch_override is not None:
+                        batch_size = batch_override
+                    lr_override = _optional_float(train_cfg_section.get("learning_rate"), "training.learning_rate")
+                    if lr_override is not None:
+                        learning_rate = float(lr_override)
+                    min_lr_override = _optional_float(train_cfg_section.get("min_learning_rate"), "training.min_learning_rate")
+                    if min_lr_override is not None:
+                        min_lr = float(min_lr_override)
+                    scheduler_override = _optional_str(train_cfg_section.get("scheduler"), "training.scheduler")
+                    if scheduler_override is not None:
+                        scheduler_name = scheduler_override
+                    early_override = _optional_int(train_cfg_section.get("early_stopping"), "training.early_stopping")
+                    if early_override is not None:
+                        early_stopping = early_override
+                    clip_override = _optional_float(train_cfg_section.get("clip_grad"), "training.clip_grad")
+                    if clip_override is not None:
+                        clip_grad = float(clip_override)
+                    amp_override = _optional_str(train_cfg_section.get("amp_level"), "training.amp_level")
+                    if amp_override is not None:
+                        amp_level = amp_override
+                    ss_override = _optional_float(train_cfg_section.get("scheduled_sampling"), "training.scheduled_sampling")
+                    if ss_override is not None:
+                        scheduled_sampling = max(0.0, min(1.0, float(ss_override)))
+                    uncertainty = _coerce_bool(
+                        train_cfg_section.get("uncertainty_weighting"),
+                        "training.uncertainty_weighting",
+                        uncertainty,
+                    )
+                    focal_override = _optional_float(train_cfg_section.get("focal_gamma"), "training.focal_gamma")
+                    if focal_override is not None:
+                        focal_gamma = float(focal_override)
+                    smoothing_override = _optional_float(train_cfg_section.get("label_smoothing"), "training.label_smoothing")
+                    if smoothing_override is not None:
+                        label_smoothing = max(0.0, min(1.0, float(smoothing_override)))
+                    workers_override = _optional_int(train_cfg_section.get("num_workers"), "training.num_workers")
+                    if workers_override is not None:
+                        num_workers = workers_override
+
+                time_obj_override = _optional_str(cfg_data.get("time_objective"), "time_objective")
+                if time_obj_override is not None:
+                    time_objective = time_obj_override
+
+                class_cfg = cfg_data.get("class_weights")
+                if isinstance(class_cfg, Mapping):
+                    mapped: dict[str, float] = {}
+                    for key, value in class_cfg.items():
+                        mapped[str(key)] = float(value)
+                    class_weights = mapped
+                elif class_cfg is not None:
+                    class_path = Path(str(class_cfg)).expanduser().resolve()
+                    class_weights = json.loads(class_path.read_text(encoding="utf-8"))
+            except ValueError as exc:
+                _LOGGER.error("train.invalid_config", extra={"error": str(exc)})
+                return 1
+
+        numeric_list = [str(col) for col in (numeric_cols or [])]
+        if delta_column not in numeric_list:
+            numeric_list = [delta_column, *numeric_list]
+        deduped_numeric: list[str] = []
+        seen_cols = set()
+        for col in numeric_list:
+            if col in seen_cols:
                 continue
-            seen.add(col)
+            seen_cols.add(col)
             deduped_numeric.append(col)
         numeric_cols = deduped_numeric
-        model_cfg = DeltaTimeModelConfig(
-            arch=args.arch,
-            vocab_size=1,
-            embedding_dim=args.emb_dim,
-            hidden_size=args.hidden,
-            num_layers=args.layers,
-            dropout=args.dropout,
-            numeric_dim=len(numeric_cols),
-            mlp_hidden_dims=tuple(args.mlp_hidden) if args.mlp_hidden else tuple(),
-            mlp_activation=args.mlp_activation,
-            mlp_dropout=args.mlp_dropout,
-            time_head=args.time_head,
-            delta_index=args.delta_index,
-            rmtpp_eps=args.rmtpp_eps,
-        )
-        training_cfg = TrainingConfig(
-            epochs=args.epochs,
-            batch_size=args.bs,
-            learning_rate=args.lr,
-            min_learning_rate=args.min_lr,
-            scheduler=args.scheduler,
-            early_stopping=args.early,
-            clip_grad=args.clip_grad,
-            amp_level=args.amp,
-            scheduled_sampling=max(0.0, min(1.0, args.scheduled_sampling)),
-            uncertainty_weighting=args.uncertainty_weight == "on",
-            focal_gamma=args.focal_gamma,
-            label_smoothing=max(0.0, min(1.0, args.label_smoothing)),
-            num_workers=args.num_workers,
-        )
-        class_weights = None
+
         if args.class_weights:
             class_path = Path(args.class_weights).expanduser().resolve()
             class_weights = json.loads(class_path.read_text(encoding="utf-8"))
+
+        model_cfg = DeltaTimeModelConfig(
+            arch=arch,
+            vocab_size=1,
+            embedding_dim=embedding_dim,
+            hidden_size=hidden_size,
+            num_layers=num_layers,
+            dropout=dropout,
+            numeric_dim=len(numeric_cols),
+            mlp_hidden_dims=tuple(int(x) for x in mlp_hidden),
+            mlp_activation=mlp_activation,
+            mlp_dropout=mlp_dropout,
+            time_head=time_head,
+            delta_index=delta_index,
+            rmtpp_eps=rmtpp_eps,
+        )
+        training_cfg = TrainingConfig(
+            epochs=epochs,
+            batch_size=batch_size,
+            learning_rate=learning_rate,
+            min_learning_rate=min_lr,
+            scheduler=scheduler_name,
+            early_stopping=early_stopping,
+            clip_grad=clip_grad,
+            amp_level=str(amp_level),
+            scheduled_sampling=scheduled_sampling,
+            uncertainty_weighting=uncertainty,
+            focal_gamma=focal_gamma,
+            label_smoothing=label_smoothing,
+            num_workers=num_workers,
+        )
         val_patterns = args.val if args.val else None
-        time_objective = args.time_objective
-        if args.time_head == "rmtpp":
+        if time_head == "rmtpp":
             time_objective = "rmtpp"
         try:
             result = train_model(
                 args.train,
                 val_patterns=val_patterns,
                 numeric_columns=numeric_cols,
-                delta_column=args.delta_col,
+                delta_column=delta_column,
                 vocab_path=Path(args.vocab).expanduser().resolve() if args.vocab else None,
-                idle_timeout=float(args.idle_timeout),
+                idle_timeout=float(idle_timeout),
                 model_config=model_cfg,
                 training_config=training_cfg,
                 device=runtime.device,
@@ -436,6 +697,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 seed=args.seed,
                 time_objective=time_objective,
                 class_weights=class_weights,
+                config_source=cfg_path,
             )
         except Exception as exc:  # pragma: no cover - ログ出力
             _LOGGER.error("train.failed", extra={"error": str(exc)})
@@ -450,23 +712,68 @@ def main(argv: Sequence[str] | None = None) -> int:
             "seed": args.seed,
             "device": str(runtime.device),
         }
+        if cfg_path is not None:
+            payload["config_source"] = str(cfg_path)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
 
     if args.command == "calibrate":
         engine = DTLSTMEngine(seed=args.seed)
         runtime = engine.configure()
-        ckpt_path = Path(args.ckpt).expanduser().resolve()
+        cfg_path = Path(args.cfg).expanduser().resolve() if args.cfg else None
+        cfg_data: Optional[Mapping[str, Any]] = None
+        if cfg_path is not None:
+            try:
+                cfg_data = _load_yaml_config(cfg_path)
+            except ValueError as exc:
+                _LOGGER.error("calibrate.invalid_config", extra={"error": str(exc)})
+                return 1
+        try:
+            ckpt_path, bundle_path = _resolve_model_paths(
+                ckpt=args.ckpt,
+                bundle=getattr(args, "bundle", None),
+                model=getattr(args, "model", None),
+            )
+        except ValueError as exc:
+            _LOGGER.error("calibrate.invalid_model", extra={"error": str(exc)})
+            return 1
+        if ckpt_path is None and bundle_path is None:
+            _LOGGER.error("calibrate.missing_model", extra={"error": "--ckpt/--bundle/--model のいずれかを指定してください"})
+            return 1
         out_path = Path(args.out).expanduser().resolve()
-        result = calibrate_temperature(
-            args.val,
-            checkpoint_path=ckpt_path,
-            output_path=out_path,
-            device=runtime.device,
-            batch_size=args.batch_size,
-            bins=args.bins,
-            max_k=args.max_k,
-        )
+        batch_size = int(args.batch_size)
+        bins = int(args.bins)
+        max_k = int(args.max_k)
+        if cfg_data is not None:
+            try:
+                calib_cfg = cfg_data.get("calibration") if isinstance(cfg_data, Mapping) else None
+                if isinstance(calib_cfg, Mapping):
+                    batch_override = _optional_int(calib_cfg.get("batch_size"), "calibration.batch_size")
+                    if batch_override is not None:
+                        batch_size = batch_override
+                    bins_override = _optional_int(calib_cfg.get("bins"), "calibration.bins")
+                    if bins_override is not None:
+                        bins = bins_override
+                    maxk_override = _optional_int(calib_cfg.get("max_k"), "calibration.max_k")
+                    if maxk_override is not None:
+                        max_k = maxk_override
+            except ValueError as exc:
+                _LOGGER.error("calibrate.invalid_config", extra={"error": str(exc)})
+                return 1
+        try:
+            result = calibrate_temperature(
+                args.val,
+                checkpoint_path=ckpt_path,
+                bundle_path=bundle_path,
+                output_path=out_path,
+                device=runtime.device,
+                batch_size=batch_size,
+                bins=bins,
+                max_k=max_k,
+            )
+        except CalibrationError as exc:
+            _LOGGER.error("calibrate.failed", extra={"error": str(exc)})
+            return 1
         payload = {
             "event": "calibrate.completed",
             "temperature": result["temperature"],
@@ -474,6 +781,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "ece_after": result["ece"]["after"],
             "out_path": str(out_path),
         }
+        if cfg_path is not None:
+            payload["config_source"] = str(cfg_path)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
 
@@ -501,11 +810,40 @@ def main(argv: Sequence[str] | None = None) -> int:
     if args.command == "infer":
         engine = DTLSTMEngine(seed=args.seed)
         runtime = engine.configure()
-        ckpt_path = Path(args.ckpt).expanduser().resolve() if args.ckpt else None
-        bundle_path = Path(args.bundle).expanduser().resolve() if args.bundle else None
+        cfg_path = Path(args.cfg).expanduser().resolve() if args.cfg else None
+        cfg_data: Optional[Mapping[str, Any]] = None
+        if cfg_path is not None:
+            try:
+                cfg_data = _load_yaml_config(cfg_path)
+            except ValueError as exc:
+                _LOGGER.error("infer.invalid_config", extra={"error": str(exc)})
+                return 1
+        try:
+            ckpt_path, bundle_path = _resolve_model_paths(
+                ckpt=args.ckpt,
+                bundle=getattr(args, "bundle", None),
+                model=getattr(args, "model", None),
+            )
+        except ValueError as exc:
+            _LOGGER.error("infer.invalid_model", extra={"error": str(exc)})
+            return 1
+        if ckpt_path is None and bundle_path is None:
+            _LOGGER.error("infer.missing_model", extra={"error": "--ckpt/--bundle/--model のいずれかを指定してください"})
+            return 1
         calib_path = Path(args.calib).expanduser().resolve() if args.calib else None
         out_path = Path(args.out).expanduser().resolve()
         audit_path = Path(args.audit).expanduser().resolve() if args.audit else None
+        topk = int(args.topk)
+        if cfg_data is not None:
+            try:
+                infer_cfg = cfg_data.get("inference") if isinstance(cfg_data, Mapping) else None
+                if isinstance(infer_cfg, Mapping):
+                    topk_override = _optional_int(infer_cfg.get("topk"), "inference.topk")
+                    if topk_override is not None:
+                        topk = topk_override
+            except ValueError as exc:
+                _LOGGER.error("infer.invalid_config", extra={"error": str(exc)})
+                return 1
         try:
             summary = run_inference(
                 args.inputs,
@@ -513,7 +851,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 calibration_path=calib_path,
                 output_path=out_path,
                 audit_path=audit_path,
-                topk=int(args.topk),
+                topk=int(topk),
                 device=runtime.device,
                 bundle_path=bundle_path,
             )
@@ -527,6 +865,8 @@ def main(argv: Sequence[str] | None = None) -> int:
             "out_path": str(summary.out_path),
             "audit_path": summary.audit_path and str(summary.audit_path),
         }
+        if cfg_path is not None:
+            payload["config_source"] = str(cfg_path)
         sys.stdout.write(json.dumps(payload, ensure_ascii=False) + "\n")
         return 0
 

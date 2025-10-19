@@ -9,6 +9,7 @@ import sys
 from pathlib import Path
 
 import pytest
+import yaml
 
 torch = pytest.importorskip("torch")  # noqa: F401
 
@@ -162,14 +163,18 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
     }
     calib_path.write_text(json.dumps(calib_payload, ensure_ascii=False, indent=2), encoding="utf-8")
 
+    cfg_path = tmp_path / "infer_config.yaml"
+    cfg_payload = {"inference": {"topk": 2}}
+    cfg_path.write_text(yaml.safe_dump(cfg_payload), encoding="utf-8")
+
     out_path = tmp_path / "out" / "scores.csv"
     audit_path = tmp_path / "out" / "audit.jsonl"
 
     args = [
         "infer",
-        "--in",
+        "--test",
         str(data_path),
-        "--ckpt",
+        "--model",
         str(ckpt_path),
         "--calib",
         str(calib_path),
@@ -179,12 +184,15 @@ def test_cli_infer_produces_fisher_combined_scores(tmp_path, capsys):
         str(out_path),
         "--audit",
         str(audit_path),
+        "--cfg",
+        str(cfg_path),
     ]
     exit_code = cli.main(args)
     assert exit_code == 0
     stdout = capsys.readouterr().out.strip()
     payload = json.loads(stdout)
     assert payload["event"] == "infer.completed"
+    assert payload["config_source"] == str(cfg_path.resolve())
     assert payload["events"] == 4
 
     with out_path.open("r", encoding="utf-8") as stream:

@@ -1,0 +1,47 @@
+data:
+  numeric_columns:
+    - dt_sec
+    - delta_seconds
+    - delta_clipped_seconds
+    - delta_robust_z
+    - delta_z_deseas_clipped
+    - delta_log_burst
+  delta_column: dt_sec
+  idle_timeout: 1800.0
+model:
+  arch: lstm
+  time_head: rmtpp
+  embedding_dim: 192
+  hidden_size: 256
+  num_layers: 2
+  dropout: 0.2
+  mlp_hidden:
+    - 128
+    - 64
+  mlp_activation: gelu
+  mlp_dropout: 0.1
+  delta_index: 0
+  rmtpp_eps: 1.0e-6
+training:
+  epochs: 40
+  batch_size: 128
+  learning_rate: 0.0015
+  min_learning_rate: 1.0e-5
+  scheduler: cosine
+  early_stopping: 6
+  clip_grad: 1.0
+  amp_level: O1
+  scheduled_sampling: 0.0
+  uncertainty_weighting: true
+  focal_gamma: null
+  label_smoothing: 0.05
+  num_workers: 2
+time_objective: rmtpp
+class_weights:
+  0: 0.0
+calibration:
+  batch_size: 128
+  bins: 20
+  max_k: 10
+inference:
+  topk: 10
