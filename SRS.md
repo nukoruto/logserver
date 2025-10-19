@@ -67,8 +67,9 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  
 - Δt 計算: Δt_t = timestamp_t - timestamp_t-1（秒）、有効サンプル集合の最小値を min Δt_measured とすると測定許容値 ε は ε = max(1e-6, min(0.5 × min Δt_measured, 1e-2)) で固定
-- カテゴリ: 事前定義語彙でエンコード（埋め込み利用）  
-- 数値特徴: 標準化（学習データの平均・分散を保存して再利用）  
+- カテゴリ: 事前定義語彙でエンコード（埋め込み利用）
+- テンプレート ID: method/path/op_category から正規化 (`AUTH::GET::dashboard` 形式) し、Python/TypeScript 共通ヘルパーで決定的に生成する
+- 数値特徴: 標準化（学習データの平均・分散を保存して再利用）
 - 入力テンソル: 時刻 t の特徴ベクトル = [event_embed, Δt, latency, status, …]  
 - 分割: train/val/test = 7/1/2（セッション単位）  
 - 欠損: イベントは専用トークン、数値は中央値補完

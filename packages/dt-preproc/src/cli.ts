@@ -11,6 +11,7 @@ import { z } from 'zod';
 import {
   DEFAULT_FEATURE_OPTIONS,
   StreamingFeatureTransformer,
+  attachTemplate,
   fitRobustStats,
   freezeFittedStats,
   thawFittedStats,
@@ -200,6 +201,8 @@ function toCsvRecord(row: LogRowWithFeats, quantileColumns: readonly string[]): 
     timestamp_epoch_seconds: row.timestamp_epoch_seconds,
     uid: row.uid,
     session_id: row.session_id,
+    template_id: row.template_id,
+    event: row.event,
     method: row.method,
     path: row.path,
     referer: row.referer,
@@ -404,7 +407,7 @@ async function runFit(argv: unknown): Promise<void> {
   for (const path of inputPaths) {
     const parser = parseCsv(path, { validateSchema: true });
     for await (const row of parser) {
-      allRows.push(row);
+      allRows.push(attachTemplate(row));
     }
     mergeParseStats(aggregate, parser.getStats());
   }
@@ -457,7 +460,7 @@ async function runTransform(argv: unknown): Promise<void> {
     const pipePromise = pipeline(csvStream, outputStream);
 
     for await (const row of parser) {
-      const featureRow = transformer.process(row);
+      const featureRow = transformer.process(attachTemplate(row));
       csvStream.write(toCsvRecord(featureRow, quantileColumns));
     }
 

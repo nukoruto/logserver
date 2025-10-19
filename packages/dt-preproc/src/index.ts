@@ -11,6 +11,7 @@ import {
 } from '@logserver/csv-schema';
 import { lburst } from './math.js';
 import { chooseEpsilonMin } from './epsilon.js';
+import { deriveTemplateId } from './template.js';
 
 const ROBUST_SCALE_FACTOR = 1.4826;
 const ROBUST_Z_FLOOR = 1e-12;
@@ -23,7 +24,19 @@ export interface QuantileField {
   alias?: string;
 }
 
-export type LogRow = CsvRow;
+export interface LogRow extends CsvRow {
+  template_id: string;
+  event: string;
+}
+
+export function attachTemplate(row: CsvRow): LogRow {
+  const templateId = deriveTemplateId(row.method, row.path, row.op_category);
+  return {
+    ...row,
+    template_id: templateId,
+    event: templateId
+  };
+}
 
 export interface RobustScaleStats {
   x_med: number;
@@ -967,10 +980,11 @@ export async function loadLogRowsWithFeatures(
   const collected: LogRow[] = [];
 
   for await (const row of parser) {
-    if (options.filter && !options.filter(row)) {
+    const logRow = attachTemplate(row);
+    if (options.filter && !options.filter(logRow)) {
       continue;
     }
-    collected.push(row);
+    collected.push(logRow);
   }
 
   const parseStats = parser.getStats();
@@ -987,6 +1001,7 @@ export async function loadLogRowsWithFeatures(
 
 export { DEFAULT_FEATURE_OPTIONS };
 export { lburst } from './math.js';
+export { deriveTemplateId, normalisePathTemplate } from './template.js';
 
 function normalizeGrouping(grouping?: 'uid' | 'uid_session'): 'uid' | 'uid_session' {
   if (grouping === 'uid_session') {

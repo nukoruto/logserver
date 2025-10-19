@@ -5,14 +5,16 @@ from __future__ import annotations
 
 import json
 import logging
+from glob import glob
 from pathlib import Path
-from typing import Sequence
+from typing import Iterable, Sequence
 
 import pandas as pd
 
 import yaml
 
 from trainer.logserver.dataio.processed import load_processed_events
+from trainer.logserver.dataio.sessionize import derive_template_id
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
 from trainer.logserver.training.trainer import (
     SessionSplit,
@@ -29,6 +31,72 @@ def _load_config(path: Path) -> dict:
 
 def _normalize_features(features: Sequence[str] | None) -> Sequence[str]:
     return [feature.lower() for feature in (features or []) if feature]
+
+
+def _ensure_template_column(df: pd.DataFrame) -> pd.DataFrame:
+    if "template_id" in df.columns:
+        return df
+    required = {"method", "path", "op_category"}
+    if not required.issubset(df.columns):
+        return df
+    frame = df.copy()
+    frame["template_id"] = [
+        derive_template_id(method, path, category)
+        for method, path, category in zip(frame["method"], frame["path"], frame["op_category"])
+    ]
+    return frame
+
+
+def _merge_feature_sources(
+    df: pd.DataFrame,
+    *,
+    patterns: Iterable[str],
+    join_keys: Sequence[str],
+) -> pd.DataFrame:
+    logger = logging.getLogger(__name__)
+    merged = df.copy()
+    for pattern in patterns:
+        matches = sorted(glob(pattern))
+        if not matches:
+            logger.info(json.dumps({"event": "feature_merge", "pattern": pattern, "status": "no_match"}, ensure_ascii=False))
+            continue
+        for path in matches:
+            features_df = pd.read_csv(path)
+            features_df = _ensure_template_column(features_df)
+            keys = [key for key in join_keys if key in merged.columns and key in features_df.columns]
+            if not keys:
+                raise RuntimeError(f"No common join keys found between processed data and {path}")
+            candidate_columns = [col for col in features_df.columns if col not in keys and col not in merged.columns]
+            if not candidate_columns:
+                logger.info(
+                    json.dumps(
+                        {
+                            "event": "feature_merge",
+                            "path": path,
+                            "status": "skipped",
+                            "reason": "no_new_columns",
+                        },
+                        ensure_ascii=False,
+                    )
+                )
+                continue
+            subset = features_df[keys + candidate_columns].drop_duplicates(subset=keys)
+            before_cols = set(merged.columns)
+            merged = merged.merge(subset, on=keys, how="left")
+            added_columns = sorted(set(merged.columns) - before_cols)
+            logger.info(
+                json.dumps(
+                    {
+                        "event": "feature_merge",
+                        "path": path,
+                        "status": "merged",
+                        "join_keys": keys,
+                        "added_columns": added_columns,
+                    },
+                    ensure_ascii=False,
+                )
+            )
+    return merged
 
 
 def _select_training_rows(df: pd.DataFrame, split: SessionSplit) -> pd.DataFrame:
@@ -69,6 +137,15 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
 
     processed_dir = Path(data_cfg.get("processed_dir", "data/processed"))
     df = load_processed_events(processed_dir)
+    feature_cfg = data_cfg.get("feature_merge") or {}
+    merge_patterns = [str(pattern) for pattern in feature_cfg.get("patterns", []) if str(pattern)]
+    merge_keys = feature_cfg.get(
+        "join_keys",
+        ["uid", "session_id", "timestamp_utc", "template_id"],
+    )
+    if merge_patterns:
+        df = _ensure_template_column(df)
+        df = _merge_feature_sources(df, patterns=merge_patterns, join_keys=[str(key) for key in merge_keys])
     session_ids = df["session_id"].astype(str).tolist()
     if "timestamp" in df.columns:
         session_timestamps = df["timestamp"].tolist()

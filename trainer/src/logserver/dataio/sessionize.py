@@ -5,9 +5,11 @@ from __future__ import annotations
 
 import json
 import logging
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Dict, Iterable, Iterator, List, Optional, Tuple
+from urllib.parse import urlsplit
 
 import numpy as np
 import pandas as pd
@@ -23,7 +25,19 @@ except Exception:  # pragma: no cover - optional dependency
 
 logger = logging.getLogger(__name__)
 
-REQUIRED_COLUMNS = {"timestamp", "event", "uid"}
+CONTRACT_COLUMNS = {
+    "timestamp",
+    "timestamp_utc",
+    "uid",
+    "session_id",
+    "method",
+    "path",
+    "referer",
+    "user_agent",
+    "ip",
+    "op_category",
+    "template_id",
+}
 ALTERNATE_TIMESTAMP_COLUMNS = ("timestamp_utc",)
 FORBIDDEN_COLUMNS = {"jwt", "authorization", "cookie", "cookies"}
 OPTIONAL_COLUMNS = {
@@ -40,6 +54,55 @@ OPTIONAL_COLUMNS = {
 
 
 DEFAULT_CHUNK_SIZE = 100_000
+
+_UUID_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+_HEX_RE = re.compile(r"^[0-9a-fA-F]{12,}$")
+_INT_RE = re.compile(r"^\d+$")
+_TOKEN_RE = re.compile(r"^[A-Za-z0-9_-]{10,}$")
+_NON_ALNUM_RE = re.compile(r"[^a-z0-9{}]+")
+_DIGIT_GROUP_RE = re.compile(r"\d+")
+
+
+def _normalise_path_segment(segment: str) -> str:
+    cleaned = segment.strip()
+    if not cleaned:
+        return "root"
+    if _UUID_RE.match(cleaned):
+        return "{uuid}"
+    if _INT_RE.match(cleaned):
+        return "{int}"
+    if _HEX_RE.match(cleaned):
+        return "{hex}"
+    if _TOKEN_RE.match(cleaned):
+        return "{token}"
+    lowered = cleaned.lower()
+    replaced = _DIGIT_GROUP_RE.sub("{num}", lowered)
+    normalised = _NON_ALNUM_RE.sub("-", replaced)
+    collapsed = re.sub(r"-{2,}", "-", normalised).strip("-")
+    return collapsed or "{token}"
+
+
+def _normalise_path_template(path_value: object) -> str:
+    raw = "" if path_value is None else str(path_value).strip()
+    if not raw:
+        return "root"
+    parsed = urlsplit(raw)
+    candidate = parsed.path or raw
+    segments = [segment for segment in candidate.split("/") if segment]
+    if not segments:
+        return "root"
+    normalised_segments = [_normalise_path_segment(segment) for segment in segments]
+    return "/".join(normalised_segments)
+
+
+def derive_template_id(method: object, path_value: object, op_category: object) -> str:
+    method_str = str(method or "").strip().upper() or "UNKNOWN"
+    category = str(op_category or "").strip().upper() or "UNKNOWN"
+    template_path = _normalise_path_template(path_value)
+    return f"{category}::{method_str}::{template_path}"
+
 def _is_empty_metadata(value: object) -> bool:
     if value is None:
         return True
@@ -148,7 +211,7 @@ def load_events(
     if not frames:
         raise SessionizeError(f"No frames produced from {source}")
     df = pd.concat(frames, ignore_index=True)
-    missing = REQUIRED_COLUMNS - set(df.columns)
+    missing = CONTRACT_COLUMNS - set(df.columns)
     if missing:
         raise SessionizeError(f"Missing required columns: {sorted(missing)}")
     return df
@@ -161,9 +224,16 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
             raise SessionizeError(
                 f"Forbidden column '{column}' detected. Ensure tokens are removed prior to preprocessing."
             )
-    for alt in ALTERNATE_TIMESTAMP_COLUMNS:
-        if alt in df.columns and "timestamp" not in df.columns:
-            df.rename(columns={alt: "timestamp"}, inplace=True)
+    if "timestamp" not in df.columns:
+        for alt in ALTERNATE_TIMESTAMP_COLUMNS:
+            if alt in df.columns:
+                df.rename(columns={alt: "timestamp"}, inplace=True)
+                break
+    if "timestamp" not in df.columns:
+        raise SessionizeError("Column 'timestamp_utc' is required for sessionization")
+    timestamp_strings = df["timestamp"].astype(str).str.strip()
+    df["timestamp"] = timestamp_strings
+    df["timestamp_utc"] = timestamp_strings
     if "status_code" in df.columns and "status" not in df.columns:
         df.rename(columns={"status_code": "status"}, inplace=True)
     if "meta" in df.columns and "metadata" not in df.columns:
@@ -174,9 +244,33 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
         df.rename(columns={"user_id": "uid"}, inplace=True)
     if "uid" not in df.columns:
         raise SessionizeError("Column 'uid' is required for sessionization")
-    for col in ["method", "path"]:
-        if col not in df.columns:
-            df[col] = None
+    df["uid"] = df["uid"].astype(str).str.strip()
+    length = len(df)
+
+    def _string_series(name: str, default: str = "") -> pd.Series:
+        if name in df.columns:
+            series = df[name]
+        else:
+            series = pd.Series([default] * length)
+        return series.astype("string").fillna("").str.strip()
+
+    session_series = df["session_id"] if "session_id" in df.columns else pd.Series([pd.NA] * length)
+    session_series = session_series.astype("string").str.strip()
+    session_series = session_series.replace({"": pd.NA, "nan": pd.NA, "None": pd.NA, "<NA>": pd.NA})
+    df["session_id"] = session_series
+
+    method_series = _string_series("method")
+    df["method"] = method_series.str.upper()
+    df.loc[df["method"] == "", "method"] = "UNKNOWN"
+
+    df["path"] = _string_series("path")
+    df["referer"] = _string_series("referer")
+    df["user_agent"] = _string_series("user_agent")
+    df["ip"] = _string_series("ip")
+
+    category_series = _string_series("op_category").str.upper()
+    category_series = category_series.replace({"": "UNKNOWN"})
+    df["op_category"] = category_series
     if "latency_ms" not in df.columns:
         df["latency_ms"] = np.nan
     else:
@@ -185,8 +279,17 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
         df["response_bytes"] = np.nan
     else:
         df["response_bytes"] = pd.to_numeric(df["response_bytes"], errors="coerce")
-    df["event"] = df["event"].astype(str).str.strip()
-    df["uid"] = df["uid"].astype(str).str.strip()
+    template_ids = [
+        derive_template_id(method, path, category)
+        for method, path, category in zip(df["method"], df["path"], df["op_category"])
+    ]
+    df["template_id"] = pd.Series(template_ids, dtype=object)
+    if "event" in df.columns:
+        df["event"] = df["event"].astype("string").fillna("").str.strip()
+    else:
+        df["event"] = pd.Series(["" for _ in range(length)], dtype="string")
+    empty_mask = df["event"].astype(str).str.strip() == ""
+    df.loc[empty_mask, "event"] = df.loc[empty_mask, "template_id"]
     return df
 
 

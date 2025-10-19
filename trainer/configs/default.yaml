@@ -7,6 +7,14 @@ data:
   sample_dir: data/sample
   chunksize: 100000
   use_pyarrow: true
+  feature_merge:
+    patterns:
+      - data/processed/*-features.csv
+    join_keys:
+      - uid
+      - session_id
+      - timestamp_utc
+      - template_id
 session:
   idle_timeout: 1800
   tz: UTC
