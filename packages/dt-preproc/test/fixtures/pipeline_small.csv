@@ -1,0 +1,7 @@
+timestamp_utc,timestamp_epoch_seconds,uid,session_id,method,path,referer,user_agent,ip,op_category,row_index
+2024-01-01T00:00:00Z,1704067200,u-1,s-1,GET,/login,-,UA,127.0.0.1,AUTH,0
+2024-01-01T00:00:02Z,1704067202,u-1,s-1,POST,/login,-,UA,127.0.0.1,AUTH,1
+2024-01-01T00:00:05Z,1704067205,u-1,s-1,GET,/dashboard,-,UA,127.0.0.1,READ,2
+2024-01-01T00:10:00Z,1704067800,u-2,s-2,GET,/login,-,UA2,127.0.0.2,AUTH,0
+2024-01-01T00:10:03Z,1704067803,u-2,s-2,POST,/edit,-,UA2,127.0.0.2,UPDATE,1
+2024-01-01T00:10:08Z,1704067808,u-2,s-2,POST,/delete,-,UA2,127.0.0.2,DELETE,2
