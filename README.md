@@ -35,6 +35,8 @@
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
 - **Electron GUI ブリッジ**：`apps/lstm-gui` 経由で dt-lstm CLI (`fit`/`train`/`calibrate`/`infer`/`online`) を IPC 呼び出しし、進捗ログと生成物
   を GUI に反映（CLI 単体実行とバイト一致を保証）
+- **時系列CV オーケストレーター**：Python パッケージ `dt-cv` の CLI `tscv` で Rolling-origin（purged/embargo 付き）クロスバリデーションを決定論的に再現。
+  `dt-preproc` / `dt-anom` / `dt-lstm` を束ねつつ、各サブプロセスの環境変数と引数を `env.txt` / `artifacts_index.json` に保存し、完全な監査トレースを提供。
 
 ---
 
@@ -155,8 +157,44 @@
 
   ```bash
   mkdir -p data/raw
-  cp logs/sample.csv data/raw/
-  ```
+cp logs/sample.csv data/raw/
+```
+
+### 4.3 Rolling-origin クロスバリデーション（`tscv`）
+
+`packages/dt-cv` の CLI `tscv` を用いると、Rolling-origin（Purged/Embargo 付き）クロスバリデーションを完全に決定論的な手順で実行
+できます。基本的な利用フローは以下の通りです。
+
+1. **split** – 生ログをセッション順に分割し、`fold_*/raw/*.csv` と `splits.yaml` を生成。
+
+   ```bash
+   python -m dt_cv.cli split \
+     --input data/raw/sample.csv \
+     --output outputs/cv_runs/run1 \
+     --train-size 1000 --val-size 200 --test-size 200 \
+     --step-size 100 --purge 10 --embargo 5 --seed 42
+   ```
+
+2. **train** – 各フォールドで `dt-preproc` → `dt-anom fit` → `dt-lstm train` をサブプロセス実行。乱数・CUDA・TF32 が固定され、各コマ
+   ンドの環境変数と引数は `preproc/`、`anom/`、`lstm/` 配下の `env.txt` / `artifacts_index.json` に保存される。
+
+   ```bash
+   python -m dt_cv.cli train \
+     --splits outputs/cv_runs/run1/splits.yaml \
+     --dt-preproc dt-preproc --dt-anom dt-anom --dt-lstm dt-lstm \
+     --seed 42 --gpu-mode ada6000
+   ```
+
+3. **eval / report** – `dt-anom score` と `dt-lstm infer` を走らせ、AUPRC（主指標）/ ROC-AUC（補助）と Fisher 結合スコアを算出し、`cv_report.json`
+   に折れ線平均をまとめる。
+
+   ```bash
+   python -m dt_cv.cli eval --splits outputs/cv_runs/run1/splits.yaml
+   python -m dt_cv.cli report --splits outputs/cv_runs/run1/splits.yaml
+   ```
+
+同じ `splits.yaml` と `--seed` を用いれば、各フォールドの成果物（特徴 CSV、異常統計、LSTM モデル、スコア CSV）はバイトレベルで一致
+します。生成物の所在は `splits.yaml` の `folds[].paths` に記録され、追加のアーティファクト管理を行う際も追跡可能です。
 
 - 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。
 
