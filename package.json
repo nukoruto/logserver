@@ -11,6 +11,8 @@
     "lint": "pnpm exec eslint . --max-warnings 0",
     "build": "pnpm -r run build",
     "test": "pnpm -r run test",
+    "collector:build": "pnpm --dir collector run build",
+    "collector:metrics": "pnpm --dir collector run build && node dist/collector/metrics/cli.js",
     "test:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli test",
     "build:session-splitter-cli": "pnpm --filter @logserver/session-splitter-cli build"
   }

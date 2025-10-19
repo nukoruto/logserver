@@ -1,11 +1,4 @@
 import * as path from 'node:path';
-import * as fs from 'node:fs';
-import dotenv from 'dotenv';
-
-const envPath = process.env.CONFIG_PATH || path.resolve(process.cwd(), '.env');
-if (fs.existsSync(envPath)) {
-  dotenv.config({ path: envPath });
-}
 
 type Nullable<T> = T | undefined | null;
 

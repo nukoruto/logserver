@@ -6,7 +6,8 @@
   "scripts": {
     "lint": "eslint .",
     "test": "jest --config jest.config.cjs",
-    "build": "tsc --project tsconfig.json",
+    "build": "tsc --project tsconfig.build.json",
+    "metrics": "node ../dist/collector/metrics/cli.js",
     "audit": "ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"target\":\"ES2020\"} ../scripts/audit.ts"
   },
   "keywords": [
