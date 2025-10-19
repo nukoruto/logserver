@@ -24,8 +24,9 @@
 - docs/: ドキュメント（README, SRS, 本ファイル, ほか）
 
 ## 3. データ制約（列挙）
-- 入力ログの必須列: timestamp, session_id, uid, event, message, level, module
-- オプション列: params（JSON 互換の辞書）, latency_ms, status_code, host, response_bytes
+- 入力ログの必須列: timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category（9 列固定）
+- オプション列: なし（追加情報は JSON カラムまたは別ファイルに保持し、契約 CSV に列追加しない）
+- 派生列: Δt 系列、latency 統計、異常スコア、ラベル等は `dt-preproc`・`trainer.scripts.score`・`trainer.scripts.threshold` で生成する
 - タイムゾーン: すべて UTC に正規化
 - Δt (delta t) の定義: セッション内で同一 uid の連続イベント間の経過秒（float）
 - 欠損時刻: 前件欠落・逆順は除外またはセッション断絶として扱う（設定で選択）
@@ -88,6 +89,13 @@
 - GPU 切替：`GPU_MODE=ada6000|4060` で `CUDA_VISIBLE_DEVICES` を切替
 
 ## ディレクトリ
+
+## 受け渡し契約（要約）
+- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, op_category
+- 形式：UTC/RFC 3339、CSV(RFC 4180)
+- 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
+- 派生特徴：Δt/統計/異常ラベルは 9 列 CSV を `dt-preproc fit/transform`→`trainer.scripts.score`→`trainer.scripts.threshold` に通して生成し、契約ファイルと分離して保存する
+
 - logserver/
 - collector/
 - trainer/
@@ -95,11 +103,6 @@
 - artifacts/ # Git 管理外
 - outputs/ # Git 管理外
 - .gitattributes # * text=auto eol=lf
-
-## 受け渡し契約（要約）
-- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, op_category
-- 形式：UTC/RFC 3339、CSV(RFC 4180)
-- 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
 
 - 参照ファイル: README.md
 - 参照ファイル: dev_prompt.md

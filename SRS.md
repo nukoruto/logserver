@@ -44,18 +44,25 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - 保存形式: CSV または Parquet（列指向推奨）  
 - タイムゾーン: UTC で統一
 
-### 6.2 スキーマ（列挙）
-- timestamp（ISO8601、UTC）  
-- session_id（文字列）  
-- uid（文字列、擬似匿名化済みユーザ ID）
-- event（有限語彙: login、view、edit、save、logout など）  
-- method（HTTP メソッド等、任意）  
-- path（リソース識別、任意）  
-- status（整数、任意）
-- latency_ms（整数、応答遅延）
-- meta.user_agent（文字列、任意）
-- meta.referrer（文字列、任意）
-- response_bytes（整数、応答ボディのバイト長、任意）
+### 6.2 基本データ契約（9 列）
+- timestamp_utc（RFC 3339 UTC 文字列）
+- uid（擬似匿名化済みユーザ ID。HKDF-SHA256 で導出した K_ds による HMAC-SHA256 を base64url 化）
+- session_id（文字列）
+- method（HTTP メソッド）
+- path（リソース識別子）
+- referer（参照元 URL。欠損は空文字も可）
+- user_agent（クライアント識別子）
+- ip（IPv4/IPv6。疑似化済み）
+- op_category（AUTH / READ / UPDATE の 3 区分）
+
+### 6.3 派生特徴・ラベル（別工程）
+- Δt 系列（dt_sec, log_dt, delta_z, delta_robust_z, delta_quantile_0_25/0_5/0_75 等）
+- 応答時間統計（latency_ms、移動平均・分位点）
+- 連続特徴量のロバスト正規化値（z_clipped, z_deseas など）
+- 異常スコア（Score_total, neglog10_p 等）
+- 異常ラベル（anomaly_label, alarm, alarm_reason 等）
+
+これらの派生列は 9 列 CSV を入力として `dt-preproc fit/transform` → `trainer.scripts.score` → `trainer.scripts.threshold` の順に生成し、成果物は data/processed/, outputs/, reports/ 以下へ保存する。
 
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  

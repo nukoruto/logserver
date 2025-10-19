@@ -144,15 +144,29 @@
    ```
 
 ### 4.2 データ配置
-- `data/raw/` に CSV/JSONL 等でログを配置（カラム例：timestamp, uid, action, meta...）。応答ボディのサイズを表す `response_bytes`
-  列を末尾に追加しても旧スキーマはそのまま動作し、新列がある場合のみ下流の LSTM 前処理で特徴量として利用される。
+- `data/raw/` には **9 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category` で固定し、RFC 3339 UTC と HKDF-HMAC 擬似匿名化を前提とする。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
+- 派生特徴は別工程で生成する。9 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
-- `logs/` には最小構成の参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
+- `logs/` には 9 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
 
   ```bash
   mkdir -p data/raw
   cp logs/sample.csv data/raw/
+  ```
+
+- 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。
+
+  ```bash
+  pnpm --filter @logserver/dt-preproc run build
+  pnpm exec dt-preproc fit \
+    --in data/raw/sample.csv \
+    --out stats/preproc_stats.json \
+    --meta stats/preproc_meta.json
+  pnpm exec dt-preproc transform \
+    --in data/raw/sample.csv \
+    --stats stats/preproc_stats.json \
+    --out data/processed/sample_feat.csv
   ```
 
 - 追加の生ログを取得する際は、決定的シードでシミュレータを実行して `artifacts/<run>/` 以下に CSV・manifest・ハッシュ（`checksums.txt`）を保存する。例：
