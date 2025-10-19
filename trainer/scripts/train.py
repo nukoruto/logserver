@@ -99,7 +99,15 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
     feature_pack = build_feature_pack(training_df, extra_features=feature_flags)
     _log_feature_usage(feature_pack, feature_flags)
     encoded = encode_dataframe(df, feature_pack)
-    train_model(encoded, session_ids, feature_pack, output_dir, trainer_config, split=split)
+    train_model(
+        encoded,
+        session_ids,
+        feature_pack,
+        output_dir,
+        trainer_config,
+        split=split,
+        session_timestamps=session_timestamps,
+    )
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -38,7 +38,15 @@ def test_train_model_produces_artifacts(tmp_path: Path) -> None:
     train_df = df[df["session_id"].isin(split.train_ids)]
     pack = build_feature_pack(train_df, extra_features=None)
     encoded = encode_dataframe(df, pack)
-    train_model(encoded, session_ids, pack, tmp_path, config, split=split)
+    train_model(
+        encoded,
+        session_ids,
+        pack,
+        tmp_path,
+        config,
+        split=split,
+        session_timestamps=timestamps,
+    )
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
     repro = list(tmp_path.glob("*/repro.json"))
@@ -74,7 +82,15 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
     train_df = df[df["session_id"].isin(split.train_ids)]
     pack = build_feature_pack(train_df, extra_features=None)
     encoded = encode_dataframe(df, pack)
-    train_model(encoded, session_ids, pack, tmp_path, config, split=split)
+    train_model(
+        encoded,
+        session_ids,
+        pack,
+        tmp_path,
+        config,
+        split=split,
+        session_timestamps=timestamps,
+    )
     artifacts = list(tmp_path.glob("*/model.pt"))
     assert artifacts, "model.pt not found in run directory"
     metadata_files = list(tmp_path.glob("*/model_config.json"))
