@@ -126,9 +126,21 @@ def test_train_eval_report_pipeline(tmp_path: Path) -> None:
         metrics_path = fold_dir / "metrics" / "validation.json"
         assert metrics_path.exists()
         metrics = json.loads(metrics_path.read_text(encoding="utf-8"))
-        assert set(metrics.keys()) >= {"dt_anom", "dt_lstm", "fisher"}
-        for stats in metrics.values():
-            assert stats["average_precision"] > 0
+        assert "methods" in metrics
+        for method in ("dt_anom", "dt_lstm", "fisher"):
+            assert method in metrics["methods"]
+            method_payload = metrics["methods"][method]
+            assert "metrics" in method_payload
+            assert method_payload["metrics"]["average_precision"] is not None
+            assert method_payload["metrics"]["f1"] >= 0
+            assert "macro_user" in method_payload
+        fisher_scores = pd.read_csv(fold_dir / "fisher" / "validation_scores.csv")
+        assert "prediction_dt_anom" in fisher_scores.columns
+        assert "prediction_dt_lstm" in fisher_scores.columns
+        anom_payload = metrics["methods"]["dt_anom"]
+        calib = anom_payload.get("calibration")
+        if calib is not None:
+            assert "alpha" in calib and "empirical_q" in calib
 
     assert (
         cli_main(
@@ -145,3 +157,54 @@ def test_train_eval_report_pipeline(tmp_path: Path) -> None:
     summary = json.loads(report.read_text(encoding="utf-8"))
     assert "fisher" in summary
     assert "validation" in summary["fisher"]
+
+    summary_dir = tmp_path / "summary"
+    assert (
+        cli_main(
+            [
+                "eval",
+                "--fold-artifacts",
+                str(folds_dir),
+                "--bootstrap",
+                "none",
+                "--out",
+                str(summary_dir),
+                "--bootstrap-samples",
+                "0",
+                "--seed",
+                "7",
+            ]
+        )
+        == 0
+    )
+    summary_payload = json.loads((summary_dir / "metrics_summary.json").read_text(encoding="utf-8"))
+    assert summary_payload["config"]["bootstrap"] == "none"
+    assert "validation" in summary_payload["subsets"]
+    fisher_summary = summary_payload["subsets"]["validation"]["fisher"]
+    assert fisher_summary["metrics"]["average_precision"]["fold_mean"] is not None
+
+    bootstrap_dir = tmp_path / "summary_bootstrap"
+    assert (
+        cli_main(
+            [
+                "eval",
+                "--fold-artifacts",
+                str(folds_dir),
+                "--bootstrap",
+                "stationary",
+                "--block-mean",
+                "2",
+                "--bootstrap-samples",
+                "5",
+                "--out",
+                str(bootstrap_dir),
+                "--seed",
+                "7",
+            ]
+        )
+        == 0
+    )
+    bootstrap_payload = json.loads((bootstrap_dir / "metrics_summary.json").read_text(encoding="utf-8"))
+    fisher_bootstrap = bootstrap_payload["subsets"]["validation"]["fisher"]
+    sample_count = fisher_bootstrap["metrics"]["average_precision"]["bootstrap_sample_count"]
+    assert 0 < sample_count <= 5

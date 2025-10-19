@@ -11,7 +11,8 @@ import numpy as np
 import pandas as pd
 
 from .config import FoldPaths
-from .metrics import compute_metrics, fisher_neglog10, save_metrics, save_scores
+from .evaluation import MethodEvaluation, evaluate_methods
+from .metrics import fisher_neglog10, save_scores
 from .runner import CommandSpec, build_deterministic_env, run_command
 from .splitter import load_splits
 
@@ -281,7 +282,9 @@ def _score_subset(
     dt_anom_bin: str,
     dt_lstm_bin: str,
     env: Mapping[str, str],
-) -> Optional[Path]:
+    thresholds: Optional[Mapping[str, float]] = None,
+    bins: int = 15,
+) -> tuple[Optional[Path], Dict[str, float]]:
     raw_path = {
         "validation": paths.raw_validation,
         "test": paths.raw_test,
@@ -311,7 +314,7 @@ def _score_subset(
         "test": paths.metrics_test,
     }[subset]
     if any(path is None for path in (anom_output, lstm_output, fisher_output, metrics_output)):
-        return None
+        return None, dict(thresholds or {})
     assert anom_output is not None and lstm_output is not None
     assert fisher_output is not None and metrics_output is not None
     _ensure_parent(anom_output)
@@ -377,7 +380,9 @@ def _score_subset(
     anom_scores = pd.read_csv(anom_output)
     lstm_scores = pd.read_csv(lstm_output)
     merged = _join_scores(base_frame, anom_scores, lstm_scores)
-    labels = merged["anomaly_label"].astype(float).to_numpy()
+    merged = merged.reset_index(drop=True)
+    if "timestamp_utc" in merged.columns:
+        merged["timestamp_utc"] = pd.to_datetime(merged["timestamp_utc"], utc=True, errors="coerce")
     anom_col = "neglog10_p"
     if "neglog10_p_anom" in merged.columns:
         anom_col = "neglog10_p_anom"
@@ -391,17 +396,47 @@ def _score_subset(
     merged["neglog10_p_anom"] = anom_neglog
     merged["neglog10_p_lstm"] = lstm_neglog
     merged["neglog10_p_fisher"] = fisher_neglog
-    scores = {
-        "dt_anom": anom_neglog,
-        "dt_lstm": lstm_neglog,
-        "fisher": fisher_neglog,
+    score_columns = {
+        "dt_anom": "neglog10_p_anom",
+        "dt_lstm": "neglog10_p_lstm",
+        "fisher": "neglog10_p_fisher",
     }
-    metrics = compute_metrics(labels, scores)
+    eval_results, threshold_map = evaluate_methods(
+        merged,
+        score_columns=score_columns,
+        label_column="anomaly_label",
+        session_column="session_id",
+        timestamp_column="timestamp_utc",
+        user_column="uid",
+        bins=bins,
+        thresholds=thresholds,
+        compute_thresholds=thresholds is None,
+    )
+    metrics_payload: Dict[str, object] = {
+        "subset": subset,
+        "fold_id": fold_id,
+        "counts": {
+            "events": int(len(merged)),
+            "positive_events": int(np.sum(merged["anomaly_label"].astype(float) == 1.0)),
+        },
+        "methods": {},
+    }
+    for method, evaluation in eval_results.items():
+        column_name = f"prediction_{method}"
+        prediction_series = pd.Series(pd.NA, index=merged.index, dtype="Int64")
+        mask = evaluation.mask
+        if mask.size != prediction_series.size:
+            raise WorkflowError("Prediction mask length mismatch for method '%s'" % method)
+        prediction_series.loc[mask] = evaluation.predictions.astype(int)
+        merged[column_name] = prediction_series
+        metrics_payload["methods"][method] = evaluation.to_json()
     _ensure_parent(metrics_output)
-    save_metrics(metrics_output, metrics)
+    metrics_output.write_text(json.dumps(metrics_payload, ensure_ascii=False, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     _ensure_parent(fisher_output)
     save_scores(fisher_output, merged)
-    return metrics_output
+    if not threshold_map and thresholds is not None:
+        threshold_map = dict(thresholds)
+    return metrics_output, threshold_map
 
 
 def run_eval(
@@ -418,15 +453,22 @@ def run_eval(
         fold_id = int(fold.get("id", 0))
         paths = _fold_paths(base_dir, fold)
         env = build_deterministic_env(seed, gpu_mode)
+        thresholds_map: Dict[str, float] | None = None
         for subset in ("validation", "test"):
-            _score_subset(
+            _, new_thresholds = _score_subset(
                 subset,
                 fold_id,
                 paths,
                 dt_anom_bin=dt_anom_bin,
                 dt_lstm_bin=dt_lstm_bin,
                 env=env,
+                thresholds=thresholds_map,
             )
+            if new_thresholds:
+                if thresholds_map is None:
+                    thresholds_map = dict(new_thresholds)
+                else:
+                    thresholds_map.update(new_thresholds)
 
 
 def run_report(splits_path: Path, *, subsets: Iterable[str] = ("validation", "test")) -> Path:
@@ -443,13 +485,17 @@ def run_report(splits_path: Path, *, subsets: Iterable[str] = ("validation", "te
             if metrics_path is None or not metrics_path.exists():
                 continue
             payload = json.loads(metrics_path.read_text(encoding="utf-8"))
-            for method, values in payload.items():
+            methods_payload = payload.get("methods", {}) if isinstance(payload, Mapping) else {}
+            for method, values in methods_payload.items():
+                metrics_info = values.get("metrics", {}) if isinstance(values, Mapping) else {}
                 method_entry = summary.setdefault(method, {})
                 subset_entry = method_entry.setdefault(subset, {"average_precision": [], "roc_auc": []})
-                subset_entry["average_precision"].append(float(values["average_precision"]))
-                roc_val = values.get("roc_auc")
+                ap_val = metrics_info.get("average_precision")
+                if ap_val is not None:
+                    subset_entry["average_precision"].append(float(ap_val))
+                roc_val = metrics_info.get("roc_auc")
                 if roc_val is not None:
-                    subset_entry["roc_auc"].append(float(roc_val))
+                    subset_entry.setdefault("roc_auc", []).append(float(roc_val))
     report = {}
     for method, subset_values in summary.items():
         report[method] = {}

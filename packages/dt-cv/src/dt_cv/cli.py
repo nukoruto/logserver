@@ -10,6 +10,7 @@ from typing import Sequence
 
 from .config import RollingOriginSplitConfig
 from .splitter import generate_splits
+from .summary import summarize_folds
 from .workflow import run_eval, run_report, run_train
 
 _LOGGER = logging.getLogger("dt_cv.cli")
@@ -49,11 +50,26 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     train_parser.add_argument("--gpu-mode", choices=["ada6000", "4060", "cpu"], default="ada6000", help="GPU mode")
 
     eval_parser = subparsers.add_parser("eval", help="Score validation/test folds and compute metrics")
-    eval_parser.add_argument("--splits", required=True, help="Path to splits.yaml")
+    eval_parser.add_argument("--splits", help="Path to splits.yaml for scoring")
     eval_parser.add_argument("--dt-anom", default="dt-anom", help="dt-anom CLI binary")
     eval_parser.add_argument("--dt-lstm", default="dt-lstm", help="dt-lstm CLI binary")
     eval_parser.add_argument("--seed", type=int, default=42, help="Seed override")
     eval_parser.add_argument("--gpu-mode", choices=["ada6000", "4060", "cpu"], default="ada6000", help="GPU mode")
+    eval_parser.add_argument("--fold-artifacts", help="Directory containing fold_* artifacts for summary aggregation")
+    eval_parser.add_argument(
+        "--bootstrap",
+        choices=["none", "stationary"],
+        default="none",
+        help="Bootstrap method for confidence intervals",
+    )
+    eval_parser.add_argument("--block-mean", type=int, default=None, help="Stationary bootstrap average block length")
+    eval_parser.add_argument(
+        "--bootstrap-samples",
+        type=int,
+        default=0,
+        help="Number of bootstrap replicates for confidence intervals",
+    )
+    eval_parser.add_argument("--out", help="Output directory for aggregated summary metrics")
 
     report_parser = subparsers.add_parser("report", help="Aggregate fold metrics")
     report_parser.add_argument("--splits", required=True, help="Path to splits.yaml")
@@ -112,13 +128,41 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "eval":
-        run_eval(
-            Path(args.splits).expanduser().resolve(),
-            dt_anom_bin=args.dt_anom,
-            dt_lstm_bin=args.dt_lstm,
-            seed=args.seed,
-            gpu_mode=_normalize_gpu_mode(args.gpu_mode),
+        summary_path: Path | None = None
+        if args.splits:
+            run_eval(
+                Path(args.splits).expanduser().resolve(),
+                dt_anom_bin=args.dt_anom,
+                dt_lstm_bin=args.dt_lstm,
+                seed=args.seed,
+                gpu_mode=_normalize_gpu_mode(args.gpu_mode),
+            )
+        needs_summary = any(
+            [
+                args.fold_artifacts,
+                args.out,
+                args.bootstrap != "none",
+                args.bootstrap_samples > 0,
+            ]
         )
+        if needs_summary:
+            base_dir = None
+            if args.fold_artifacts:
+                base_dir = Path(args.fold_artifacts).expanduser().resolve()
+            elif args.splits:
+                base_dir = Path(args.splits).expanduser().resolve().parent
+            if base_dir is None:
+                raise ValueError("Summary aggregation requires --fold-artifacts or --splits")
+            out_dir = Path(args.out).expanduser().resolve() if args.out else base_dir / "summary"
+            summary_path = summarize_folds(
+                base_dir,
+                out_dir=out_dir,
+                bootstrap=args.bootstrap,
+                block_mean=args.block_mean,
+                bootstrap_samples=args.bootstrap_samples,
+                seed=args.seed,
+            )
+            _LOGGER.info("eval.summary", extra={"summary": str(summary_path)})
         _LOGGER.info("eval.completed")
         return 0
 

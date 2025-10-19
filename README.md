@@ -193,6 +193,20 @@ cp logs/sample.csv data/raw/
    python -m dt_cv.cli report --splits outputs/cv_runs/run1/splits.yaml
    ```
 
+   `tscv eval` 実行後はフォールドごとの `metrics/*.json` に AP / ROC-AUC / F1（検証固定しきい値）/ 平均検知遅延 / TopK 精度 / RMTPP NLL / ECE と
+   ユーザマクロ平均が保存され、`fisher/*.csv` には `prediction_dt_anom` などの二値判定列が追加される。既存成果物から評価のみ再集計する場
+   合は次のように台帳を生成できる。
+
+   ```bash
+   python -m dt_cv.cli eval \
+     --fold-artifacts outputs/cv_runs/run1 \
+     --bootstrap stationary --block-mean 128 --bootstrap-samples 500 \
+     --out outputs/cv_runs/run1/summary
+   ```
+
+   出力される `summary/metrics_summary.json` にはフォールド平均・標準偏差・95% CI（ステーショナリ・ブートストラップ、平均ブロック長指
+   定）およびユーザマクロ平均が含まれ、dt-anom については α/q 校正曲線（目標 vs. 実測）も併記される。
+
 同じ `splits.yaml` と `--seed` を用いれば、各フォールドの成果物（特徴 CSV、異常統計、LSTM モデル、スコア CSV）はバイトレベルで一致
 します。生成物の所在は `splits.yaml` の `folds[].paths` に記録され、追加のアーティファクト管理を行う際も追跡可能です。
 
