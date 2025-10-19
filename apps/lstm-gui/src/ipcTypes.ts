@@ -135,3 +135,40 @@ export interface CommandError {
   readonly message: string;
   readonly lastLog?: ProgressEventPayload;
 }
+
+export interface HealthDirectoryStatus {
+  readonly path: string;
+  readonly exists: boolean;
+  readonly writable: boolean;
+  readonly message?: string;
+}
+
+export interface HealthDiskStatus {
+  readonly path: string;
+  readonly freeBytes: number | null;
+  readonly totalBytes: number | null;
+  readonly thresholdBytes: number;
+  readonly ok: boolean;
+  readonly message?: string;
+}
+
+export interface HealthGpuStatus {
+  readonly mode: 'ada6000' | '4060' | 'cpu' | 'unknown';
+  readonly available: boolean;
+  readonly devices: string[];
+  readonly cudaVisibleDevices: string | null;
+  readonly message?: string;
+  readonly error?: string;
+  readonly rawOutput?: string;
+}
+
+export interface HealthReport {
+  readonly timestamp: string;
+  readonly io: {
+    readonly directories: HealthDirectoryStatus[];
+  };
+  readonly disk: HealthDiskStatus;
+  readonly gpu: HealthGpuStatus;
+  readonly warnings: string[];
+  readonly errors: string[];
+}

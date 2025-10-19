@@ -6,6 +6,7 @@ import type {
   CommandError,
   FitRequest,
   InferRequest,
+  HealthReport,
   OnlineRequest,
   TrainRequest
 } from './ipcTypes.js';
@@ -16,10 +17,11 @@ import {
   buildOnlineCommand,
   buildTrainCommand
 } from './python/cliArgs.js';
-import { DtLstmProcessRunner } from './python/runner.js';
+import { DtLstmProcessRunner, collectSystemHealth } from './python/runner.js';
 
 let mainWindow: BrowserWindow | null = null;
 let runner: DtLstmProcessRunner | null = null;
+let repoRootPath: string | null = null;
 
 function isCommandError(error: unknown): error is CommandError {
   return (
@@ -89,7 +91,7 @@ async function handleOnline(request: OnlineRequest): Promise<unknown> {
   return result.payload;
 }
 
-function registerHandlers(): void {
+function registerHandlers(repoRoot: string): void {
   const wrap = <T>(channel: string, executor: (request: T) => Promise<unknown>): void => {
     ipcMain.handle(channel, async (_event, payload: T) => {
       try {
@@ -116,12 +118,22 @@ function registerHandlers(): void {
     }
     return runner.cancel();
   });
+  ipcMain.handle('lstm.health', async () => {
+    const report = runner
+      ? await runner.checkHealth()
+      : await collectSystemHealth(repoRoot);
+    if (mainWindow && !mainWindow.isDestroyed()) {
+      mainWindow.webContents.send('lstm.health.result', report);
+    }
+    return report;
+  });
 }
 
 app.whenReady().then(() => {
   const appPath = app.getAppPath();
   const projectRoot = path.resolve(appPath);
   const repoRoot = path.resolve(projectRoot, '..', '..');
+  repoRootPath = repoRoot;
   const distRoot = path.join(projectRoot, 'dist');
   const preloadPath = path.join(distRoot, 'src', 'preload.js');
   mainWindow = createWindow(distRoot, preloadPath);
@@ -129,7 +141,48 @@ app.whenReady().then(() => {
     mainWindow = null;
   });
   runner = new DtLstmProcessRunner(mainWindow, repoRoot);
-  registerHandlers();
+  registerHandlers(repoRoot);
+
+  const dispatchHealth = async (): Promise<void> => {
+    const targetWindow = mainWindow;
+    if (!targetWindow || targetWindow.isDestroyed()) {
+      return;
+    }
+    try {
+      const report = runner
+        ? await runner.checkHealth()
+        : await collectSystemHealth(repoRoot);
+      targetWindow.webContents.send('lstm.health.result', report);
+    } catch (error) {
+      const fallback: HealthReport = {
+        timestamp: new Date().toISOString(),
+        io: { directories: [] },
+        disk: {
+          path: repoRoot,
+          freeBytes: null,
+          totalBytes: null,
+          thresholdBytes: 0,
+          ok: false,
+          message: error instanceof Error ? error.message : 'ヘルスチェックに失敗しました'
+        },
+        gpu: {
+          mode: 'unknown',
+          available: false,
+          devices: [],
+          cudaVisibleDevices: process.env.CUDA_VISIBLE_DEVICES ?? null,
+          message: 'ヘルスチェックで例外が発生しました',
+          error: error instanceof Error ? error.message : '未知のエラー'
+        },
+        warnings: [],
+        errors: [error instanceof Error ? error.message : 'ヘルスチェックに失敗しました']
+      };
+      targetWindow.webContents.send('lstm.health.result', fallback);
+    }
+  };
+
+  mainWindow.webContents.once('did-finish-load', () => {
+    void dispatchHealth();
+  });
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) {
@@ -137,7 +190,49 @@ app.whenReady().then(() => {
       mainWindow.on('closed', () => {
         mainWindow = null;
       });
-      runner?.setWindow(mainWindow);
+      if (runner) {
+        runner.setWindow(mainWindow);
+        void runner
+          .checkHealth()
+          .then((report) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              mainWindow.webContents.send('lstm.health.result', report);
+            }
+          })
+          .catch((error: unknown) => {
+            if (mainWindow && !mainWindow.isDestroyed()) {
+              const fallback: HealthReport = {
+                timestamp: new Date().toISOString(),
+                io: { directories: [] },
+                disk: {
+                  path: repoRootPath ?? process.cwd(),
+                  freeBytes: null,
+                  totalBytes: null,
+                  thresholdBytes: 0,
+                  ok: false,
+                  message: error instanceof Error ? error.message : 'ヘルスチェックに失敗しました'
+                },
+                gpu: {
+                  mode: 'unknown',
+                  available: false,
+                  devices: [],
+                  cudaVisibleDevices: process.env.CUDA_VISIBLE_DEVICES ?? null,
+                  message: 'ヘルスチェックで例外が発生しました',
+                  error: error instanceof Error ? error.message : '未知のエラー'
+                },
+                warnings: [],
+                errors: [error instanceof Error ? error.message : 'ヘルスチェックに失敗しました']
+              };
+              mainWindow.webContents.send('lstm.health.result', fallback);
+            }
+          });
+      } else if (repoRootPath) {
+        void collectSystemHealth(repoRootPath).then((report) => {
+          if (mainWindow && !mainWindow.isDestroyed()) {
+            mainWindow.webContents.send('lstm.health.result', report);
+          }
+        });
+      }
     }
   });
 });
