@@ -29,12 +29,17 @@ export interface LogRow extends CsvRow {
   event: string;
 }
 
+type CsvRowWithOptionalEvent = CsvRow & { event?: string | null };
+
 export function attachTemplate(row: CsvRow): LogRow {
   const templateId = deriveTemplateId(row.method, row.path, row.op_category);
+  const existingEvent = (row as CsvRowWithOptionalEvent).event;
+  const normalizedEvent = typeof existingEvent === 'string' ? existingEvent.trim() : '';
+
   return {
     ...row,
     template_id: templateId,
-    event: templateId
+    event: normalizedEvent.length > 0 ? normalizedEvent : templateId
   };
 }
 
