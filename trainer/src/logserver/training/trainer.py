@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import copy
 import json
 import os
 import random
@@ -326,14 +327,13 @@ def _compute_losses(
     return total_loss, event_loss, delta_loss
 
 
-def train_model(
+def fit_model(
     encoded: Dict[str, np.ndarray],
     session_ids: List[str],
     feature_pack: FeaturePack,
-    output_dir: Path,
     config: TrainerConfig,
     split: Optional[SessionSplit] = None,
-) -> Dict[str, List[float]]:
+) -> Tuple[DeltaAwareLSTM, Dict[str, List[float]], List[str], float, int]:
     _set_seed(config.seed)
     numeric_keys = feature_pack.numeric_features
     train_loader, val_loader, ordered_numeric = _prepare_dataloaders(
@@ -356,9 +356,18 @@ def train_model(
     ).to(config.device)
     optimizer = torch.optim.Adam(model.parameters(), lr=config.learning_rate)
 
-    history = {"train_loss": [], "val_loss": [], "train_event_loss": [], "val_event_loss": [], "train_delta_loss": [], "val_delta_loss": []}
+    history = {
+        "train_loss": [],
+        "val_loss": [],
+        "train_event_loss": [],
+        "val_event_loss": [],
+        "train_delta_loss": [],
+        "val_delta_loss": [],
+    }
     best_val = float("inf")
     patience = config.early_stopping_patience
+    best_state = copy.deepcopy(model.state_dict())
+    best_epoch = 0
 
     for epoch in range(1, config.max_epochs + 1):
         model.train()
@@ -401,19 +410,42 @@ def train_model(
         if val_loss < best_val:
             best_val = val_loss
             patience = config.early_stopping_patience
-            _persist_artifacts(
-                model,
-                feature_pack,
-                history,
-                output_dir,
-                config,
-                ordered_numeric,
-            )
+            best_state = copy.deepcopy(model.state_dict())
+            best_epoch = epoch
         else:
             patience -= 1
             if patience <= 0:
                 break
 
+    if best_state:
+        model.load_state_dict(best_state)
+    return model, history, ordered_numeric, best_val, best_epoch
+
+
+def train_model(
+    encoded: Dict[str, np.ndarray],
+    session_ids: List[str],
+    feature_pack: FeaturePack,
+    output_dir: Path,
+    config: TrainerConfig,
+    split: Optional[SessionSplit] = None,
+) -> Dict[str, List[float]]:
+    model, history, ordered_numeric, _, best_epoch = fit_model(
+        encoded,
+        session_ids,
+        feature_pack,
+        config,
+        split,
+    )
+    _persist_artifacts(
+        model,
+        feature_pack,
+        history,
+        output_dir,
+        config,
+        ordered_numeric,
+        best_epoch=best_epoch,
+    )
     return history
 
 
@@ -424,14 +456,19 @@ def _persist_artifacts(
     output_dir: Path,
     config: TrainerConfig,
     numeric_keys: Sequence[str],
+    *,
+    best_epoch: Optional[int] = None,
 ) -> None:
     timestamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S")
     run_dir = output_dir / timestamp
     run_dir.mkdir(parents=True, exist_ok=True)
     torch.save(model.state_dict(), run_dir / "model.pt")
     feature_pack.save(str(run_dir / "features.json"))
+    history_payload: Dict[str, object] = {key: value for key, value in history.items()}
+    if best_epoch is not None:
+        history_payload["best_epoch"] = best_epoch
     with (run_dir / "history.json").open("w", encoding="utf-8") as handle:
-        json.dump(history, handle, indent=2)
+        json.dump(history_payload, handle, indent=2)
     with (run_dir / "model_config.json").open("w", encoding="utf-8") as handle:
         json.dump({
             "embedding_dim": config.embedding_dim,

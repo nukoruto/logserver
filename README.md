@@ -851,6 +851,24 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 
 参照: SRS.md / CONSTRAINTS.md / dev_prompt.md
 
+### 内側CVランダムサーチ（dt-lstm）
+外側foldごとの学習データに対して、Rolling-origin + Purge/Embargo 付きの時系列CVでハイパーパラメータを探索します。
+
+```bash
+tscv search \
+  --splits artifacts/splits/splits.yaml \
+  --space configs/search_space.yaml \
+  --n_trials 50 \
+  --metric ap \
+  --out artifacts/search_results.json
+```
+
+- `--splits`: foldごとの `train_sessions` / `validation_sessions` を記述したYAML。`dataset.processed_dir` `label_column` `timestamp_column` を含める。
+- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。
+- 出力: ベスト構成を `--out` にJSONで書き出し、同階層に `<out>.jsonl` の全試行ログ（各trialのseed・fold指標・AP/ROC-AUC）を生成。種を固定すればベスト構成が再現できます。
+
+探索中の特徴エンコーダはfoldごとの学習データでfit→検証へ凍結適用され、リークを防止します。
+
 ### 5.10 dt-lstm Electron ブリッジ（自己診断）
 - ビルドと起動:
   ```bash
