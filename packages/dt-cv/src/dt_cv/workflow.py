@@ -1,0 +1,439 @@
+"""Workflow orchestration for dt-cv."""
+
+from __future__ import annotations
+
+import hashlib
+import json
+from pathlib import Path
+from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional
+
+import numpy as np
+import pandas as pd
+
+from .config import FoldPaths
+from .metrics import compute_metrics, fisher_neglog10, save_metrics, save_scores
+from .runner import CommandSpec, build_deterministic_env, run_command
+from .splitter import load_splits
+
+
+class WorkflowError(RuntimeError):
+    """Raised when workflow execution fails."""
+
+
+def _resolve_path(base: Path, value: Optional[str]) -> Optional[Path]:
+    if value in (None, "", "null"):
+        return None
+    return (base / value).resolve()
+
+
+def _fold_paths(base: Path, entry: Mapping[str, object]) -> FoldPaths:
+    paths = entry.get("paths", {})
+    raw = paths.get("raw", {}) if isinstance(paths, Mapping) else {}
+    features = paths.get("features", {}) if isinstance(paths, Mapping) else {}
+    preproc = paths.get("preproc", {}) if isinstance(paths, Mapping) else {}
+    anom = paths.get("anom", {}) if isinstance(paths, Mapping) else {}
+    lstm = paths.get("lstm", {}) if isinstance(paths, Mapping) else {}
+    fisher = paths.get("fisher", {}) if isinstance(paths, Mapping) else {}
+    metrics = paths.get("metrics", {}) if isinstance(paths, Mapping) else {}
+    return FoldPaths(
+        raw_train=_resolve_path(base, raw.get("train")),
+        raw_validation=_resolve_path(base, raw.get("validation")),
+        raw_test=_resolve_path(base, raw.get("test")),
+        features_train=_resolve_path(base, features.get("train")),
+        features_validation=_resolve_path(base, features.get("validation")),
+        features_test=_resolve_path(base, features.get("test")),
+        preproc_stats=_resolve_path(base, preproc.get("stats")),
+        preproc_meta=_resolve_path(base, preproc.get("meta")),
+        anomaly_stats=_resolve_path(base, anom.get("stats")),
+        anomaly_meta=_resolve_path(base, anom.get("meta")),
+        anomaly_scores_validation=_resolve_path(base, anom.get("validation_scores")),
+        anomaly_scores_test=_resolve_path(base, anom.get("test_scores")),
+        lstm_dir=_resolve_path(base, lstm.get("dir")) or (base / "lstm"),
+        lstm_validation_scores=_resolve_path(base, lstm.get("validation_scores")),
+        lstm_test_scores=_resolve_path(base, lstm.get("test_scores")),
+        fisher_validation_scores=_resolve_path(base, fisher.get("validation_scores")),
+        fisher_test_scores=_resolve_path(base, fisher.get("test_scores")),
+        metrics_validation=_resolve_path(base, metrics.get("validation")),
+        metrics_test=_resolve_path(base, metrics.get("test")),
+    )
+
+
+def _sha256(path: Path) -> str:
+    digest = hashlib.sha256()
+    data = path.read_bytes()
+    digest.update(data)
+    return digest.hexdigest()
+
+
+def _ensure_parent(path: Optional[Path]) -> None:
+    if path is None:
+        return
+    path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _subset_pairs(paths: FoldPaths) -> List[tuple[str, Path]]:
+    items: List[tuple[str, Path]] = [("train", paths.features_train), ("validation", paths.features_validation)]
+    if paths.features_test is not None:
+        items.append(("test", paths.features_test))
+    return items
+
+
+def run_train(
+    splits_path: Path,
+    *,
+    dt_preproc_bin: str,
+    dt_anom_bin: str,
+    dt_lstm_bin: str,
+    seed: int,
+    gpu_mode: Optional[str],
+) -> None:
+    splits = load_splits(splits_path)
+    base_dir = splits_path.parent
+    for fold in splits.folds:
+        fold_id = int(fold.get("id", 0))
+        paths = _fold_paths(base_dir, fold)
+        if paths.raw_train is None or paths.raw_validation is None:
+            raise WorkflowError("Split paths are missing mandatory raw CSVs")
+        _ensure_parent(paths.preproc_stats)
+        env = build_deterministic_env(seed, gpu_mode)
+        # dt-preproc fit
+        argv_fit = [
+            dt_preproc_bin,
+            "fit",
+            "--in",
+            str(paths.raw_train),
+            "--out",
+            str(paths.preproc_stats),
+            "--meta",
+            str(paths.preproc_meta),
+            "--pretty",
+        ]
+        run_command(
+            CommandSpec(
+                name=f"fold{fold_id}.preproc.fit",
+                argv=argv_fit,
+                cwd=paths.preproc_stats.parent,
+                env=env,
+                outputs={"stats": paths.preproc_stats, "meta": paths.preproc_meta},
+            )
+        )
+        # dt-preproc transform for each subset
+        for subset, feature_path in _subset_pairs(paths):
+            if feature_path is None:
+                continue
+            raw_path = {
+                "train": paths.raw_train,
+                "validation": paths.raw_validation,
+                "test": paths.raw_test,
+            }[subset]
+            if raw_path is None:
+                continue
+            _ensure_parent(feature_path)
+            argv_transform = [
+                dt_preproc_bin,
+                "transform",
+                "--in",
+                str(raw_path),
+                "--stats",
+                str(paths.preproc_stats),
+                "--out",
+                str(feature_path),
+                "--validate-schema",
+            ]
+            run_command(
+                CommandSpec(
+                    name=f"fold{fold_id}.preproc.transform.{subset}",
+                    argv=argv_transform,
+                    cwd=paths.preproc_stats.parent,
+                    env=env,
+                    outputs={"features": feature_path},
+                )
+            )
+        stats_hash = _sha256(paths.preproc_stats)
+        # dt-anom fit
+        argv_anom_fit = [
+            dt_anom_bin,
+            "fit",
+            "-i",
+            str(paths.features_train),
+            "-s",
+            str(paths.anomaly_stats),
+            "-m",
+            str(paths.anomaly_meta),
+            "--column",
+            "dt_sec",
+            "--seed",
+            str(seed),
+            "--preproc-hash",
+            stats_hash,
+        ]
+        run_command(
+            CommandSpec(
+                name=f"fold{fold_id}.anom.fit",
+                argv=argv_anom_fit,
+                cwd=paths.anomaly_stats.parent,
+                env=env,
+                outputs={"stats": paths.anomaly_stats, "meta": paths.anomaly_meta},
+            )
+        )
+        # dt-lstm train
+        lstm_dir = paths.lstm_dir
+        lstm_dir.mkdir(parents=True, exist_ok=True)
+        numeric_columns = [
+            "delta_seconds",
+            "delta_clipped_seconds",
+            "delta_robust_z",
+            "delta_z_deseas_clipped",
+            "delta_log_burst",
+        ]
+        argv_lstm_train = [
+            dt_lstm_bin,
+            "train",
+            "--train",
+            str(paths.features_train),
+            "--val",
+            str(paths.features_validation),
+            "--numeric-cols",
+            *numeric_columns,
+            "--delta-col",
+            "dt_sec",
+            "--epochs",
+            "5",
+            "--bs",
+            "64",
+            "--seed",
+            str(seed),
+            "--out",
+            str(lstm_dir),
+        ]
+        run_command(
+            CommandSpec(
+                name=f"fold{fold_id}.lstm.train",
+                argv=argv_lstm_train,
+                cwd=lstm_dir,
+                env=env,
+                outputs={"dir": lstm_dir},
+            )
+        )
+
+
+def _join_scores(
+    base_frame: pd.DataFrame,
+    anom_scores: pd.DataFrame,
+    lstm_scores: pd.DataFrame,
+) -> pd.DataFrame:
+    join_keys = [col for col in ["timestamp_utc", "uid", "session_id", "row_index"] if col in base_frame.columns]
+    if not join_keys:
+        join_keys = ["timestamp_utc"]
+    anom_keep = [col for col in join_keys if col in anom_scores.columns]
+    if "neglog10_p" in anom_scores.columns:
+        anom_keep.append("neglog10_p")
+    anom_scores = anom_scores.loc[:, anom_keep]
+    lstm_keep = [col for col in join_keys if col in lstm_scores.columns]
+    lstm_col = "neglog10_p"
+    for candidate in ("neglog10_p_lstm", "neglog10_p"):
+        if candidate in lstm_scores.columns:
+            lstm_col = candidate
+            break
+    lstm_keep.append(lstm_col)
+    lstm_scores = lstm_scores.loc[:, lstm_keep]
+    merged = base_frame.merge(anom_scores, on=join_keys, how="inner", suffixes=("", "_anom"))
+    merged = merged.merge(lstm_scores, on=join_keys, how="inner", suffixes=("_anom", "_lstm"))
+    return merged
+
+
+def _score_subset(
+    subset: str,
+    fold_id: int,
+    paths: FoldPaths,
+    *,
+    dt_anom_bin: str,
+    dt_lstm_bin: str,
+    env: Mapping[str, str],
+) -> Optional[Path]:
+    raw_path = {
+        "validation": paths.raw_validation,
+        "test": paths.raw_test,
+    }.get(subset)
+    if raw_path is None:
+        return None
+    feature_path = {
+        "validation": paths.features_validation,
+        "test": paths.features_test,
+    }[subset]
+    if feature_path is None:
+        return None
+    anom_output = {
+        "validation": paths.anomaly_scores_validation,
+        "test": paths.anomaly_scores_test,
+    }[subset]
+    lstm_output = {
+        "validation": paths.lstm_validation_scores,
+        "test": paths.lstm_test_scores,
+    }[subset]
+    fisher_output = {
+        "validation": paths.fisher_validation_scores,
+        "test": paths.fisher_test_scores,
+    }[subset]
+    metrics_output = {
+        "validation": paths.metrics_validation,
+        "test": paths.metrics_test,
+    }[subset]
+    if any(path is None for path in (anom_output, lstm_output, fisher_output, metrics_output)):
+        return None
+    assert anom_output is not None and lstm_output is not None
+    assert fisher_output is not None and metrics_output is not None
+    _ensure_parent(anom_output)
+    _ensure_parent(lstm_output)
+    _ensure_parent(fisher_output)
+    _ensure_parent(metrics_output)
+    audit_path = anom_output.with_suffix(".audit.jsonl")
+    _ensure_parent(audit_path)
+    # dt-anom score
+    argv_anom_score = [
+        dt_anom_bin,
+        "score",
+        "-i",
+        str(feature_path),
+        "-o",
+        str(anom_output),
+        "--stats",
+        str(paths.anomaly_stats),
+        "--meta",
+        str(paths.anomaly_meta),
+        "--audit",
+        str(audit_path),
+    ]
+    run_command(
+        CommandSpec(
+            name=f"fold{fold_id}.anom.score.{subset}",
+            argv=argv_anom_score,
+            cwd=paths.anomaly_stats.parent,
+            env=env,
+            outputs={
+                "scores": anom_output,
+                "audit": audit_path,
+            },
+        )
+    )
+    # dt-lstm infer
+    lstm_ckpt = paths.lstm_dir / "model.pt"
+    argv_lstm_infer = [
+        dt_lstm_bin,
+        "infer",
+        "--in",
+        str(feature_path),
+        "--ckpt",
+        str(lstm_ckpt),
+        "--out",
+        str(lstm_output),
+        "--seed",
+        str(env.get("DT_GLOBAL_SEED", "0")),
+    ]
+    run_command(
+        CommandSpec(
+            name=f"fold{fold_id}.lstm.infer.{subset}",
+            argv=argv_lstm_infer,
+            cwd=paths.lstm_dir,
+            env=env,
+            outputs={"scores": lstm_output},
+        )
+    )
+    # Metrics computation
+    base_frame = pd.read_csv(raw_path)
+    if "anomaly_label" not in base_frame.columns:
+        raise WorkflowError("Input dataset must contain 'anomaly_label' column for evaluation")
+    anom_scores = pd.read_csv(anom_output)
+    lstm_scores = pd.read_csv(lstm_output)
+    merged = _join_scores(base_frame, anom_scores, lstm_scores)
+    labels = merged["anomaly_label"].astype(float).to_numpy()
+    anom_col = "neglog10_p"
+    if "neglog10_p_anom" in merged.columns:
+        anom_col = "neglog10_p_anom"
+    if anom_col not in merged.columns:
+        raise WorkflowError("dt-anom scores must contain 'neglog10_p'")
+    if "neglog10_p_lstm" not in merged.columns:
+        raise WorkflowError("dt-lstm scores must contain 'neglog10_p'")
+    anom_neglog = merged[anom_col].astype(float).to_numpy()
+    lstm_neglog = merged["neglog10_p_lstm"].astype(float).to_numpy()
+    fisher_neglog = fisher_neglog10(anom_neglog, lstm_neglog)
+    merged["neglog10_p_anom"] = anom_neglog
+    merged["neglog10_p_lstm"] = lstm_neglog
+    merged["neglog10_p_fisher"] = fisher_neglog
+    scores = {
+        "dt_anom": anom_neglog,
+        "dt_lstm": lstm_neglog,
+        "fisher": fisher_neglog,
+    }
+    metrics = compute_metrics(labels, scores)
+    _ensure_parent(metrics_output)
+    save_metrics(metrics_output, metrics)
+    _ensure_parent(fisher_output)
+    save_scores(fisher_output, merged)
+    return metrics_output
+
+
+def run_eval(
+    splits_path: Path,
+    *,
+    dt_anom_bin: str,
+    dt_lstm_bin: str,
+    seed: int,
+    gpu_mode: Optional[str],
+) -> None:
+    splits = load_splits(splits_path)
+    base_dir = splits_path.parent
+    for fold in splits.folds:
+        fold_id = int(fold.get("id", 0))
+        paths = _fold_paths(base_dir, fold)
+        env = build_deterministic_env(seed, gpu_mode)
+        for subset in ("validation", "test"):
+            _score_subset(
+                subset,
+                fold_id,
+                paths,
+                dt_anom_bin=dt_anom_bin,
+                dt_lstm_bin=dt_lstm_bin,
+                env=env,
+            )
+
+
+def run_report(splits_path: Path, *, subsets: Iterable[str] = ("validation", "test")) -> Path:
+    splits = load_splits(splits_path)
+    base_dir = splits_path.parent
+    summary: Dict[str, Dict[str, List[float]]] = {}
+    for fold in splits.folds:
+        paths = _fold_paths(base_dir, fold)
+        for subset in subsets:
+            metrics_path = {
+                "validation": paths.metrics_validation,
+                "test": paths.metrics_test,
+            }.get(subset)
+            if metrics_path is None or not metrics_path.exists():
+                continue
+            payload = json.loads(metrics_path.read_text(encoding="utf-8"))
+            for method, values in payload.items():
+                method_entry = summary.setdefault(method, {})
+                subset_entry = method_entry.setdefault(subset, {"average_precision": [], "roc_auc": []})
+                subset_entry["average_precision"].append(float(values["average_precision"]))
+                roc_val = values.get("roc_auc")
+                if roc_val is not None:
+                    subset_entry["roc_auc"].append(float(roc_val))
+    report = {}
+    for method, subset_values in summary.items():
+        report[method] = {}
+        for subset, metrics in subset_values.items():
+            method_subset = {}
+            for metric_name, samples in metrics.items():
+                if not samples:
+                    continue
+                arr = np.asarray(samples, dtype=float)
+                method_subset[metric_name] = {
+                    "mean": float(arr.mean()),
+                    "std": float(arr.std(ddof=0)),
+                }
+            if method_subset:
+                report[method][subset] = method_subset
+    out_path = base_dir / "cv_report.json"
+    out_path.write_text(json.dumps(report, indent=2, sort_keys=True) + "\n", encoding="utf-8")
+    return out_path
