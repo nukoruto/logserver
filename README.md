@@ -145,8 +145,10 @@
 
 ### 4.2 データ配置
 - `data/raw/` には **9 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category` で固定し、RFC 3339 UTC と HKDF-HMAC 擬似匿名化を前提とする。
+- セッション化 (`trainer.scripts.preprocess`) では `method` / `path` / `op_category` から `template_id` を決定的に導出し、`AUTH::GET::dashboard` のような形式で `template_id` 列と `event` 列の双方に保存する。TypeScript 側の `@logserver/dt-preproc` も同じテンプレート生成ロジックを利用するため、Python/Node 間でテンプレート語彙が一致する。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
 - 派生特徴は別工程で生成する。9 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
+- `trainer/configs/default.yaml` の `data.feature_merge.patterns` で `*-features.csv` を指定すると、`trainer.scripts.train` が `uid/session_id/timestamp_utc/template_id` をキーとして自動マージし、新しい特徴列のみを結合する。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
 - `logs/` には 9 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
 
@@ -256,6 +258,7 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 `trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_quantile_0_25`（`delta_m25`）, `delta_quantile_0_5`（`delta_m50`）, `delta_quantile_0_75`（`delta_m75`）を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
 - `TrainerConfig.device` は `auto` が既定で、`GPU_MODE=ada6000`（RTX 6000 Ada）または `GPU_MODE=4060`（RTX 4060）を指定すると、自動で `cuda:0` と最適化済みの `num_workers` / `prefetch_factor` / `pin_memory` / `persistent_workers` を適用します。`GPU_MODE` を未設定か、対応表に存在しない値の場合は CUDA 利用可否を判定し `cuda:0` または `cpu` を選択します。
+- `data.feature_merge.patterns` に `*-features.csv` を設定すると、`trainer.scripts.train` が該当 CSV を探索し、`uid` / `session_id` / `timestamp_utc` / `template_id` をキーに追加列のみを結合する。テンプレート語彙の一致は Python/TypeScript 共通のテンプレート ID 生成ヘルパーで保証する。
 - DataLoader は IterableDataset ベースで、メモリ常駐の numpy 配列だけでなく `numpy.memmap` やスライス呼び出し可能オブジェクトから必要なセッションのみを読み出してバッチ化します。学習実行後は `model.pt` / `features.json` / `model_config.json` に加えて乱数種・DataLoader パラメタ・Git コミットを記録した `repro.json` が生成され、再現性監査を支援します。
 
 - 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。

@@ -14,7 +14,7 @@ def test_generate_preproc_report(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp": [
+            "timestamp_utc": [
                 "2024-01-01T00:00:00Z",
                 "2024-01-01T00:00:05Z",
                 "2024-01-01T00:00:08Z",
@@ -22,6 +22,13 @@ def test_generate_preproc_report(tmp_path: Path) -> None:
             ],
             "uid": ["u1", "u1", "u2", "u2"],
             "event": ["login", "view", "login", "logout"],
+            "session_id": ["s1", "s1", "s2", "s2"],
+            "method": ["POST", "GET", "POST", "POST"],
+            "path": ["/api/login", "/dashboard", "/api/login", "/api/logout"],
+            "referer": ["", "", "", ""],
+            "user_agent": ["ua", "ua", "ua", "ua"],
+            "ip": ["127.0.0.1", "127.0.0.1", "127.0.0.2", "127.0.0.2"],
+            "op_category": ["AUTH", "READ", "AUTH", "AUTH"],
             "latency_ms": [100, 120, 80, 90],
             "response_bytes": [512, 256, 128, 64],
         }
