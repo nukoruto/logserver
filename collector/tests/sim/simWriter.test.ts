@@ -7,7 +7,9 @@ import {
   augmentRows,
   formatCsvAugmented,
   DEFAULT_FEATURE_AUGMENTER,
+  validateContractColumns,
 } from '../../src/sim/persistence/simWriter';
+import type { AugmentedSimulationEvent } from '../../src/sim/persistence/simWriter';
 import { CLIPPING_EVENTS, makeEventCopies } from './persistence/fixtures';
 
 const DEFAULT_FEATURE_COLUMNS = [
@@ -32,16 +34,19 @@ const DEFAULT_FEATURE_COLUMNS = [
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'session_id',
   'uid',
-  'user_id',
-  'event',
+  'session_id',
   'method',
   'path',
   'referer',
   'user_agent',
   'ip',
   'op_category',
+];
+
+const FEATURE_FILE_ADDITIONAL_COLUMNS = [
+  'user_id',
+  'event',
   'status_code',
   'latency_ms',
   'delta_t',
@@ -143,6 +148,7 @@ describe('simWriter.persistSimulationRun', () => {
       outputDir: tempDir,
       tags: ['unit', 'simulation'],
       notes: 'unit test manifest verification',
+      includeFeaturesCsv: true,
     });
 
     expect(result.runId).toBe('unit-test-001');
@@ -150,89 +156,100 @@ describe('simWriter.persistSimulationRun', () => {
     expect(path.basename(result.manifestPath)).toBe('scenario-unit-test-001.json');
 
     const csvContent = await fs.readFile(result.csvPath, 'utf8');
-    const rows = csvContent.trim().split('\n');
-    const header = rows[0].split(',');
-    expect(header).toEqual([...CSV_BASE_COLUMNS, ...DEFAULT_FEATURE_COLUMNS, CSV_TRAILING_COLUMN]);
-    expect(header).not.toContain('timestamp');
-    expect(rows).toHaveLength(events.length + 1);
+    const baseRows = csvContent.trim().split('\n');
+    const baseHeader = baseRows[0].split(',');
+    expect(baseHeader).toEqual(CSV_BASE_COLUMNS);
+    expect(baseRows).toHaveLength(events.length + 1);
 
-    const headerIndex = new Map<string, number>();
-    header.forEach((name, index) => headerIndex.set(name, index));
-    const valueAt = (columns: string[], name: string): string => {
-      const position = headerIndex.get(name);
+    const baseHeaderIndex = new Map<string, number>();
+    baseHeader.forEach((name, index) => baseHeaderIndex.set(name, index));
+    const baseValueAt = (columns: string[], name: string): string => {
+      const position = baseHeaderIndex.get(name);
       if (position === undefined) {
-        throw new Error(`Column ${name} not found in header`);
+        throw new Error(`Column ${name} not found in base header`);
       }
       return columns[position] ?? '';
     };
 
-    const parsedRows = rows.slice(1).map(parseCsvRow);
-    const uidValues = parsedRows.map((columns: string[]) => valueAt(columns, 'uid'));
-    expect(uidValues).toEqual(['null', 'null', 'null']);
-
-    const refererValues = parsedRows.map((columns: string[]) => valueAt(columns, 'referer'));
-    expect(refererValues).toEqual(['null', 'null', 'null']);
-
-    const userAgentValues = parsedRows.map((columns: string[]) => valueAt(columns, 'user_agent'));
-    expect(userAgentValues).toEqual(['null', 'null', 'null']);
-
-    const ipValues = parsedRows.map((columns: string[]) => valueAt(columns, 'ip'));
-    expect(ipValues).toEqual(['null', 'null', 'null']);
-
-    const opCategoryValues = parsedRows.map((columns: string[]) => valueAt(columns, 'op_category'));
-    expect(opCategoryValues).toEqual(['null', 'null', 'null']);
-
-    const statusCodeValues = parsedRows.map((columns: string[]) => valueAt(columns, 'status_code'));
-    expect(statusCodeValues).toEqual(['200', '403', '200']);
-
-    const timestampUtcValues = parsedRows.map((columns: string[]) => {
-      const raw = valueAt(columns, 'timestamp_utc');
+    const baseParsedRows = baseRows.slice(1).map(parseCsvRow);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'uid'))).toEqual(['null', 'null', 'null']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'session_id'))).toEqual([
+      'sess-001',
+      'sess-001',
+      'sess-099',
+    ]);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'method'))).toEqual(['POST', 'DELETE', 'GET']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'path'))).toEqual([
+      '/auth/login',
+      '/projects/alpha',
+      '/reports/daily',
+    ]);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'referer'))).toEqual(['null', 'null', 'null']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'user_agent'))).toEqual(['null', 'null', 'null']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'ip'))).toEqual(['null', 'null', 'null']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'op_category'))).toEqual(['null', 'null', 'null']);
+    const timestampUtcValues = baseParsedRows.map((columns) => {
+      const raw = baseValueAt(columns, 'timestamp_utc');
       return raw.replace(/^"/, '').replace(/"$/, '').replace(/""/g, '"');
     });
     expect(timestampUtcValues.every((value) => typeof value === 'string' && value.endsWith('Z'))).toBe(true);
-    const metadataRows = parsedRows.map((columns: string[]) => JSON.parse(valueAt(columns, 'metadata') || '{}'));
+
+    expect(result.featuresCsvPath).not.toBeNull();
+    if (!result.featuresCsvPath) {
+      throw new Error('featuresCsvPath should be defined when includeFeaturesCsv is true');
+    }
+    const featuresContent = await fs.readFile(result.featuresCsvPath, 'utf8');
+    const featureRows = featuresContent.trim().split('\n');
+    const featureHeader = featureRows[0].split(',');
+    expect(featureHeader).toEqual([
+      ...CSV_BASE_COLUMNS,
+      ...FEATURE_FILE_ADDITIONAL_COLUMNS,
+      ...DEFAULT_FEATURE_COLUMNS,
+      CSV_TRAILING_COLUMN,
+    ]);
+    const featureHeaderIndex = new Map<string, number>();
+    featureHeader.forEach((name, index) => featureHeaderIndex.set(name, index));
+    const featureValueAt = (columns: string[], name: string): string => {
+      const position = featureHeaderIndex.get(name);
+      if (position === undefined) {
+        throw new Error(`Column ${name} not found in feature header`);
+      }
+      return columns[position] ?? '';
+    };
+
+    const featureParsedRows = featureRows.slice(1).map(parseCsvRow);
+    expect(featureParsedRows.map((columns) => featureValueAt(columns, 'status_code'))).toEqual(['200', '403', '200']);
+    const metadataRows = featureParsedRows.map((columns) => JSON.parse(featureValueAt(columns, 'metadata') || '{}'));
     expect(metadataRows[0].anomaly).toBe('normal');
     expect(metadataRows[1].anomaly).toBe('protocol_violation');
     expect(metadataRows[2].anomaly).toBe('time_deviation');
-
-    const dtValues = parsedRows.map((columns: string[]) => valueAt(columns, 'dt_sec'));
+    const dtValues = featureParsedRows.map((columns) => featureValueAt(columns, 'dt_sec'));
     expect(dtValues).toEqual(['', '3.5', '']);
-
-    const logDtValues = parsedRows.map((columns: string[]) => valueAt(columns, 'log_dt'));
+    const logDtValues = featureParsedRows.map((columns) => featureValueAt(columns, 'log_dt'));
     expect(logDtValues[0]).toBe('');
     expect(Number(logDtValues[1])).toBeCloseTo(Math.log(3.5), 6);
     expect(logDtValues[2]).toBe('');
-
-    const zValues = parsedRows.map((columns: string[]) => valueAt(columns, 'z'));
+    const zValues = featureParsedRows.map((columns) => featureValueAt(columns, 'z'));
     expect(zValues).toEqual(['', '0', '']);
-
-    const clippedValues = parsedRows.map((columns: string[]) => valueAt(columns, 'z_clipped'));
+    const clippedValues = featureParsedRows.map((columns) => featureValueAt(columns, 'z_clipped'));
     expect(clippedValues).toEqual(['', '0', '']);
-
-    const robustValues = parsedRows.map((columns: string[]) => valueAt(columns, 'z_robust'));
+    const robustValues = featureParsedRows.map((columns) => featureValueAt(columns, 'z_robust'));
     expect(robustValues).toEqual(['', '0', '']);
-
-    const hourlyValues = parsedRows.map((columns: string[]) => valueAt(columns, 'z_hourly'));
+    const hourlyValues = featureParsedRows.map((columns) => featureValueAt(columns, 'z_hourly'));
     expect(hourlyValues).toEqual(['', '0', '']);
-
-    const logBurstMeanValues = parsedRows.map((columns: string[]) => valueAt(columns, 'log_burst_mean'));
+    const logBurstMeanValues = featureParsedRows.map((columns) => featureValueAt(columns, 'log_burst_mean'));
     expect(logBurstMeanValues[0]).toBe('');
     expect(Number(logBurstMeanValues[1])).toBeCloseTo(Math.log(3.5), 6);
     expect(Number(logBurstMeanValues[2])).toBeCloseTo(Math.log(3.5), 6);
-
-    const logBurstStdValues = parsedRows.map((columns: string[]) => valueAt(columns, 'log_burst_std'));
+    const logBurstStdValues = featureParsedRows.map((columns) => featureValueAt(columns, 'log_burst_std'));
     expect(logBurstStdValues).toEqual(['', '0', '0']);
-
-    const quantile25Values = parsedRows.map((columns: string[]) => valueAt(columns, 'm_q25'));
+    const quantile25Values = featureParsedRows.map((columns) => featureValueAt(columns, 'm_q25'));
     expect(quantile25Values).toEqual(['', '3.5', '3.5']);
-
-    const quantile75Values = parsedRows.map((columns: string[]) => valueAt(columns, 'm_q75'));
+    const quantile75Values = featureParsedRows.map((columns) => featureValueAt(columns, 'm_q75'));
     expect(quantile75Values).toEqual(['', '3.5', '3.5']);
-
-    const labelValues = parsedRows.map((columns: string[]) => valueAt(columns, 'time_label'));
+    const labelValues = featureParsedRows.map((columns) => featureValueAt(columns, 'time_label'));
     expect(labelValues).toEqual(['initial', 'measured', 'initial']);
-
-    const sidFinalValues = parsedRows.map((columns: string[]) => valueAt(columns, CSV_TRAILING_COLUMN));
+    const sidFinalValues = featureParsedRows.map((columns) => featureValueAt(columns, CSV_TRAILING_COLUMN));
     expect(sidFinalValues).toEqual(['sess-001', 'sess-001', 'explicit-sid-099']);
 
     const manifestRaw = await fs.readFile(result.manifestPath, 'utf8');
@@ -250,7 +267,9 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.session_ids.sort()).toEqual(['sess-001', 'sess-099']);
     expect(manifest.output.csv_path).toBe(result.csvPath);
     expect(manifest.output.manifest_path).toBe(result.manifestPath);
-    expect(manifest.output.csv_sha256).toBe(result.hash);
+    expect(manifest.output.csv_sha256).toBe(result.csvHash);
+    expect(manifest.output.features_csv_path).toBe(result.featuresCsvPath);
+    expect(manifest.output.features_csv_sha256).toBe(result.featuresCsvHash);
     expect(manifest.output.meta_path).toBe(result.metaPath);
     expect(manifest.source.sim_log_dir).toBe(tempDir);
     expect(manifest.timing).toMatchObject({
@@ -261,16 +280,27 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.timing.epsilon_seconds).toBeCloseTo(1e-2, 10);
     expect(manifest.timing.epsilon_t_seconds).toBeCloseTo(1e-2, 10);
 
-    expect(manifest.features).toMatchObject({
-      augmenter: {
-        window_size: DEFAULT_FEATURE_AUGMENTER.windowSize,
-        quantiles: DEFAULT_FEATURE_AUGMENTER.quantiles,
-        clip_bounds: {
-          z: { min: -5, max: 5 },
-          z_robust: { min: -5, max: 5 },
-          z_hourly: { min: -5, max: 5 },
-          log_burst_z: { min: -5, max: 5 },
-        },
+    expect(manifest.features.include_features_csv).toBe(true);
+    expect(manifest.features.columns).toEqual([
+      ...CSV_BASE_COLUMNS,
+      ...FEATURE_FILE_ADDITIONAL_COLUMNS,
+      ...DEFAULT_FEATURE_COLUMNS,
+      CSV_TRAILING_COLUMN,
+    ]);
+    expect(result.featureHeader).toEqual([
+      ...CSV_BASE_COLUMNS,
+      ...FEATURE_FILE_ADDITIONAL_COLUMNS,
+      ...DEFAULT_FEATURE_COLUMNS,
+      CSV_TRAILING_COLUMN,
+    ]);
+    expect(manifest.features.augmenter).toMatchObject({
+      window_size: DEFAULT_FEATURE_AUGMENTER.windowSize,
+      quantiles: DEFAULT_FEATURE_AUGMENTER.quantiles,
+      clip_bounds: {
+        z: { min: -5, max: 5 },
+        z_robust: { min: -5, max: 5 },
+        z_hourly: { min: -5, max: 5 },
+        log_burst_z: { min: -5, max: 5 },
       },
     });
 
@@ -332,6 +362,10 @@ describe('simWriter.persistSimulationRun', () => {
       runId: 'utc-header',
       outputDir: tempDir,
     });
+
+    expect(result.featuresCsvPath).toBeNull();
+    expect(result.featuresCsvHash).toBeNull();
+    expect(result.featureHeader).toBeUndefined();
 
     const csvContent = await fs.readFile(result.csvPath, 'utf8');
     const header = csvContent.trim().split('\n', 1)[0]?.split(',') ?? [];
@@ -418,6 +452,7 @@ describe('simWriter.persistSimulationRun', () => {
       events: fineEvents,
       runId: 'eps-fine',
       outputDir: tempDir,
+      includeFeaturesCsv: true,
     });
 
     const coarseResult = await persistSimulationRun({
@@ -425,6 +460,7 @@ describe('simWriter.persistSimulationRun', () => {
       runId: 'eps-coarse',
       outputDir: tempDir,
       parameters: { epsilon_t: 0.01 },
+      includeFeaturesCsv: true,
     });
 
     const fineTiming = fineResult.manifest.timing as Record<string, number>;
@@ -434,13 +470,16 @@ describe('simWriter.persistSimulationRun', () => {
     expect(coarseTiming.epsilon_seconds).toBeCloseTo(0.003, 10);
     expect(coarseTiming.epsilon_t_seconds).toBeCloseTo(0.01, 10);
 
-    const coarseCsv = await fs.readFile(coarseResult.csvPath, 'utf8');
-    const coarseLines = coarseCsv.trim().split('\n');
-    const coarseHeader = coarseLines[0].split(',');
-    const coarseIndex = new Map<string, number>();
-    coarseHeader.forEach((name, index) => coarseIndex.set(name, index));
-    const coarseRows = coarseLines.slice(1).map(parseCsvRow);
-    const coarseLabels = coarseRows.map((columns) => columns[coarseIndex.get('time_label') ?? -1]);
+    if (!coarseResult.featuresCsvPath) {
+      throw new Error('featuresCsvPath should be defined for coarseResult');
+    }
+    const coarseFeaturesCsv = await fs.readFile(coarseResult.featuresCsvPath, 'utf8');
+    const coarseFeatureLines = coarseFeaturesCsv.trim().split('\n');
+    const coarseFeatureHeader = coarseFeatureLines[0].split(',');
+    const coarseFeatureIndex = new Map<string, number>();
+    coarseFeatureHeader.forEach((name, index) => coarseFeatureIndex.set(name, index));
+    const coarseFeatureRows = coarseFeatureLines.slice(1).map(parseCsvRow);
+    const coarseLabels = coarseFeatureRows.map((columns) => columns[coarseFeatureIndex.get('time_label') ?? -1]);
     expect(coarseLabels).toEqual(['initial', 'unknown', 'measured']);
   });
 
@@ -557,6 +596,11 @@ describe('simWriter.persistSimulationRun', () => {
     expect(trailing.log_burst_z_clipped).toBeCloseTo(Math.sign(trailingLogBurst) * 0.25, 6);
   });
 
+  it('validateContractColumns が契約違反を検知する', () => {
+    expect(() => validateContractColumns(new Array(CSV_BASE_COLUMNS.length).fill(null))).not.toThrow();
+    expect(() => validateContractColumns(['only-one'])).toThrow('CSV contract violation');
+  });
+
   it('formatCsvAugmented で sid_final を session_id で補完し、CSV エスケープを保持する', () => {
     const row = {
       timestamp: '2024-07-01T00:00:00.000Z',
@@ -588,10 +632,21 @@ describe('simWriter.persistSimulationRun', () => {
       m_q75: 1.1,
     };
 
-    const csvLine = formatCsvAugmented(row, DEFAULT_FEATURE_COLUMNS);
-    const occurrences = csvLine.match(/"sess,comma"/g) || [];
-    expect(occurrences).toHaveLength(2);
-    expect(csvLine).toContain('"user""quote"');
-    expect(csvLine.endsWith('"sess,comma"')).toBe(true);
+    const csvLine = formatCsvAugmented(row as AugmentedSimulationEvent, DEFAULT_FEATURE_COLUMNS);
+    const parsed = parseCsvRow(csvLine);
+    expect(parsed).toHaveLength(CSV_BASE_COLUMNS.length);
+    const index = (name: string): number => {
+      const position = CSV_BASE_COLUMNS.indexOf(name as (typeof CSV_BASE_COLUMNS)[number]);
+      if (position === -1) {
+        throw new Error(`Column ${name} not found`);
+      }
+      return position;
+    };
+    expect(parsed[index('timestamp_utc')]).toBe('2024-07-01T00:00:00.000Z');
+    expect(parsed[index('session_id')]).toBe('sess,comma');
+    expect(parsed[index('method')]).toBe('POST');
+    expect(parsed[index('path')]).toBe('/auth/login');
+    expect(parsed[index('uid')]).toBe('null');
+    expect(parsed[index('op_category')]).toBe('null');
   });
 });

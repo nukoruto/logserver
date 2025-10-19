@@ -38,6 +38,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   runId?: string | null;
   outputDir?: string;
   csvFileName?: string;
+  featureCsvFileName?: string;
   manifestFileName?: string;
   metaFileName?: string;
   parameters?: Record<string, unknown>;
@@ -46,16 +47,20 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   manifest?: Record<string, unknown>;
   transitionTableVersion?: string | null;
   extraMetadata?: Record<string, unknown>;
+  includeFeaturesCsv?: boolean;
 }
 
 export interface PersistSimulationResult {
   csvPath: string;
+  featuresCsvPath: string | null;
   manifestPath: string;
   metaPath: string | null;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
-  hash: string;
+  csvHash: string;
+  featuresCsvHash: string | null;
+  featureHeader?: string[];
 }
 
 export type AugmentedSimulationEvent = SimulationEvent & {
@@ -466,16 +471,19 @@ const baseExtrasResolvers: Record<string, FeatureResolver | null> = BASE_EXTRA_C
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'session_id',
   'uid',
-  'user_id',
-  'event',
+  'session_id',
   'method',
   'path',
   'referer',
   'user_agent',
   'ip',
   'op_category',
+] as const;
+
+const FEATURE_ADDITIONAL_COLUMNS = [
+  'user_id',
+  'event',
   'status_code',
   'latency_ms',
   'delta_t',
@@ -483,6 +491,14 @@ const CSV_BASE_COLUMNS = [
 ] as const;
 
 const CSV_TRAILING_COLUMNS = ['sid_final'] as const;
+
+export const validateContractColumns = (columns: readonly unknown[]): void => {
+  if (columns.length !== CSV_BASE_COLUMNS.length) {
+    throw new Error(
+      `CSV contract violation: expected ${CSV_BASE_COLUMNS.length} columns but received ${columns.length}`,
+    );
+  }
+};
 
 const buildFeatureColumnList = (options: FeatureAugmenterOptions): string[] => [
   ...BASE_EXTRA_COLUMN_NAMES,
@@ -840,6 +856,19 @@ const generateRunId = (): string => {
   return `sim-${timestamp}`;
 };
 
+const deriveFeatureCsvFileName = (csvFileName: string | undefined, runId: string): string => {
+  const suffix = '-features';
+  if (typeof csvFileName === 'string' && csvFileName.trim().length > 0) {
+    const trimmed = csvFileName.trim();
+    const dotIndex = trimmed.lastIndexOf('.');
+    if (dotIndex > 0 && dotIndex < trimmed.length - 1) {
+      return `${trimmed.slice(0, dotIndex)}${suffix}${trimmed.slice(dotIndex)}`;
+    }
+    return `${trimmed}${suffix}.csv`;
+  }
+  return `simEvents-${runId}${suffix}.csv`;
+};
+
 const ensureDirectory = async (dirPath: string): Promise<void> => {
   await fs.mkdir(dirPath, { recursive: true });
 };
@@ -1120,67 +1149,130 @@ const sanitizeNumberField = (value: unknown): number | null => {
   return null;
 };
 
-export const formatCsvAugmented = (
+const sanitizeSessionIdentifier = (value: unknown): string | null => {
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  }
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    return String(value);
+  }
+  return null;
+};
+
+interface CsvRowPayload {
+  base: unknown[];
+  features: unknown[];
+  sidFinal: unknown;
+}
+
+const resolveCsvRowPayload = (
   event: AugmentedSimulationEvent,
   featureColumns: readonly string[],
-): string => {
+): CsvRowPayload => {
   const safeEvent = event && typeof event === 'object' ? event : ({} as AugmentedSimulationEvent);
   const metadata = serializeMetadata(safeEvent.metadata);
   const sidFinal = resolveSidFinal(safeEvent);
+  const timestampUtc =
+    sanitizeStringField(safeEvent.timestamp_utc ?? (safeEvent as Record<string, unknown>).timestamp)
+      ?? CSV_NULL_LITERAL;
   const uid = sanitizeStringField(safeEvent.uid) ?? CSV_NULL_LITERAL;
-  const userId = sanitizeStringField(safeEvent.user_id) ?? CSV_NULL_LITERAL;
-  const eventName = sanitizeStringField(safeEvent.event) ?? CSV_NULL_LITERAL;
+  const sessionId = sanitizeSessionIdentifier(safeEvent.session_id) ?? CSV_NULL_LITERAL;
   const method = sanitizeStringField(safeEvent.method) ?? CSV_NULL_LITERAL;
   const pathValue = sanitizeStringField(safeEvent.path) ?? CSV_NULL_LITERAL;
   const refererValue = sanitizeStringField(safeEvent.referer) ?? CSV_NULL_LITERAL;
   const userAgent = sanitizeStringField((safeEvent as Record<string, unknown>).user_agent) ?? CSV_NULL_LITERAL;
   const ipValue = sanitizeStringField((safeEvent as Record<string, unknown>).ip) ?? CSV_NULL_LITERAL;
   const opCategoryValue = sanitizeStringField((safeEvent as Record<string, unknown>).op_category) ?? CSV_NULL_LITERAL;
+  const userId = sanitizeStringField(safeEvent.user_id) ?? CSV_NULL_LITERAL;
+  const eventName = sanitizeStringField(safeEvent.event) ?? CSV_NULL_LITERAL;
   const statusCode =
     sanitizeNumberField((safeEvent as Record<string, unknown>).status_code)
       ?? sanitizeNumberField((safeEvent as Record<string, unknown>).status)
       ?? CSV_NULL_LITERAL;
+  const latency = sanitizeNumberField(safeEvent.latency_ms) ?? CSV_NULL_LITERAL;
+  const deltaT = extractDeltaSeconds(safeEvent);
+  const featureValues = featureColumns.map((column) => (safeEvent as Record<string, unknown>)[column] ?? null);
   const baseValues = [
-    safeEvent.timestamp_utc,
-    safeEvent.session_id,
+    timestampUtc,
     uid,
-    userId,
-    eventName,
+    sessionId,
     method,
     pathValue,
     refererValue,
     userAgent,
     ipValue,
     opCategoryValue,
-    statusCode,
-    safeEvent.latency_ms,
-    extractDeltaSeconds(safeEvent),
-    metadata,
   ];
-  const featureValues = featureColumns.map((column) => (safeEvent as Record<string, unknown>)[column] ?? null);
-  const row = [...baseValues, ...featureValues, sidFinal].map(toCsvField);
+  const featureExtras = [userId, eventName, statusCode, latency, deltaT, metadata];
+  return {
+    base: baseValues,
+    features: [...featureExtras, ...featureValues],
+    sidFinal,
+  };
+};
+
+export const formatCsvAugmented = (
+  event: AugmentedSimulationEvent,
+  featureColumns: readonly string[],
+): string => {
+  const payload = resolveCsvRowPayload(event, featureColumns);
+  validateContractColumns(payload.base);
+  const row = payload.base.map(toCsvField);
   return row.join(',');
 };
+
+interface FormatCsvRowsOptions extends AugmentComputationOptions {
+  includeFeatures?: boolean;
+}
+
+interface FormatCsvRowsResult {
+  baseContent: string;
+  featureContent?: string;
+  featureHeader?: string[];
+}
 
 const formatCsvRows = (
   events: readonly SimulationEvent[],
   extras?: FeatureOverrides,
-  options?: AugmentComputationOptions,
-): string => {
-  const featureOptions = resolveFeatureAugmenterOptions(options as Record<string, unknown>);
+  options?: FormatCsvRowsOptions,
+): FormatCsvRowsResult => {
+  const { includeFeatures = false, ...augmentOptions } = options ?? {};
+  const featureOptions = resolveFeatureAugmenterOptions(augmentOptions as Record<string, unknown>);
   const featureColumns = buildFeatureColumnList(featureOptions);
   const augmented = augmentRows(events, extras ?? {}, {
-    ...options,
+    ...augmentOptions,
     windowSize: featureOptions.windowSize,
     quantiles: featureOptions.quantiles,
     clipBounds: featureOptions.clipBounds,
   });
-  const headerColumns = [...CSV_BASE_COLUMNS, ...featureColumns, ...CSV_TRAILING_COLUMNS];
+  const headerColumns = [...CSV_BASE_COLUMNS];
+  validateContractColumns(headerColumns);
   const rows = [headerColumns.join(',')];
+  const featureHeader = includeFeatures
+    ? [
+        ...CSV_BASE_COLUMNS,
+        ...FEATURE_ADDITIONAL_COLUMNS,
+        ...featureColumns,
+        ...CSV_TRAILING_COLUMNS,
+      ]
+    : null;
+  const featureRows = featureHeader ? [featureHeader.join(',')] : null;
   for (const event of augmented) {
-    rows.push(formatCsvAugmented(event, featureColumns));
+    const payload = resolveCsvRowPayload(event, featureColumns);
+    validateContractColumns(payload.base);
+    rows.push(payload.base.map(toCsvField).join(','));
+    if (featureRows && featureHeader) {
+      featureRows.push([...payload.base, ...payload.features, payload.sidFinal].map(toCsvField).join(','));
+    }
   }
-  return rows.join('\n').concat('\n');
+  const baseContent = rows.join('\n').concat('\n');
+  const featureContent = featureRows ? featureRows.join('\n').concat('\n') : undefined;
+  return {
+    baseContent,
+    featureContent,
+    featureHeader: featureHeader ?? undefined,
+  };
 };
 
 const defaultManifest = (overrides: Record<string, unknown> = {}): Record<string, unknown> => ({
@@ -1211,6 +1303,7 @@ export const persistSimulationRun = async (
   const outputDir = input?.outputDir ? path.resolve(input.outputDir) : config.simLogRoot;
   const featureAugmenter = resolveFeatureAugmenterFromInput(input);
   let metaPath: string | null = null;
+  const includeFeaturesCsv = Boolean(input?.includeFeaturesCsv);
 
   await ensureDirectory(outputDir);
 
@@ -1219,16 +1312,32 @@ export const persistSimulationRun = async (
   const csvPath = path.join(outputDir, csvFileName);
   const manifestPath = path.join(outputDir, manifestFileName);
 
-  const csvContent = formatCsvRows(labeled, input?.featureOverrides, {
-    epsilonT,
-    measurementEpsilon,
-    windowSize: featureAugmenter.windowSize,
-    quantiles: featureAugmenter.quantiles,
-    clipBounds: featureAugmenter.clipBounds,
-  });
+  const { baseContent: csvContent, featureContent, featureHeader } = formatCsvRows(
+    labeled,
+    input?.featureOverrides,
+    {
+      epsilonT,
+      measurementEpsilon,
+      windowSize: featureAugmenter.windowSize,
+      quantiles: featureAugmenter.quantiles,
+      clipBounds: featureAugmenter.clipBounds,
+      includeFeatures: includeFeaturesCsv,
+    },
+  );
   await fs.writeFile(csvPath, csvContent, { encoding: 'utf8' });
 
-  const hash = crypto.createHash('sha256').update(csvContent, 'utf8').digest('hex');
+  const csvHash = crypto.createHash('sha256').update(csvContent, 'utf8').digest('hex');
+  let featuresCsvPath: string | null = null;
+  let featuresCsvHash: string | null = null;
+
+  if (includeFeaturesCsv && featureContent) {
+    const featureFileName = input?.featureCsvFileName || deriveFeatureCsvFileName(input?.csvFileName, runId);
+    const resolvedFeaturePath = path.join(outputDir, featureFileName);
+    await fs.writeFile(resolvedFeaturePath, featureContent, { encoding: 'utf8' });
+    featuresCsvPath = resolvedFeaturePath;
+    featuresCsvHash = crypto.createHash('sha256').update(featureContent, 'utf8').digest('hex');
+  }
+
   const sessionStats = computeSessionStats(labeled);
   const deltaStats = summarizeDeltas(labeled);
   const anomalySummary = buildAnomalySummary(labeled);
@@ -1259,7 +1368,9 @@ export const persistSimulationRun = async (
     output: {
       csv_path: csvPath,
       manifest_path: manifestPath,
-      csv_sha256: hash,
+      csv_sha256: csvHash,
+      features_csv_path: featuresCsvPath,
+      features_csv_sha256: featuresCsvHash,
     },
     source: {
       sim_log_dir: outputDir,
@@ -1286,6 +1397,8 @@ export const persistSimulationRun = async (
       log_burst_z: cloneClipBounds(augmenterClone.clipBounds.log_burst_z),
     },
   };
+  featuresSection.columns = featureHeader ?? null;
+  featuresSection.include_features_csv = includeFeaturesCsv;
   manifest.features = featuresSection;
 
   if (Array.isArray(input?.sessionIds) && input.sessionIds.length > 0) {
@@ -1326,12 +1439,15 @@ export const persistSimulationRun = async (
 
   return {
     csvPath,
+    featuresCsvPath,
     manifestPath,
     metaPath,
     runId,
     events: labeled,
     manifest,
-    hash,
+    csvHash,
+    featuresCsvHash,
+    featureHeader: featureHeader ?? undefined,
   };
 };
 
@@ -1341,6 +1457,7 @@ const simWriter = {
   buildAnomalySummary,
   augmentRows,
   formatCsvAugmented,
+  validateContractColumns,
 };
 
 export default simWriter;

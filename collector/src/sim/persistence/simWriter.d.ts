@@ -31,22 +31,29 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   runId?: string | null;
   outputDir?: string;
   csvFileName?: string;
+  featureCsvFileName?: string;
   manifestFileName?: string;
+  metaFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
   manifest?: Record<string, unknown>;
   transitionTableVersion?: string | null;
   extraMetadata?: Record<string, unknown>;
+  includeFeaturesCsv?: boolean;
 }
 
 export interface PersistSimulationResult {
   csvPath: string;
+  featuresCsvPath: string | null;
   manifestPath: string;
+  metaPath: string | null;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
-  hash: string;
+  csvHash: string;
+  featuresCsvHash: string | null;
+  featureHeader?: string[];
 }
 
 export function persistSimulationRun(input: PersistSimulationInput): Promise<PersistSimulationResult>;
@@ -106,6 +113,7 @@ export function formatCsvAugmented(
   event: AugmentedSimulationEvent,
   featureColumns: readonly string[],
 ): string;
+export function validateContractColumns(columns: readonly unknown[]): void;
 
 export const DEFAULT_FEATURE_AUGMENTER: FeatureAugmenterOptions;
 export function resolveFeatureAugmenterOptions(
@@ -119,7 +127,15 @@ declare const simWriter: {
   buildAnomalySummary: typeof buildAnomalySummary;
   augmentRows: typeof augmentRows;
   formatCsvAugmented: typeof formatCsvAugmented;
+  validateContractColumns: typeof validateContractColumns;
 };
 
-export { augmentRows, buildAnomalySummary, formatCsvAugmented, persistSimulationRun, summarizeDeltas };
+export {
+  augmentRows,
+  buildAnomalySummary,
+  formatCsvAugmented,
+  persistSimulationRun,
+  summarizeDeltas,
+  validateContractColumns,
+};
 export default simWriter;
