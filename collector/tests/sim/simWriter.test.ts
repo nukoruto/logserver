@@ -149,6 +149,7 @@ describe('simWriter.persistSimulationRun', () => {
       tags: ['unit', 'simulation'],
       notes: 'unit test manifest verification',
       includeFeaturesCsv: true,
+      kid: 'KID-UNIT-001',
     });
 
     expect(result.runId).toBe('unit-test-001');
@@ -271,6 +272,10 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.output.features_csv_path).toBe(result.featuresCsvPath);
     expect(manifest.output.features_csv_sha256).toBe(result.featuresCsvHash);
     expect(manifest.output.meta_path).toBe(result.metaPath);
+    expect(manifest.output.run_meta_path).toBe(result.runMetaPath);
+    expect(manifest.output.audit_path).toBe(result.auditPath);
+    expect(manifest.output.schema_path).toBe(result.schemaPath);
+    expect(manifest.schema_sha256).toBe(result.schemaSha256);
     expect(manifest.source.sim_log_dir).toBe(tempDir);
     expect(manifest.timing).toMatchObject({
       epsilon_seconds: expect.any(Number),
@@ -303,6 +308,47 @@ describe('simWriter.persistSimulationRun', () => {
         log_burst_z: { min: -5, max: 5 },
       },
     });
+
+    expect(result.runMetaPath).toBeDefined();
+    const runMetaContent = await fs.readFile(result.runMetaPath, 'utf8');
+    const runMeta = JSON.parse(runMetaContent);
+    expect(runMeta.run_id).toBe(result.runId);
+    expect(runMeta.algo_ver).toBe('sim-delta-v1');
+    expect(runMeta.simulator_version).toMatch(/\d+\.\d+\.\d+/);
+    expect(runMeta.seed).toBe('unit-seed');
+    expect(runMeta.data_fingerprint.csv_sha256).toBe(result.csvHash);
+    expect(runMeta.data_fingerprint.features_csv_sha256).toBe(result.featuresCsvHash);
+    expect(runMeta.data_fingerprint.schema_sha256).toBe(result.schemaSha256);
+    expect(runMeta.data_fingerprint.event_count).toBe(3);
+    expect(runMeta.delta_t_generation.feature_window_size).toBe(DEFAULT_FEATURE_AUGMENTER.windowSize);
+    expect(runMeta.injection_summary.anomaly_summary).toEqual({
+      normal: 1,
+      protocol_violation: 1,
+      time_deviation: 1,
+    });
+    expect(runMeta.environment.node_version).toMatch(/^v\d+/);
+    expect(runMeta.kid).toBe('KID-UNIT-001');
+    expect(/authorization|cookie|set-cookie|eyJ/i.test(runMetaContent)).toBe(false);
+
+    expect(result.schemaPath).toBeDefined();
+    const schemaContent = await fs.readFile(result.schemaPath, 'utf8');
+    const schemaDoc = JSON.parse(schemaContent);
+    expect(schemaDoc.$id).toBeDefined();
+    expect(schemaDoc.version).toBe('1.0.0');
+    expect(schemaDoc.raw_schema.columns).toHaveLength(9);
+    expect(schemaDoc.features_schema.columns.length).toBe(
+      CSV_BASE_COLUMNS.length + FEATURE_FILE_ADDITIONAL_COLUMNS.length + DEFAULT_FEATURE_COLUMNS.length + 1,
+    );
+    expect(schemaDoc.features_schema.quantiles).toEqual(DEFAULT_FEATURE_AUGMENTER.quantiles);
+
+    expect(result.auditPath).toBeDefined();
+    const auditLines = (await fs.readFile(result.auditPath, 'utf8')).trim().split('\n');
+    expect(auditLines).toHaveLength(events.length);
+    const firstAudit = JSON.parse(auditLines[0]);
+    expect(firstAudit).toMatchObject({ idx: 0, sid_final: 'sess-001', anomaly_type: null });
+    expect(firstAudit).not.toHaveProperty('uid');
+    expect(firstAudit.params).toHaveProperty('delta_seconds');
+    expect(result.auditRecordCount).toBe(auditLines.length);
 
     const deltaStats = manifest.delta_seconds;
     expect(deltaStats.count).toBe(3);

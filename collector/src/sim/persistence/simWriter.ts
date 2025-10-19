@@ -1,11 +1,173 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import packageJson from '../../../package.json';
 import config from '../../config';
 import { labelSequence } from '../labeler';
 import type { SimulationEvent } from '../../services/simulationService';
 
 const DEFAULT_TIME_ANOMALY_PROPAGATE_WEIGHT = 0.7;
+const SIMULATOR_VERSION = typeof packageJson.version === 'string' && packageJson.version.length > 0
+  ? packageJson.version
+  : '0.0.0';
+const SIMULATOR_ALGO_VERSION = 'sim-delta-v1';
+const DEFAULT_RUN_META_FILE = 'run_meta.json';
+const DEFAULT_AUDIT_FILE = 'audit.jsonl';
+const DEFAULT_SCHEMA_FILE = 'schema.json';
+const SCHEMA_VERSION = '1.0.0';
+const SCHEMA_ID = 'https://logserver.dev/schemas/session-run/1-0-0';
+const RFC3339_UTC_PATTERN =
+  '^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})T(?:[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]{1,3})?Z$';
+
+type RawSchemaColumn = {
+  name: string;
+  type: 'string' | 'number' | 'integer';
+  pattern?: string;
+  description: string;
+};
+
+type FeatureSchemaColumn = {
+  name: string;
+  type: 'string' | 'number' | 'integer';
+  unit: string | null;
+  description: string;
+};
+
+const RAW_SCHEMA_COLUMNS: RawSchemaColumn[] = [
+  {
+    name: 'timestamp_utc',
+    type: 'string',
+    pattern: RFC3339_UTC_PATTERN,
+    description: 'Event timestamp in UTC (RFC 3339)',
+  },
+  {
+    name: 'session_id',
+    type: 'string',
+    description: 'Deterministic session identifier',
+  },
+  {
+    name: 'uid',
+    type: 'string',
+    description: 'HKDF-HMAC pseudonymised user identifier',
+  },
+  { name: 'method', type: 'string', description: 'HTTP method verb' },
+  { name: 'path', type: 'string', description: 'HTTP resource path' },
+  { name: 'referer', type: 'string', description: 'HTTP referer header' },
+  { name: 'user_agent', type: 'string', description: 'HTTP user-agent header' },
+  { name: 'ip', type: 'string', description: 'Client IP (documentation range)' },
+  {
+    name: 'op_category',
+    type: 'string',
+    description: 'Operation category (AUTH/READ/UPDATE)',
+  },
+];
+
+const FEATURE_COLUMN_DEFINITIONS: Record<string, FeatureSchemaColumn> = {
+  timestamp_utc: {
+    name: 'timestamp_utc',
+    type: 'string',
+    unit: 'rfc3339',
+    description: 'Event timestamp in UTC (RFC 3339)',
+  },
+  session_id: {
+    name: 'session_id',
+    type: 'string',
+    unit: 'identifier',
+    description: 'Deterministic session identifier',
+  },
+  uid: {
+    name: 'uid',
+    type: 'string',
+    unit: 'identifier',
+    description: 'HKDF-HMAC pseudonymised user identifier',
+  },
+  method: {
+    name: 'method',
+    type: 'string',
+    unit: 'http_method',
+    description: 'HTTP method verb',
+  },
+  path: {
+    name: 'path',
+    type: 'string',
+    unit: 'uri_path',
+    description: 'HTTP resource path',
+  },
+  referer: {
+    name: 'referer',
+    type: 'string',
+    unit: 'uri',
+    description: 'HTTP referer header',
+  },
+  user_agent: {
+    name: 'user_agent',
+    type: 'string',
+    unit: 'user_agent',
+    description: 'HTTP user-agent header',
+  },
+  ip: {
+    name: 'ip',
+    type: 'string',
+    unit: 'ip_address',
+    description: 'Client IP (documentation range)',
+  },
+  op_category: {
+    name: 'op_category',
+    type: 'string',
+    unit: 'operation_category',
+    description: 'Operation category (AUTH/READ/UPDATE)',
+  },
+  user_id: { name: 'user_id', type: 'string', unit: null, description: 'Original user identifier (if provided)' },
+  event: { name: 'event', type: 'string', unit: null, description: 'Logical event label' },
+  status_code: { name: 'status_code', type: 'integer', unit: null, description: 'HTTP status code' },
+  latency_ms: { name: 'latency_ms', type: 'number', unit: 'milliseconds', description: 'Response latency' },
+  delta_t: { name: 'delta_t', type: 'number', unit: 'seconds', description: 'Measured delta between events' },
+  metadata: { name: 'metadata', type: 'string', unit: null, description: 'JSON metadata blob' },
+  dt_sec: { name: 'dt_sec', type: 'number', unit: 'seconds', description: 'Δt in seconds (post-processed)' },
+  log_dt: { name: 'log_dt', type: 'number', unit: null, description: 'Logarithm of Δt' },
+  z: { name: 'z', type: 'number', unit: 'z-score', description: 'Standard score of Δt' },
+  z_clipped: { name: 'z_clipped', type: 'number', unit: 'z-score', description: 'Clipped z-score of Δt' },
+  z_robust: { name: 'z_robust', type: 'number', unit: 'z-score', description: 'Robust z-score (MAD scaled)' },
+  z_robust_clipped: {
+    name: 'z_robust_clipped',
+    type: 'number',
+    unit: 'z-score',
+    description: 'Clipped robust z-score',
+  },
+  z_hourly: { name: 'z_hourly', type: 'number', unit: 'z-score', description: 'Hourly z-score baseline' },
+  z_hourly_clipped: {
+    name: 'z_hourly_clipped',
+    type: 'number',
+    unit: 'z-score',
+    description: 'Clipped hourly z-score',
+  },
+  time_label: { name: 'time_label', type: 'string', unit: null, description: 'Δt classification (initial/measured)' },
+  log_burst_mean: {
+    name: 'log_burst_mean',
+    type: 'number',
+    unit: null,
+    description: 'Rolling log Δt mean',
+  },
+  log_burst_std: {
+    name: 'log_burst_std',
+    type: 'number',
+    unit: null,
+    description: 'Rolling log Δt standard deviation',
+  },
+  log_burst_z: {
+    name: 'log_burst_z',
+    type: 'number',
+    unit: 'z-score',
+    description: 'Z-score within log Δt burst window',
+  },
+  log_burst_z_clipped: {
+    name: 'log_burst_z_clipped',
+    type: 'number',
+    unit: 'z-score',
+    description: 'Clipped log Δt burst z-score',
+  },
+  sid_final: { name: 'sid_final', type: 'string', unit: null, description: 'Final session identifier after reconciliation' },
+};
 
 export type FeatureResolver = (
   event: SimulationEvent,
@@ -41,6 +203,9 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   featureCsvFileName?: string;
   manifestFileName?: string;
   metaFileName?: string;
+  runMetaFileName?: string;
+  auditFileName?: string;
+  schemaFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
@@ -48,6 +213,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   transitionTableVersion?: string | null;
   extraMetadata?: Record<string, unknown>;
   includeFeaturesCsv?: boolean;
+  kid?: string | null;
 }
 
 export interface PersistSimulationResult {
@@ -55,11 +221,17 @@ export interface PersistSimulationResult {
   featuresCsvPath: string | null;
   manifestPath: string;
   metaPath: string | null;
+  runMetaPath: string;
+  auditPath: string;
+  schemaPath: string;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
   csvHash: string;
   featuresCsvHash: string | null;
+  schemaSha256: string;
+  auditRecordCount: number;
+  runMeta: RunMeta;
   featureHeader?: string[];
 }
 
@@ -98,6 +270,60 @@ export interface FeatureAugmenterOptions {
   windowSize: number;
   quantiles: number[];
   clipBounds: FeatureAugmenterClipBounds;
+}
+
+export interface AuditRecord {
+  idx: number;
+  sid_final: string | null;
+  op_category: string | null;
+  anomaly_type: string | null;
+  reason: string | null;
+  params: Record<string, number | string | null>;
+}
+
+export interface RunMeta {
+  run_id: string;
+  created_at_utc: string;
+  algo_ver: string;
+  simulator_version: string;
+  seed: string | null;
+  data_fingerprint: {
+    csv_sha256: string;
+    features_csv_sha256: string | null;
+    schema_sha256: string;
+    event_count: number;
+    session_count: number;
+  };
+  delta_t_generation: {
+    method: string;
+    epsilon_seconds: number;
+    epsilon_t_seconds: number;
+    feature_window_size: number;
+    feature_quantiles: number[];
+    clip_bounds: FeatureAugmenterClipBounds;
+  };
+  injection_summary: {
+    strategies: string[];
+    anomaly_summary: Record<string, number>;
+    anomaly_rate: number;
+    anomaly_count: number | null;
+    time_deviation: {
+      method: string;
+      quantile: number | null;
+      threshold_seconds: number | null;
+      vote_window: number;
+      vote_threshold: number;
+      hysteresis_hold: number;
+    };
+  };
+  environment: {
+    node_version: string;
+    platform: string;
+    arch: string;
+    env: string;
+    gpu_mode: string | null;
+  };
+  kid: string | null;
 }
 
 export type ClipBoundInput =
@@ -374,6 +600,11 @@ const extractNumeric = (value: unknown): number | null => {
     return numeric;
   }
   return null;
+};
+
+const toFiniteNumber = (value: unknown, fallback: number): number => {
+  const numeric = Number(value);
+  return Number.isFinite(numeric) ? numeric : fallback;
 };
 
 const resolveEpsilonT = (input: PersistSimulationInput | null | undefined, epsilon: number): number => {
@@ -851,6 +1082,17 @@ const sanitizeRunId = (runId: unknown): string | null => {
   return trimmed.replace(/[^a-zA-Z0-9_-]+/g, '-');
 };
 
+const sanitizeKid = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  return trimmed.replace(/[^a-zA-Z0-9_.:-]+/g, '-').slice(0, 64);
+};
+
 const generateRunId = (): string => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, '-');
   return `sim-${timestamp}`;
@@ -1122,6 +1364,321 @@ const resolveSidFinal = (event: SimulationEvent): unknown => {
   return candidate;
 };
 
+const normalizeAnomalyTypeValue = (value: unknown): string | null => {
+  if (typeof value !== 'string') {
+    return null;
+  }
+  const trimmed = value.trim();
+  if (trimmed.length === 0) {
+    return null;
+  }
+  const lower = trimmed.toLowerCase();
+  if (lower === 'normal' || lower === 'none') {
+    return null;
+  }
+  return trimmed;
+};
+
+const resolveAnomalyType = (event: SimulationEvent): string | null => {
+  if (!event || typeof event !== 'object') {
+    return null;
+  }
+  const direct = normalizeAnomalyTypeValue((event as Record<string, unknown>).anomaly_type);
+  if (direct) {
+    return direct;
+  }
+  const marked = normalizeAnomalyTypeValue((event as Record<string, unknown>)._anomalyType);
+  if (marked) {
+    return marked;
+  }
+  const metadata = serializeMetadata((event as Record<string, unknown>).metadata);
+  const metaAnomaly = normalizeAnomalyTypeValue(metadata.anomaly);
+  if (metaAnomaly) {
+    return metaAnomaly;
+  }
+  return null;
+};
+
+const resolveAnomalyReason = (event: SimulationEvent): string | null => {
+  if (!event || typeof event !== 'object') {
+    return null;
+  }
+  const details = (event as Record<string, unknown>)._anomalyDetails;
+  if (details && typeof details === 'object' && !Array.isArray(details)) {
+    const reason = (details as Record<string, unknown>).reason;
+    if (typeof reason === 'string' && reason.trim().length > 0) {
+      return reason.trim();
+    }
+  }
+  const metadata = serializeMetadata((event as Record<string, unknown>).metadata);
+  const metadataReason = metadata.anomaly_reason ?? metadata.reason;
+  if (typeof metadataReason === 'string' && metadataReason.trim().length > 0) {
+    return metadataReason.trim();
+  }
+  return null;
+};
+
+const buildAuditRecords = (events: readonly SimulationEvent[]): AuditRecord[] => {
+  return events.map((event, index) => {
+    const metadata = serializeMetadata(event?.metadata);
+    const opCategory =
+      sanitizeStringField((event as Record<string, unknown>).op_category)
+        ?? sanitizeStringField(metadata.op_category)
+        ?? null;
+    const sidFinalRaw = resolveSidFinal(event);
+    const sidFinal = sanitizeSessionIdentifier(sidFinalRaw);
+    const deltaSeconds = extractDeltaSeconds(event);
+    const latency = sanitizeNumberField((event as Record<string, unknown>).latency_ms);
+    const statusCode =
+      sanitizeNumberField((event as Record<string, unknown>).status_code)
+        ?? sanitizeNumberField((event as Record<string, unknown>).status);
+    const timeLabel = sanitizeStringField((event as Record<string, unknown>).time_label);
+    const paramsEntries: [string, number | string | null][] = [];
+    if (deltaSeconds !== null && Number.isFinite(deltaSeconds)) {
+      paramsEntries.push(['delta_seconds', Number(deltaSeconds)]);
+    }
+    if (latency !== null) {
+      paramsEntries.push(['latency_ms', latency]);
+    }
+    if (statusCode !== null) {
+      paramsEntries.push(['status_code', statusCode]);
+    }
+    if (timeLabel) {
+      paramsEntries.push(['time_label', timeLabel]);
+    }
+    const params: Record<string, number | string | null> = {};
+    paramsEntries.forEach(([key, value]) => {
+      params[key] = value;
+    });
+    return {
+      idx: index,
+      sid_final: sidFinal,
+      op_category: opCategory,
+      anomaly_type: resolveAnomalyType(event),
+      reason: resolveAnomalyReason(event),
+      params,
+    } satisfies AuditRecord;
+  });
+};
+
+export const appendAudit = async (
+  filePath: string,
+  records: readonly AuditRecord[],
+  options: { truncate?: boolean } = {},
+): Promise<number> => {
+  if (!Array.isArray(records) || records.length === 0) {
+    if (options.truncate) {
+      await fs.writeFile(filePath, '', { encoding: 'utf8' });
+    }
+    return 0;
+  }
+  const content = records.map((record) => JSON.stringify(record)).join('\n').concat('\n');
+  if (options.truncate) {
+    await fs.writeFile(filePath, content, { encoding: 'utf8' });
+  } else {
+    await fs.appendFile(filePath, content, { encoding: 'utf8' });
+  }
+  return records.length;
+};
+
+const buildFeatureSchemaColumns = (columns: readonly string[]): FeatureSchemaColumn[] =>
+  columns.map((name) => {
+    const definition = FEATURE_COLUMN_DEFINITIONS[name];
+    if (definition) {
+      return { ...definition };
+    }
+    if (name.startsWith('m_q')) {
+      return {
+        name,
+        type: 'number',
+        unit: 'seconds',
+        description: 'Quantile of Δt distribution',
+      } satisfies FeatureSchemaColumn;
+    }
+    return {
+      name,
+      type: 'number',
+      unit: null,
+      description: 'Derived feature',
+    } satisfies FeatureSchemaColumn;
+  });
+
+const buildSchemaDocument = (
+  featureColumns: readonly string[],
+  featureAugmenter: FeatureAugmenterOptions,
+  generatedAtUtc: string,
+): Record<string, unknown> => {
+  const rawSchemaData = { columns: RAW_SCHEMA_COLUMNS };
+  const featureSchemaData = {
+    columns: buildFeatureSchemaColumns(featureColumns),
+    window_size: featureAugmenter.windowSize,
+    quantiles: [...featureAugmenter.quantiles],
+  };
+  return {
+    $schema: 'https://json-schema.org/draft/2020-12/schema',
+    $id: SCHEMA_ID,
+    title: 'Session simulation output schema',
+    type: 'object',
+    version: SCHEMA_VERSION,
+    generated_at_utc: generatedAtUtc,
+    raw_schema: rawSchemaData,
+    features_schema: featureSchemaData,
+    properties: {
+      version: { const: SCHEMA_VERSION },
+      generated_at_utc: { type: 'string', format: 'date-time' },
+      raw_schema: {
+        type: 'object',
+        properties: {
+          columns: {
+            type: 'array',
+            minItems: RAW_SCHEMA_COLUMNS.length,
+            const: rawSchemaData.columns,
+            items: { $ref: '#/$defs/rawColumn' },
+          },
+        },
+        required: ['columns'],
+        additionalProperties: false,
+        const: rawSchemaData,
+      },
+      features_schema: {
+        type: 'object',
+        properties: {
+          columns: {
+            type: 'array',
+            minItems: featureColumns.length,
+            const: featureSchemaData.columns,
+            items: { $ref: '#/$defs/featureColumn' },
+          },
+          window_size: { type: 'integer', const: featureSchemaData.window_size },
+          quantiles: {
+            type: 'array',
+            const: featureSchemaData.quantiles,
+            items: { type: 'number' },
+          },
+        },
+        required: ['columns', 'window_size', 'quantiles'],
+        additionalProperties: false,
+        const: featureSchemaData,
+      },
+    },
+    required: ['version', 'generated_at_utc', 'raw_schema', 'features_schema'],
+    additionalProperties: false,
+    $defs: {
+      rawColumn: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          type: { enum: ['string', 'number', 'integer'] },
+          pattern: { type: 'string' },
+          description: { type: 'string' },
+        },
+        required: ['name', 'type', 'description'],
+        additionalProperties: false,
+      },
+      featureColumn: {
+        type: 'object',
+        properties: {
+          name: { type: 'string' },
+          type: { enum: ['string', 'number', 'integer'] },
+          unit: { type: ['string', 'null'] },
+          description: { type: 'string' },
+        },
+        required: ['name', 'type', 'description', 'unit'],
+        additionalProperties: false,
+      },
+    },
+  };
+};
+
+interface BuildRunMetaInput {
+  runId: string;
+  createdAtUtc: string;
+  seed: string | null;
+  csvHash: string;
+  featuresCsvHash: string | null;
+  schemaSha256: string;
+  eventCount: number;
+  sessionCount: number;
+  measurementEpsilon: number;
+  epsilonT: number;
+  featureAugmenter: FeatureAugmenterOptions;
+  anomalySummary: Record<string, number>;
+  strategies: readonly string[];
+  anomalyRate: number;
+  anomalyCount: number | null;
+  timeDeviation: {
+    method: string;
+    quantile: number | null;
+    thresholdSeconds: number | null;
+    voteWindow: number;
+    voteThreshold: number;
+    hysteresisHold: number;
+  };
+  env: string;
+  gpuMode: string | null;
+  kid: string | null;
+}
+
+export const buildRunMeta = (input: BuildRunMetaInput): RunMeta => {
+  const sortedStrategies = Array.from(new Set(input.strategies))
+    .map((strategy) => (typeof strategy === 'string' ? strategy : ''))
+    .filter((strategy) => strategy.length > 0)
+    .sort();
+  const clonedAugmenter = cloneFeatureAugmenterOptions(input.featureAugmenter);
+  const clipBounds = {
+    z: cloneClipBounds(clonedAugmenter.clipBounds.z),
+    z_robust: cloneClipBounds(clonedAugmenter.clipBounds.z_robust),
+    z_hourly: cloneClipBounds(clonedAugmenter.clipBounds.z_hourly),
+    log_burst_z: cloneClipBounds(clonedAugmenter.clipBounds.log_burst_z),
+  } as FeatureAugmenterClipBounds;
+  return {
+    run_id: input.runId,
+    created_at_utc: input.createdAtUtc,
+    algo_ver: SIMULATOR_ALGO_VERSION,
+    simulator_version: SIMULATOR_VERSION,
+    seed: input.seed ?? null,
+    data_fingerprint: {
+      csv_sha256: input.csvHash,
+      features_csv_sha256: input.featuresCsvHash ?? null,
+      schema_sha256: input.schemaSha256,
+      event_count: input.eventCount,
+      session_count: input.sessionCount,
+    },
+    delta_t_generation: {
+      method: 'session_diff',
+      epsilon_seconds: input.measurementEpsilon,
+      epsilon_t_seconds: input.epsilonT,
+      feature_window_size: clonedAugmenter.windowSize,
+      feature_quantiles: [...clonedAugmenter.quantiles],
+      clip_bounds: clipBounds,
+    },
+    injection_summary: {
+      strategies: sortedStrategies,
+      anomaly_summary: { ...input.anomalySummary },
+      anomaly_rate: input.anomalyRate,
+      anomaly_count: input.anomalyCount,
+      time_deviation: {
+        method: input.timeDeviation.method,
+        quantile: input.timeDeviation.quantile,
+        threshold_seconds: input.timeDeviation.thresholdSeconds,
+        vote_window: input.timeDeviation.voteWindow,
+        vote_threshold: input.timeDeviation.voteThreshold,
+        hysteresis_hold: input.timeDeviation.hysteresisHold,
+      },
+    },
+    environment: {
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+      env: input.env,
+      gpu_mode: typeof input.gpuMode === 'string' && input.gpuMode.trim().length > 0
+        ? input.gpuMode.trim()
+        : null,
+    },
+    kid: input.kid ?? null,
+  } satisfies RunMeta;
+};
+
 const CSV_NULL_LITERAL = 'null';
 
 const sanitizeStringField = (value: unknown): string | null => {
@@ -1302,15 +1859,23 @@ export const persistSimulationRun = async (
   const generatedAt = new Date().toISOString();
   const outputDir = input?.outputDir ? path.resolve(input.outputDir) : config.simLogRoot;
   const featureAugmenter = resolveFeatureAugmenterFromInput(input);
+  const featureColumnList = buildFeatureColumnList(featureAugmenter);
   let metaPath: string | null = null;
   const includeFeaturesCsv = Boolean(input?.includeFeaturesCsv);
+  const kid = sanitizeKid(input?.kid ?? input?.manifest?.kid ?? null);
 
   await ensureDirectory(outputDir);
 
   const csvFileName = input?.csvFileName || `simEvents-${runId}.csv`;
   const manifestFileName = input?.manifestFileName || `scenario-${runId}.json`;
+  const runMetaFileName = input?.runMetaFileName || DEFAULT_RUN_META_FILE;
+  const auditFileName = input?.auditFileName || DEFAULT_AUDIT_FILE;
+  const schemaFileName = input?.schemaFileName || DEFAULT_SCHEMA_FILE;
   const csvPath = path.join(outputDir, csvFileName);
   const manifestPath = path.join(outputDir, manifestFileName);
+  const runMetaPath = path.join(outputDir, runMetaFileName);
+  const auditPath = path.join(outputDir, auditFileName);
+  const schemaPath = path.join(outputDir, schemaFileName);
 
   const { baseContent: csvContent, featureContent, featureHeader } = formatCsvRows(
     labeled,
@@ -1344,6 +1909,20 @@ export const persistSimulationRun = async (
   const totalAnomalies = Object.entries(anomalySummary)
     .filter(([label]) => label !== 'normal')
     .reduce((acc, [, count]) => acc + count, 0);
+  const featuresSchemaColumns = [
+    ...CSV_BASE_COLUMNS,
+    ...FEATURE_ADDITIONAL_COLUMNS,
+    ...featureColumnList,
+    ...CSV_TRAILING_COLUMNS,
+  ];
+  const schemaDocument = buildSchemaDocument(
+    featuresSchemaColumns,
+    cloneFeatureAugmenterOptions(featureAugmenter),
+    generatedAt,
+  );
+  const schemaContent = `${JSON.stringify(schemaDocument, null, 2)}\n`;
+  await fs.writeFile(schemaPath, schemaContent, { encoding: 'utf8' });
+  const schemaSha256 = crypto.createHash('sha256').update(schemaContent, 'utf8').digest('hex');
 
   const manifest = {
     ...defaultManifest({
@@ -1371,11 +1950,20 @@ export const persistSimulationRun = async (
       csv_sha256: csvHash,
       features_csv_path: featuresCsvPath,
       features_csv_sha256: featuresCsvHash,
+      run_meta_path: runMetaPath,
+      audit_path: auditPath,
+      schema_path: schemaPath,
     },
     source: {
       sim_log_dir: outputDir,
     },
   } as Record<string, unknown>;
+
+  if (kid) {
+    manifest.kid = kid;
+  }
+
+  manifest.schema_sha256 = schemaSha256;
 
   const existingTiming = (manifest.timing ?? {}) as Record<string, unknown>;
   manifest.timing = {
@@ -1414,6 +2002,9 @@ export const persistSimulationRun = async (
     manifest.transition_table_version = input.transitionTableVersion;
   }
 
+  const auditRecords = buildAuditRecords(labeled);
+  const auditRecordCount = await appendAudit(auditPath, auditRecords, { truncate: true });
+
   if (input?.extraMetadata && typeof input.extraMetadata === 'object') {
     manifest.extra = { ...input.extraMetadata };
   }
@@ -1437,16 +2028,74 @@ export const persistSimulationRun = async (
     });
   }
 
+  const manifestParameters = (manifest.parameters ?? {}) as Record<string, unknown>;
+  const manifestAnomalies = Array.isArray(manifestParameters.anomalies)
+    ? ((manifestParameters.anomalies as unknown[]) as string[])
+    : [];
+  const manifestTimeDeviation = (manifestParameters.time_deviation_detector ?? {}) as Record<string, unknown>;
+  const manifestTimeDeviationPost = (manifestTimeDeviation.post_process ?? {}) as Record<string, unknown>;
+  const anomalyRateValue = extractNumeric(manifestParameters.anomaly_rate) ?? 0;
+  const anomalyCountCandidate = extractNumeric(manifestParameters.anomaly_count);
+  const anomalyCountValue = typeof anomalyCountCandidate === 'number' && Number.isFinite(anomalyCountCandidate)
+    ? anomalyCountCandidate
+    : null;
+  const timeDeviationMethod =
+    typeof manifestTimeDeviation.method === 'string' && manifestTimeDeviation.method.trim().length > 0
+      ? manifestTimeDeviation.method
+      : 'quantile';
+  const timeDeviationQuantile = extractNumeric(manifestTimeDeviation.quantile);
+  const timeDeviationThresholdSeconds = extractNumeric(manifestTimeDeviation.threshold_seconds);
+  const voteWindowValue = toFiniteNumber(manifestTimeDeviationPost.vote_window, 0);
+  const voteThresholdValue = toFiniteNumber(manifestTimeDeviationPost.vote_threshold, 0);
+  const hysteresisHoldValue = toFiniteNumber(manifestTimeDeviationPost.hysteresis_hold, 0);
+
+  const runMeta = buildRunMeta({
+    runId,
+    createdAtUtc: generatedAt,
+    seed: typeof manifest.seed === 'string' ? manifest.seed : null,
+    csvHash,
+    featuresCsvHash,
+    schemaSha256,
+    eventCount: labeled.length,
+    sessionCount: sessionStats.totalSessions,
+    measurementEpsilon,
+    epsilonT,
+    featureAugmenter: cloneFeatureAugmenterOptions(featureAugmenter),
+    anomalySummary,
+    strategies: manifestAnomalies,
+    anomalyRate: anomalyRateValue,
+    anomalyCount: anomalyCountValue,
+    timeDeviation: {
+      method: timeDeviationMethod,
+      quantile: timeDeviationQuantile,
+      thresholdSeconds: timeDeviationThresholdSeconds,
+      voteWindow: voteWindowValue,
+      voteThreshold: voteThresholdValue,
+      hysteresisHold: hysteresisHoldValue,
+    },
+    env: config.env,
+    gpuMode: typeof process.env.GPU_MODE === 'string' ? process.env.GPU_MODE : null,
+    kid,
+  });
+
+  await fs.writeFile(runMetaPath, `${JSON.stringify(runMeta, null, 2)}\n`, { encoding: 'utf8' });
+
   return {
     csvPath,
     featuresCsvPath,
     manifestPath,
     metaPath,
+    runMetaPath,
+    auditPath,
+    schemaPath,
     runId,
     events: labeled,
     manifest,
     csvHash,
     featuresCsvHash,
+    schemaSha256,
+    auditRecordCount,
+    runMeta,
     featureHeader: featureHeader ?? undefined,
   };
 };
@@ -1458,6 +2107,8 @@ const simWriter = {
   augmentRows,
   formatCsvAugmented,
   validateContractColumns,
+  appendAudit,
+  buildRunMeta,
 };
 
 export default simWriter;

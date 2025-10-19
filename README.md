@@ -29,6 +29,7 @@
 - **異常スコア**：予測確率の逸脱 + Δt 予測誤差/尤度を統合
 - **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
 - **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、データセット SHA-256 を保存し、追試・監査を支援
+- **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（9 列 raw / 派生 features のスキーマ定義）を出力し、`manifest.schema_sha256` に `schema.json` の SHA-256 を記録
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
@@ -149,7 +150,7 @@
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
 - 派生特徴は別工程で生成する。9 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
 - `trainer/configs/default.yaml` の `data.feature_merge.patterns` で `*-features.csv` を指定すると、`trainer.scripts.train` が `uid/session_id/timestamp_utc/template_id` をキーとして自動マージし、新しい特徴列のみを結合する。
-- `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）とマニフェスト（`scenario-<run-id>.json`）が保存される。
+- `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）、マニフェスト（`scenario-<run-id>.json`）、監査メタ（`run_meta.json` / `audit.jsonl` / `schema.json`）が保存され、`manifest.schema_sha256` に `schema.json` のハッシュが追記される。
 - `logs/` には 9 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
 
   ```bash

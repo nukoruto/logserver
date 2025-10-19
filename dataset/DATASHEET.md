@@ -27,6 +27,7 @@
   | `ip` | string | RFC5737 のドキュメントレンジ (例: 198.51.100.0/24)
   | `op_category` | string | `AUTH/READ/UPDATE`
 - **派生列**: Δt 系列、latency、異常スコア、ラベル等は 9 列契約 CSV を `dt-preproc`→`trainer.scripts.score`→`trainer.scripts.threshold` で生成し、`data/processed/` に保存する。
+- **契約遵守**: CSV 本体は常に 9 列固定。派生特徴や監査メタは `run_meta.json` / `audit.jsonl` / `schema.json` のサイドカーで提供し、`manifest.schema_sha256` に `schema.json` のハッシュを格納する。
 
 ## 4. 再利用性 (Reusable)
 - **収集目的**: Web セッション操作系列の Δt を含む LSTM 制御モデル評価 (SRS.md §1, §6-§8)。
@@ -49,6 +50,55 @@
   1. 操作シーケンスは決定論的テンプレートに軽微な揺らぎのみ → 実運用の自由度を過小評価。
   2. 遅延は一様分布 (45–480ms) → 長尾遅延やネットワークジッタが欠落。
   3. 攻撃パターンは未収録 → セキュリティ異常の多様性が不足。
+
+### 5.1 シミュレーション出力例
+
+```
+artifacts/sim_demo/
+├─ simEvents-sim_demo.csv
+├─ scenario-sim_demo.json
+├─ run_meta.json
+├─ audit.jsonl
+└─ schema.json
+```
+
+最小構成の `manifest` / `run_meta` は以下のように対応付けられ、`schema_sha256` によりサイドカーの完全性を追跡する。
+
+```json
+{
+  "scenario_id": "default-flow",
+  "schema_sha256": "3a1f...",
+  "output": {
+    "csv_path": "artifacts/sim_demo/simEvents-sim_demo.csv",
+    "run_meta_path": "artifacts/sim_demo/run_meta.json",
+    "audit_path": "artifacts/sim_demo/audit.jsonl",
+    "schema_path": "artifacts/sim_demo/schema.json"
+  }
+}
+```
+
+```json
+{
+  "run_id": "sim_demo",
+  "created_at_utc": "2024-01-01T00:00:00Z",
+  "algo_ver": "sim-delta-v1",
+  "simulator_version": "1.0.0",
+  "data_fingerprint": {
+    "csv_sha256": "c5e7...",
+    "features_csv_sha256": null,
+    "schema_sha256": "3a1f...",
+    "event_count": 64,
+    "session_count": 8
+  },
+  "injection_summary": {
+    "anomaly_summary": {
+      "normal": 56,
+      "time_deviation": 6,
+      "protocol_violation": 2
+    }
+  }
+}
+```
 
 ## 6. 再現手順 (Full Command)
 ```bash
