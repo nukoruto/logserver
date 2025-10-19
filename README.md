@@ -794,3 +794,17 @@ pnpm --filter @logserver/splitter-gui exec playwright test
 6. 閾値と説明: python -m scripts.threshold --config configs/default.yaml → python -m scripts.explain --config configs/default.yaml
 
 参照: SRS.md / CONSTRAINTS.md / dev_prompt.md
+
+### 5.10 dt-lstm Electron ブリッジ（自己診断）
+- ビルドと起動:
+  ```bash
+  pnpm --filter @logserver/lstm-gui build
+  GPU_MODE=ada6000 pnpm --filter @logserver/lstm-gui exec electron dist/src/main.js
+  ```
+  - `.env` の `GPU_MODE` を省略した場合は現在のシェル環境変数が利用されます。`ada6000`（RTX 6000 Ada）/`4060`（RTX 4060）/`cpu` がサポート対象です。
+- アプリ起動時に自動で `lstm.health` が実行され、メインウィンドウに以下の診断ダイアログが送信されます。
+  1. **I/O 診断**：`artifacts/`・`outputs/`・`logs/` の存在と書き込み権限を検査し、`Permission denied` が発生する場合は Runbook 9.1 の権限復旧手順を参照してください。
+  2. **ディスク容量**：リポジトリ直下の空き容量を `10 GiB` しきい値で評価します。未満の場合は Runbook 9.2 のクリーンアップ手順を実施してください。
+  3. **GPU モード**：`GPU_MODE` と `CUDA_VISIBLE_DEVICES` を表示し、`nvidia-smi` が利用可能であれば検出した GPU 名称/メモリを列挙します。`nvidia-smi` が無い環境では自動的に CPU モードへフォールバックし、警告タグを表示します。
+- 画面右上の「環境診断を開く」ボタンからいつでもダイアログを再表示できます。`再診断` ボタンを押すと即時に `lstm.health` を再実行し、結果が BrowserWindow へ再送されます。
+- ダイアログには重大度タグ（重大/注意/OK）が表示され、エラー検出時は自動でモーダルが開きます。`logs/` パネルには従来どおり `lstm.progress` ストリームが追記されます。
