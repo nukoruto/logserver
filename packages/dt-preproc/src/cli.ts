@@ -1,7 +1,8 @@
 #!/usr/bin/env node
+import { createHash } from 'node:crypto';
 import { createWriteStream } from 'node:fs';
 import { mkdir, readFile, readdir, stat, writeFile } from 'node:fs/promises';
-import { basename, dirname, join } from 'node:path';
+import { basename, dirname, join, resolve } from 'node:path';
 import { pipeline } from 'node:stream/promises';
 import { stderr } from 'node:process';
 import { format } from 'fast-csv';
@@ -19,6 +20,7 @@ import {
   type LogRowWithFeats,
   type SerializedPreprocOptions,
   type SerializedPreprocStats,
+  type StatsSourceDescriptor,
   type StreamingTransformerOptions
 } from './index.js';
 import { parseCsv, type CsvParseStats } from '@logserver/csv-schema';
@@ -42,7 +44,8 @@ const FIT_SCHEMA = z.object({
   quantiles: z.array(z.number()).optional(),
   out: z.string().min(1),
   meta: z.string().min(1).optional(),
-  pretty: z.boolean()
+  pretty: z.boolean(),
+  foldId: z.string().min(1).optional()
 });
 
 const TRANSFORM_SCHEMA = z.object({
@@ -55,7 +58,9 @@ const TRANSFORM_SCHEMA = z.object({
   window: z.number().min(0).optional(),
   quantiles: z.array(z.number()).optional(),
   validateSchema: z.boolean(),
-  pretty: z.boolean()
+  pretty: z.boolean(),
+  foldId: z.string().min(1).optional(),
+  fitManifests: z.array(z.string().min(1)).optional()
 });
 
 function toNumber(value: unknown): number {
@@ -141,31 +146,93 @@ function globToRegExp(pattern: string): RegExp {
   return new RegExp(`^${replaced}$`);
 }
 
+function normalizeForManifest(path: string): string {
+  const absolute = resolve(path);
+  return absolute.replace(/\\/g, '/');
+}
+
+function computePathHash(path: string): string {
+  const hash = createHash('sha256');
+  hash.update(path);
+  return hash.digest('hex');
+}
+
+function computeManifestHash(paths: readonly string[]): string {
+  const hash = createHash('sha256');
+  const sorted = [...paths].sort();
+  for (const entry of sorted) {
+    hash.update(entry);
+    hash.update('\n');
+  }
+  return hash.digest('hex');
+}
+
 async function expandInputPatterns(patterns: readonly string[]): Promise<string[]> {
   const results: string[] = [];
-  for (const raw of patterns) {
-    const pattern = raw.trim();
-    if (!pattern) {
-      continue;
+  const seen = new Set<string>();
+
+  async function expandPattern(spec: string, contextDir: string, stack: Set<string>): Promise<void> {
+    const trimmed = spec.trim();
+    if (!trimmed) {
+      return;
     }
-    if (!hasGlob(pattern)) {
-      await stat(pattern);
-      results.push(pattern);
-      continue;
+    if (trimmed.startsWith('@')) {
+      const listPathRaw = trimmed.slice(1).trim();
+      if (!listPathRaw) {
+        throw new Error('List reference must include a path after "@"');
+      }
+      const resolvedList = resolve(contextDir, listPathRaw);
+      if (stack.has(resolvedList)) {
+        throw new Error(`Detected recursive list reference at '${resolvedList}'`);
+      }
+      stack.add(resolvedList);
+      const content = await readFile(resolvedList, 'utf8');
+      const lines = content.split(/\r?\n/);
+      for (const line of lines) {
+        const normalized = line.trim();
+        if (!normalized || normalized.startsWith('#')) {
+          continue;
+        }
+        await expandPattern(normalized, dirname(resolvedList), stack);
+      }
+      stack.delete(resolvedList);
+      return;
     }
-    const directory = dirname(pattern) || '.';
-    const base = basename(pattern);
+
+    const resolvedSpec = resolve(contextDir, trimmed);
+    if (!hasGlob(trimmed)) {
+      await stat(resolvedSpec);
+      if (!seen.has(resolvedSpec)) {
+        seen.add(resolvedSpec);
+        results.push(resolvedSpec);
+      }
+      return;
+    }
+
+    const directory = dirname(resolvedSpec) || '.';
+    const base = basename(resolvedSpec);
     const regex = globToRegExp(base);
     const entries = await readdir(directory, { withFileTypes: true });
     const matches = entries
       .filter((entry) => entry.isFile() && regex.test(entry.name))
-      .map((entry) => join(directory, entry.name))
+      .map((entry) => resolve(directory, entry.name))
       .sort();
     if (matches.length === 0) {
-      throw new Error(`Pattern '${pattern}' did not match any files`);
+      throw new Error(`Pattern '${trimmed}' did not match any files`);
     }
-    results.push(...matches);
+    for (const match of matches) {
+      if (!seen.has(match)) {
+        seen.add(match);
+        results.push(match);
+      }
+    }
   }
+
+  const stack = new Set<string>();
+  for (const raw of patterns) {
+    await expandPattern(String(raw), process.cwd(), stack);
+  }
+
   return results;
 }
 
@@ -353,13 +420,29 @@ function deriveTransformOptions(
 function buildStatsPayload(
   frozen: SerializedPreprocStats,
   options: SerializedPreprocOptions,
-  grouping: 'uid' | 'uid_session'
+  grouping: 'uid' | 'uid_session',
+  metadata: {
+    sources: StatsSourceDescriptor[];
+    manifestHash: string;
+    aggregate: AggregateParseStats;
+    foldId?: string;
+  }
 ): SerializedPreprocStats {
   return {
     ...frozen,
     version: 1,
     grouping,
-    options
+    options,
+    sources: metadata.sources,
+    source_manifest_hash: metadata.manifestHash,
+    fold_id: metadata.foldId,
+    parse: {
+      total_rows: metadata.aggregate.totalRows,
+      valid_rows: metadata.aggregate.validRows,
+      invalid_rows: metadata.aggregate.invalidRows,
+      invalid_reasons: Object.fromEntries(metadata.aggregate.invalidReasons.entries()),
+      schema_validated: metadata.aggregate.schemaValidated
+    }
   };
 }
 
@@ -394,6 +477,20 @@ async function resolveOutputPaths(inputs: readonly string[], spec: string): Prom
   }
 }
 
+function buildRowFingerprint(row: LogRow): string {
+  return [
+    row.timestamp_utc,
+    row.uid,
+    row.session_id,
+    row.template_id,
+    row.event,
+    row.method,
+    row.path,
+    row.op_category,
+    String(row.row_index)
+  ].join('\t');
+}
+
 async function runFit(argv: unknown): Promise<void> {
   const parsed = FIT_SCHEMA.parse(argv);
   const inputPaths = await expandInputPatterns(parsed.inputs);
@@ -403,13 +500,29 @@ async function runFit(argv: unknown): Promise<void> {
 
   const aggregate = createAggregateParseStats();
   const allRows: LogRow[] = [];
+  const sourceDescriptors: StatsSourceDescriptor[] = [];
+  const manifestPaths: string[] = [];
 
   for (const path of inputPaths) {
     const parser = parseCsv(path, { validateSchema: true });
+    const hasher = createHash('sha256');
+    let rowCount = 0;
     for await (const row of parser) {
-      allRows.push(attachTemplate(row));
+      const templated = attachTemplate(row);
+      hasher.update(buildRowFingerprint(templated));
+      hasher.update('\n');
+      allRows.push(templated);
+      rowCount += 1;
     }
     mergeParseStats(aggregate, parser.getStats());
+    const canonicalPath = normalizeForManifest(path);
+    manifestPaths.push(canonicalPath);
+    sourceDescriptors.push({
+      path: canonicalPath,
+      path_hash: computePathHash(canonicalPath),
+      row_count: rowCount,
+      row_hash: hasher.digest('hex')
+    });
   }
 
   const fitted = fitRobustStats(allRows, {
@@ -421,7 +534,12 @@ async function runFit(argv: unknown): Promise<void> {
   const options = buildOptionsPayload(parsed, fitted.epsilon);
 
   const frozen = freezeFittedStats(fitted) as SerializedPreprocStats;
-  const payload = buildStatsPayload(frozen, options, parsed.grouping);
+  const payload = buildStatsPayload(frozen, options, parsed.grouping, {
+    sources: sourceDescriptors,
+    manifestHash: computeManifestHash(manifestPaths),
+    aggregate,
+    foldId: parsed.foldId
+  });
 
   await ensureParent(parsed.out);
   const statsJson = `${JSON.stringify(payload, null, parsed.pretty ? 2 : 0)}\n`;
@@ -439,6 +557,33 @@ async function runTransform(argv: unknown): Promise<void> {
 
   const statsText = await readFile(parsed.stats, 'utf8');
   const statsPayload = JSON.parse(statsText) as SerializedPreprocStats;
+  if (parsed.foldId !== undefined) {
+    if (statsPayload.fold_id !== undefined && statsPayload.fold_id !== parsed.foldId) {
+      throw new Error(
+        `Stats file was fitted for fold '${statsPayload.fold_id}', but '--fold-id ${parsed.foldId}' was provided`
+      );
+    }
+  } else if (statsPayload.fold_id !== undefined) {
+    throw new Error(
+      `Stats file was fitted for fold '${statsPayload.fold_id}'. Provide '--fold-id ${statsPayload.fold_id}' to confirm usage.`
+    );
+  }
+
+  if (parsed.fitManifests && parsed.fitManifests.length > 0) {
+    if (!statsPayload.source_manifest_hash) {
+      throw new Error('Stats file is missing training manifest metadata. Re-run fit with the current CLI.');
+    }
+    const manifestPaths = await expandInputPatterns(parsed.fitManifests);
+    if (manifestPaths.length === 0) {
+      throw new Error('Training manifest expansion did not yield any files');
+    }
+    const normalizedManifest = manifestPaths.map(normalizeForManifest);
+    const computedManifestHash = computeManifestHash(normalizedManifest);
+    if (computedManifestHash !== statsPayload.source_manifest_hash) {
+      throw new Error('Training manifest mismatch for provided statistics file');
+    }
+  }
+
   const transformerOptions = deriveTransformOptions(parsed, statsPayload);
   const transformer = new StreamingFeatureTransformer(transformerOptions);
   const quantileColumns = resolveQuantileColumns(transformer.getOptions().quantileFields);
@@ -532,6 +677,11 @@ async function main(): Promise<void> {
             type: 'boolean',
             default: false,
             describe: 'Pretty-print JSON outputs'
+          })
+          .option('fold-id', {
+            type: 'string',
+            describe: 'Fold identifier stored in statistics metadata',
+            alias: ['fold']
           }),
       async (argv) => {
         const windowSize = Math.max(
@@ -550,7 +700,13 @@ async function main(): Promise<void> {
           quantiles,
           out: String(argv.out),
           meta: typeof argv.meta === 'string' ? argv.meta : undefined,
-          pretty: Boolean(argv.pretty)
+          pretty: Boolean(argv.pretty),
+          foldId:
+            typeof argv.foldId === 'string'
+              ? argv.foldId
+              : typeof argv.fold === 'string'
+              ? argv.fold
+              : undefined
         };
         await runFit(args);
       }
@@ -605,6 +761,16 @@ async function main(): Promise<void> {
             type: 'boolean',
             default: false,
             describe: 'Unused placeholder for interface consistency'
+          })
+          .option('fold-id', {
+            type: 'string',
+            describe: 'Require statistics to match the specified fold identifier',
+            alias: ['fold']
+          })
+          .option('fit-manifest', {
+            type: 'array',
+            describe: 'Manifest/list (prefix with @) describing training inputs used when fitting statistics',
+            alias: ['train-manifest']
           }),
       async (argv) => {
         const windowOverride =
@@ -623,7 +789,19 @@ async function main(): Promise<void> {
           window: windowOverride,
           quantiles: quantileOverride,
           validateSchema: argv.validateSchema !== undefined ? Boolean(argv.validateSchema) : true,
-          pretty: Boolean(argv.pretty)
+          pretty: Boolean(argv.pretty),
+          foldId:
+            typeof argv.foldId === 'string'
+              ? argv.foldId
+              : typeof argv.fold === 'string'
+              ? argv.fold
+              : undefined,
+          fitManifests:
+            argv.fitManifest !== undefined
+              ? (argv.fitManifest as unknown[]).map(String)
+              : argv.trainManifest !== undefined
+              ? (argv.trainManifest as unknown[]).map(String)
+              : undefined
         };
         await runTransform(args);
       }

@@ -132,10 +132,29 @@ export interface SerializedPreprocOptions {
   quantiles: readonly number[];
 }
 
+export interface StatsSourceDescriptor {
+  path: string;
+  path_hash: string;
+  row_count: number;
+  row_hash: string;
+}
+
+export interface StatsParseMetadata {
+  total_rows: number;
+  valid_rows: number;
+  invalid_rows: number;
+  invalid_reasons: Record<string, number>;
+  schema_validated: boolean;
+}
+
 export interface SerializedPreprocStats extends FrozenFittedStats {
   version?: number;
   grouping?: 'uid' | 'uid_session';
   options?: SerializedPreprocOptions;
+  sources?: StatsSourceDescriptor[];
+  source_manifest_hash?: string;
+  fold_id?: string;
+  parse?: StatsParseMetadata;
 }
 
 interface StreamingSessionState extends SessionState {

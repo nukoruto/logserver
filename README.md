@@ -196,19 +196,25 @@ cp logs/sample.csv data/raw/
 同じ `splits.yaml` と `--seed` を用いれば、各フォールドの成果物（特徴 CSV、異常統計、LSTM モデル、スコア CSV）はバイトレベルで一致
 します。生成物の所在は `splits.yaml` の `folds[].paths` に記録され、追加のアーティファクト管理を行う際も追跡可能です。
 
-- 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。
+- 派生特徴を生成する場合は、コピーした `data/raw/sample.csv` を対象に次を実行すると、基本契約 CSV から Δt 付き特徴 CSV（`data/processed/sample_feat.csv` など）を得られる。`dt-preproc` の `--in` や `--fit-manifest` 引数では `@list.txt` 形式でファイル一覧を参照でき、行頭 `#` はコメントとして無視される。
 
   ```bash
   pnpm --filter @logserver/dt-preproc run build
+  printf 'data/raw/sample.csv\n' > stats/train_manifest.txt
   pnpm exec dt-preproc fit \
-    --in data/raw/sample.csv \
+    --in @stats/train_manifest.txt \
     --out stats/preproc_stats.json \
-    --meta stats/preproc_meta.json
+    --meta stats/preproc_meta.json \
+    --fold-id fold0
   pnpm exec dt-preproc transform \
     --in data/raw/sample.csv \
     --stats stats/preproc_stats.json \
-    --out data/processed/sample_feat.csv
+    --out data/processed/sample_feat.csv \
+    --fold-id fold0 \
+    --fit-manifest @stats/train_manifest.txt
   ```
+
+  `fit` コマンドが生成する統計 JSON には、学習に利用したファイル一覧のハッシュ（`source_manifest_hash`）と fold 識別子（`fold_id`）が保存される。`transform` 実行時に `--fold-id` と `--fit-manifest` を指定すると、誤った fold の統計や訓練セットを流用しようとした場合に即座にエラーとなり、Rolling-origin のリークを防止できる。
 
 - 追加の生ログを取得する際は、決定的シードでシミュレータを実行して `artifacts/<run>/` 以下に CSV・manifest・ハッシュ（`checksums.txt`）を保存する。例：
 
