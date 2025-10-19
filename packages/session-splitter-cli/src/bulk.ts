@@ -960,7 +960,8 @@ async function run(cliOptions: BulkCliOptions): Promise<void> {
   );
 
   const thresholdsRecord = toSortedRecord(thresholdsResult.thresholds.entries());
-  const perUserEntries = Array.from(thresholdsResult.perUser.entries());
+  type PerUserEntry = [string, NonNullable<ReturnType<typeof thresholdsResult.perUser.get>>];
+  const perUserEntries = Array.from(thresholdsResult.perUser.entries()) as PerUserEntry[];
   const fdBins = toSortedRecord(perUserEntries.map(([uid, detail]) => [uid, detail.fd_bins] as [string, number]));
   const tauOtsu = toSortedRecord(
     perUserEntries.map(([uid, detail]) => [uid, detail.tau_otsu] as [string, number | null])
