@@ -222,23 +222,54 @@ def _join_scores(
     anom_scores: pd.DataFrame,
     lstm_scores: pd.DataFrame,
 ) -> pd.DataFrame:
-    join_keys = [col for col in ["timestamp_utc", "uid", "session_id", "row_index"] if col in base_frame.columns]
-    if not join_keys:
-        join_keys = ["timestamp_utc"]
-    anom_keep = [col for col in join_keys if col in anom_scores.columns]
-    if "neglog10_p" in anom_scores.columns:
+    base = base_frame.copy()
+    anom = anom_scores.copy()
+    lstm = lstm_scores.copy()
+
+    use_row_index = "row_index" in anom.columns and "row_index" in lstm.columns
+    synthetic_key = "__merge_id"
+    join_key = "row_index" if use_row_index else synthetic_key
+
+    if use_row_index:
+        if "row_index" not in base.columns:
+            base["row_index"] = np.arange(len(base), dtype=np.int64)
+        if base["row_index"].duplicated().any():
+            raise WorkflowError("'row_index' column must be unique when joining scores")
+        # Normalize dtype to avoid mismatched joins caused by object/int differences.
+        base["row_index"] = base["row_index"].astype(str)
+        anom["row_index"] = anom["row_index"].astype(str)
+        lstm["row_index"] = lstm["row_index"].astype(str)
+    else:
+        if len({len(base), len(anom), len(lstm)}) != 1:
+            raise WorkflowError("Score outputs must align with input rows for join without 'row_index'")
+        base[synthetic_key] = np.arange(len(base), dtype=np.int64)
+        anom[synthetic_key] = np.arange(len(anom), dtype=np.int64)
+        lstm[synthetic_key] = np.arange(len(lstm), dtype=np.int64)
+
+    # Retain only the join key and score column from the score frames.
+    anom_keep = [join_key]
+    if "neglog10_p" in anom.columns:
         anom_keep.append("neglog10_p")
-    anom_scores = anom_scores.loc[:, anom_keep]
-    lstm_keep = [col for col in join_keys if col in lstm_scores.columns]
+    anom = anom.loc[:, list(dict.fromkeys(anom_keep))]
+
+    lstm_keep = [join_key]
     lstm_col = "neglog10_p"
     for candidate in ("neglog10_p_lstm", "neglog10_p"):
-        if candidate in lstm_scores.columns:
+        if candidate in lstm.columns:
             lstm_col = candidate
             break
     lstm_keep.append(lstm_col)
-    lstm_scores = lstm_scores.loc[:, lstm_keep]
-    merged = base_frame.merge(anom_scores, on=join_keys, how="inner", suffixes=("", "_anom"))
-    merged = merged.merge(lstm_scores, on=join_keys, how="inner", suffixes=("_anom", "_lstm"))
+    lstm = lstm.loc[:, list(dict.fromkeys(lstm_keep))]
+
+    merged = base.merge(anom, on=join_key, how="inner", suffixes=("", "_anom"))
+    merged = merged.merge(lstm, on=join_key, how="inner", suffixes=("_anom", "_lstm"))
+
+    if len(merged) != len(base):
+        raise WorkflowError("Joining score frames produced mismatched row count")
+
+    if join_key == synthetic_key:
+        merged = merged.drop(columns=[synthetic_key])
+
     return merged
 
 
