@@ -7,7 +7,7 @@ import math
 import random
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import numpy as np
 import pandas as pd
@@ -221,6 +221,19 @@ def _evaluate_fold(
     train_df.sort_values(timestamp_column, inplace=True)
     val_df.sort_values(timestamp_column, inplace=True)
 
+    train_df, dropped_rows = _apply_temporal_exclusions(
+        train_df,
+        val_df,
+        timestamp_column=timestamp_column,
+        session_column=session_column,
+        purge_seconds=fold.purge,
+        embargo_seconds=fold.embargo,
+    )
+    if train_df.empty:
+        raise RuntimeError(
+            f"Fold '{fold.name}' has empty training partition after purge/embargo exclusion"
+        )
+
     feature_flags = _coerce_feature_flags(params.get("features", {}).get("extra"))
     feature_pack = build_feature_pack(train_df, extra_features=feature_flags)
 
@@ -312,6 +325,7 @@ def _evaluate_fold(
         "validation_sessions": len(unique_val),
         "purge_seconds": fold.purge,
         "embargo_seconds": fold.embargo,
+        "dropped_train_events": int(dropped_rows),
     }
     return fold_result
 
@@ -471,6 +485,48 @@ def _coerce_feature_flags(value: Any) -> List[str]:
     if isinstance(value, list):
         return [str(item) for item in value]
     raise ValueError("features.extra must be a string or list of strings")
+
+
+def _apply_temporal_exclusions(
+    train_df: pd.DataFrame,
+    val_df: pd.DataFrame,
+    *,
+    timestamp_column: str,
+    session_column: str,
+    purge_seconds: Optional[float],
+    embargo_seconds: Optional[float],
+) -> Tuple[pd.DataFrame, int]:
+    """Drop training rows that fall within purge/embargo windows around validation."""
+
+    purge_seconds = float(purge_seconds) if purge_seconds else 0.0
+    embargo_seconds = float(embargo_seconds) if embargo_seconds else 0.0
+    if purge_seconds <= 0 and embargo_seconds <= 0:
+        return train_df, 0
+
+    if timestamp_column not in train_df.columns or timestamp_column not in val_df.columns:
+        return train_df, 0
+
+    exclusions: List[Tuple[pd.Timestamp, pd.Timestamp]] = []
+    for _, group in val_df.groupby(session_column, sort=False):
+        timestamps = group[timestamp_column].dropna()
+        if timestamps.empty:
+            continue
+        start = timestamps.min()
+        end = timestamps.max()
+        window_start = start - pd.Timedelta(seconds=purge_seconds)
+        window_end = end + pd.Timedelta(seconds=embargo_seconds)
+        exclusions.append((window_start, window_end))
+
+    if not exclusions:
+        return train_df, 0
+
+    mask = pd.Series(True, index=train_df.index)
+    for start, end in exclusions:
+        mask &= ~train_df[timestamp_column].between(start, end, inclusive="both")
+
+    filtered = train_df.loc[mask].copy()
+    dropped = int((~mask).sum())
+    return filtered, dropped
 
 
 def _sanitize(value: Any) -> Any:

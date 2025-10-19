@@ -7,6 +7,11 @@ import pandas as pd
 import pytest
 import yaml
 
+_ROOT = Path(__file__).resolve().parents[2]
+sys.path.insert(0, str(_ROOT / "trainer" / "src"))
+
+from logserver.training.search import _apply_temporal_exclusions
+
 
 def _create_processed_dataset(root: Path) -> Path:
     processed_dir = root / "processed"
@@ -147,6 +152,47 @@ def test_tscv_search_cli_produces_results(tmp_path: Path) -> None:
     assert record["status"] == "ok"
     assert len(record["folds"]) == 2
     assert record["folds"][0]["metrics"]["ap"] is not None
+
+
+def test_apply_temporal_exclusions_removes_purge_and_embargo() -> None:
+    train_df = pd.DataFrame(
+        {
+            "session_id": ["train"] * 4,
+            "timestamp": pd.to_datetime(
+                [
+                    "2024-01-01T00:00:00Z",
+                    "2024-01-01T00:01:30Z",
+                    "2024-01-01T00:04:30Z",
+                    "2024-01-01T00:06:00Z",
+                ],
+                utc=True,
+            ),
+        }
+    )
+    val_df = pd.DataFrame(
+        {
+            "session_id": ["val", "val"],
+            "timestamp": pd.to_datetime(
+                ["2024-01-01T00:02:00Z", "2024-01-01T00:03:00Z"],
+                utc=True,
+            ),
+        }
+    )
+
+    filtered, dropped = _apply_temporal_exclusions(
+        train_df,
+        val_df,
+        timestamp_column="timestamp",
+        session_column="session_id",
+        purge_seconds=60.0,
+        embargo_seconds=120.0,
+    )
+
+    assert dropped == 2
+    assert list(filtered["timestamp"]) == [
+        pd.Timestamp("2024-01-01T00:00:00Z", tz="UTC"),
+        pd.Timestamp("2024-01-01T00:06:00Z", tz="UTC"),
+    ]
 
 
 def test_tscv_cli_help() -> None:
