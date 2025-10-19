@@ -9,7 +9,7 @@ import {
   cloneFeatureAugmenterOptions,
 } from '../sim/persistence/simWriter';
 import type { TimeDeviationMode, StrategyConfig } from '../sim/generator/anomalyInjector';
-import type { FeatureAugmenterOptions } from '../sim/persistence/simWriter';
+import type { FeatureAugmenterOptions, RunMeta } from '../sim/persistence/simWriter';
 import type { ScenarioDefinition } from '../sim/scenario';
 import type { NormalEvent } from '../sim/generator/normalGenerator';
 import type { PersistSimulationResult } from '../sim/persistence/simWriter';
@@ -162,6 +162,10 @@ export interface SimulationFiles {
   csvHash: string;
   featuresCsvHash?: string | null;
   metaPath?: string | null;
+  runMetaPath?: string;
+  auditPath?: string;
+  schemaPath?: string;
+  schemaSha256?: string;
 }
 
 export interface GenerateScenarioOptions extends Record<string, unknown> {
@@ -188,6 +192,10 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   timeAnomalyPropWeight?: number | string | null;
   deltaEpsilon?: number | string | null;
   includeFeaturesCsv?: boolean | string | null;
+  kid?: string | null;
+  runMetaFileName?: string | null;
+  auditFileName?: string | null;
+  schemaFileName?: string | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -235,6 +243,7 @@ export interface SimulationParameters extends Record<string, unknown> {
     mode: TimeDeviationMode;
     weights: { propagate: number; local: number };
   };
+  kid?: string | null;
 }
 
 export interface SimulationResult {
@@ -245,6 +254,7 @@ export interface SimulationResult {
   summary: SimulationSummary;
   files?: SimulationFiles;
   manifest?: Record<string, unknown>;
+  run_meta?: RunMeta;
 }
 
 export type NormalizedAnomalyList = Set<StrategyName>;
@@ -287,6 +297,7 @@ interface DefaultParameterInput {
   timeDeviationHysteresisHold: number;
   timeAnomalyMode: TimeDeviationMode;
   timeAnomalyPropWeight: number;
+  kid: string | null;
 }
 
 const normalizeString = (value: unknown): string => {
@@ -769,6 +780,7 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
       local: Math.max(0, 1 - input.timeAnomalyPropWeight),
     },
   },
+  kid: input.kid,
 });
 
 export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
@@ -861,6 +873,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const resolvedFeatureAugmenter = featureAugmenterInput && typeof featureAugmenterInput === 'object'
     ? resolveFeatureAugmenterOptions(featureAugmenterInput as Record<string, unknown>)
     : cloneFeatureAugmenterOptions(DEFAULT_FEATURE_AUGMENTER);
+  const resolvedKid = normalizeNullableString(options.kid ?? null);
   const parameters = defaultParameters({
     count,
     anomalies,
@@ -885,6 +898,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeDeviationHysteresisHold: resolvedTimeDeviationHysteresisHold,
     timeAnomalyMode: resolvedTimeAnomalyMode,
     timeAnomalyPropWeight: resolvedTimeAnomalyPropWeight,
+    kid: resolvedKid,
   });
 
   const selectedStrategies = buildStrategyOverrides(
@@ -999,9 +1013,13 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       csvFileName: options.csvFileName as string | undefined,
       featureCsvFileName: featureCsvFileName ?? undefined,
       manifestFileName: options.manifestFileName as string | undefined,
+      runMetaFileName: (options.runMetaFileName as string | undefined) || undefined,
+      auditFileName: (options.auditFileName as string | undefined) || undefined,
+      schemaFileName: (options.schemaFileName as string | undefined) || undefined,
       parameters,
       sessionIds: Array.from(sessionIds),
       includeFeaturesCsv,
+      kid: resolvedKid,
       extraMetadata: lastTimeDeviationResult
         ? {
             time_deviation: {
@@ -1055,8 +1073,13 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       csvHash: persistenceResult.csvHash,
       featuresCsvHash: persistenceResult.featuresCsvHash,
       metaPath: persistenceResult.metaPath,
+      runMetaPath: persistenceResult.runMetaPath,
+      auditPath: persistenceResult.auditPath,
+      schemaPath: persistenceResult.schemaPath,
+      schemaSha256: persistenceResult.schemaSha256,
     };
     response.manifest = persistenceResult.manifest;
+    response.run_meta = persistenceResult.runMeta;
   }
 
   const durationMs = Number(process.hrtime.bigint() - startTimeHr) / 1_000_000;

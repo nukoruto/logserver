@@ -34,6 +34,7 @@ describe('simulationService.generateScenario', () => {
       anomalyCount: 2,
       startTime: '2024-01-01T00:00:00.000Z',
       sessionSpacingSeconds: 30,
+      kid: 'SERVICE-KID-001',
     });
 
     expect(result.events).toHaveLength(12);
@@ -65,9 +66,27 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.anomaly_summary.normal).toBeGreaterThan(0);
       expect(manifest.parameters.seed).toBe('jest-service');
       expect(manifest.parameters.seed_source).toBe('provided');
+      expect(manifest.schema_sha256).toBe(result.files?.schemaSha256);
+      expect(manifest.output.run_meta_path).toBe(result.files?.runMetaPath);
+      expect(manifest.output.schema_path).toBe(result.files?.schemaPath);
+      expect(manifest.output.audit_path).toBe(result.files?.auditPath);
       if (result.files.metaPath) {
         expect(manifest.output.meta_path).toBe(result.files.metaPath);
       }
+    }
+    expect(result.run_meta).toBeDefined();
+    if (result.run_meta) {
+      expect(result.run_meta.kid).toBe('SERVICE-KID-001');
+      expect(result.run_meta.data_fingerprint.schema_sha256).toBe(result.files?.schemaSha256 ?? null);
+    }
+    if (result.files?.runMetaPath) {
+      expect(existsSync(result.files.runMetaPath)).toBe(true);
+    }
+    if (result.files?.schemaPath) {
+      expect(existsSync(result.files.schemaPath)).toBe(true);
+    }
+    if (result.files?.auditPath) {
+      expect(existsSync(result.files.auditPath)).toBe(true);
     }
     if (result.files?.metaPath) {
       expect(existsSync(result.files.metaPath)).toBe(true);

@@ -4,7 +4,7 @@ export type FeatureResolver = (
   event: SimulationEvent,
   index: number,
   events: SimulationEvent[],
-  fallback: number | string | null
+  fallback: number | string | null,
 ) => number | string | null;
 
 export interface FeatureOverrides {
@@ -34,6 +34,9 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   featureCsvFileName?: string;
   manifestFileName?: string;
   metaFileName?: string;
+  runMetaFileName?: string;
+  auditFileName?: string;
+  schemaFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
@@ -41,6 +44,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   transitionTableVersion?: string | null;
   extraMetadata?: Record<string, unknown>;
   includeFeaturesCsv?: boolean;
+  kid?: string | null;
 }
 
 export interface PersistSimulationResult {
@@ -48,17 +52,33 @@ export interface PersistSimulationResult {
   featuresCsvPath: string | null;
   manifestPath: string;
   metaPath: string | null;
+  runMetaPath: string;
+  auditPath: string;
+  schemaPath: string;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
   csvHash: string;
   featuresCsvHash: string | null;
+  schemaSha256: string;
+  auditRecordCount: number;
+  runMeta: RunMeta;
   featureHeader?: string[];
 }
 
 export function persistSimulationRun(input: PersistSimulationInput): Promise<PersistSimulationResult>;
 export function summarizeDeltas(events: readonly SimulationEvent[]): Record<string, unknown>;
 export function buildAnomalySummary(events: readonly SimulationEvent[]): Record<string, number>;
+
+export interface AuditRecord {
+  idx: number;
+  sid_final: string | null;
+  op_category: string | null;
+  anomaly_type: string | null;
+  reason: string | null;
+  params: Record<string, number | string | null>;
+}
+
 export type AugmentedSimulationEvent = SimulationEvent & {
   dt_sec: number | null;
   log_dt: number | null;
@@ -104,6 +124,51 @@ export interface FeatureAugmenterOptions {
   clipBounds: FeatureAugmenterClipBounds;
 }
 
+export interface RunMeta {
+  run_id: string;
+  created_at_utc: string;
+  algo_ver: string;
+  simulator_version: string;
+  seed: string | null;
+  data_fingerprint: {
+    csv_sha256: string;
+    features_csv_sha256: string | null;
+    schema_sha256: string;
+    event_count: number;
+    session_count: number;
+  };
+  delta_t_generation: {
+    method: string;
+    epsilon_seconds: number;
+    epsilon_t_seconds: number;
+    feature_window_size: number;
+    feature_quantiles: number[];
+    clip_bounds: FeatureAugmenterClipBounds;
+  };
+  injection_summary: {
+    strategies: string[];
+    anomaly_summary: Record<string, number>;
+    anomaly_rate: number;
+    anomaly_count: number | null;
+    time_deviation: {
+      method: string;
+      quantile: number | null;
+      threshold_seconds: number | null;
+      vote_window: number;
+      vote_threshold: number;
+      hysteresis_hold: number;
+    };
+  };
+  environment: {
+    node_version: string;
+    platform: string;
+    arch: string;
+    env: string;
+    gpu_mode: string | null;
+  };
+  kid: string | null;
+}
+
 export function augmentRows<T extends SimulationEvent>(
   rows: readonly T[],
   extras?: FeatureOverrides,
@@ -121,6 +186,41 @@ export function resolveFeatureAugmenterOptions(
 ): FeatureAugmenterOptions;
 export function cloneFeatureAugmenterOptions(options: FeatureAugmenterOptions): FeatureAugmenterOptions;
 
+export function appendAudit(
+  filePath: string,
+  records: readonly AuditRecord[],
+  options?: { truncate?: boolean },
+): Promise<number>;
+
+export function buildRunMeta(input: {
+  runId: string;
+  createdAtUtc: string;
+  seed: string | null;
+  csvHash: string;
+  featuresCsvHash: string | null;
+  schemaSha256: string;
+  eventCount: number;
+  sessionCount: number;
+  measurementEpsilon: number;
+  epsilonT: number;
+  featureAugmenter: FeatureAugmenterOptions;
+  anomalySummary: Record<string, number>;
+  strategies: readonly string[];
+  anomalyRate: number;
+  anomalyCount: number | null;
+  timeDeviation: {
+    method: string;
+    quantile: number | null;
+    thresholdSeconds: number | null;
+    voteWindow: number;
+    voteThreshold: number;
+    hysteresisHold: number;
+  };
+  env: string;
+  gpuMode: string | null;
+  kid: string | null;
+}): RunMeta;
+
 declare const simWriter: {
   persistSimulationRun: typeof persistSimulationRun;
   summarizeDeltas: typeof summarizeDeltas;
@@ -128,11 +228,15 @@ declare const simWriter: {
   augmentRows: typeof augmentRows;
   formatCsvAugmented: typeof formatCsvAugmented;
   validateContractColumns: typeof validateContractColumns;
+  appendAudit: typeof appendAudit;
+  buildRunMeta: typeof buildRunMeta;
 };
 
 export {
   augmentRows,
+  appendAudit,
   buildAnomalySummary,
+  buildRunMeta,
   formatCsvAugmented,
   persistSimulationRun,
   summarizeDeltas,
