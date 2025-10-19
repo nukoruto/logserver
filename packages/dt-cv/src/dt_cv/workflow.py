@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 from pathlib import Path
 from typing import Dict, Iterable, List, Mapping, MutableMapping, Optional
 
@@ -19,6 +20,8 @@ from .splitter import load_splits
 
 REPO_ROOT = Path(__file__).resolve().parents[4]
 DEFAULT_LSTM_CFG = REPO_ROOT / "configs" / "best_from_search.yaml"
+
+_LOGGER = logging.getLogger("dt_cv.workflow")
 
 
 class WorkflowError(RuntimeError):
@@ -83,6 +86,32 @@ def _subset_pairs(paths: FoldPaths) -> List[tuple[str, Path]]:
     return items
 
 
+def _thresholds_from_metrics(path: Path) -> Dict[str, float]:
+    if not path.exists():
+        return {}
+    payload = json.loads(path.read_text(encoding="utf-8"))
+    if not isinstance(payload, Mapping):
+        return {}
+    methods = payload.get("methods", {})
+    if not isinstance(methods, Mapping):
+        return {}
+    result: Dict[str, float] = {}
+    for method, info in methods.items():
+        if not isinstance(info, Mapping):
+            continue
+        threshold = info.get("threshold")
+        if not isinstance(threshold, Mapping):
+            continue
+        value = threshold.get("value")
+        if value is None:
+            continue
+        try:
+            result[str(method)] = float(value)
+        except (TypeError, ValueError):
+            continue
+    return result
+
+
 def run_train(
     splits_path: Path,
     *,
@@ -91,6 +120,8 @@ def run_train(
     dt_lstm_bin: str,
     seed: int,
     gpu_mode: Optional[str],
+    resume: bool = False,
+    lstm_cfg: Path | None = None,
 ) -> None:
     splits = load_splits(splits_path)
     base_dir = splits_path.parent
@@ -102,26 +133,29 @@ def run_train(
         _ensure_parent(paths.preproc_stats)
         env = build_deterministic_env(seed, gpu_mode)
         # dt-preproc fit
-        argv_fit = [
-            dt_preproc_bin,
-            "fit",
-            "--in",
-            str(paths.raw_train),
-            "--out",
-            str(paths.preproc_stats),
-            "--meta",
-            str(paths.preproc_meta),
-            "--pretty",
-        ]
-        run_command(
-            CommandSpec(
-                name=f"fold{fold_id}.preproc.fit",
-                argv=argv_fit,
-                cwd=paths.preproc_stats.parent,
-                env=env,
-                outputs={"stats": paths.preproc_stats, "meta": paths.preproc_meta},
+        if resume and paths.preproc_stats.exists() and paths.preproc_meta.exists():
+            _LOGGER.debug("resume.skip", extra={"stage": "preproc.fit", "fold": fold_id})
+        else:
+            argv_fit = [
+                dt_preproc_bin,
+                "fit",
+                "--in",
+                str(paths.raw_train),
+                "--out",
+                str(paths.preproc_stats),
+                "--meta",
+                str(paths.preproc_meta),
+                "--pretty",
+            ]
+            run_command(
+                CommandSpec(
+                    name=f"fold{fold_id}.preproc.fit",
+                    argv=argv_fit,
+                    cwd=paths.preproc_stats.parent,
+                    env=env,
+                    outputs={"stats": paths.preproc_stats, "meta": paths.preproc_meta},
+                )
             )
-        )
         # dt-preproc transform for each subset
         for subset, feature_path in _subset_pairs(paths):
             if feature_path is None:
@@ -134,6 +168,12 @@ def run_train(
             if raw_path is None:
                 continue
             _ensure_parent(feature_path)
+            if resume and feature_path.exists():
+                _LOGGER.debug(
+                    "resume.skip",
+                    extra={"stage": f"preproc.transform.{subset}", "fold": fold_id},
+                )
+                continue
             argv_transform = [
                 dt_preproc_bin,
                 "transform",
@@ -156,84 +196,95 @@ def run_train(
             )
         stats_hash = _sha256(paths.preproc_stats)
         # dt-anom fit
-        argv_anom_fit = [
-            dt_anom_bin,
-            "fit",
-            "-i",
-            str(paths.features_train),
-            "-s",
-            str(paths.anomaly_stats),
-            "-m",
-            str(paths.anomaly_meta),
-            "--column",
-            "dt_sec",
-            "--seed",
-            str(seed),
-            "--preproc-hash",
-            stats_hash,
-        ]
-        run_command(
-            CommandSpec(
-                name=f"fold{fold_id}.anom.fit",
-                argv=argv_anom_fit,
-                cwd=paths.anomaly_stats.parent,
-                env=env,
-                outputs={"stats": paths.anomaly_stats, "meta": paths.anomaly_meta},
+        if resume and paths.anomaly_stats.exists() and paths.anomaly_meta.exists():
+            _LOGGER.debug("resume.skip", extra={"stage": "anom.fit", "fold": fold_id})
+        else:
+            argv_anom_fit = [
+                dt_anom_bin,
+                "fit",
+                "-i",
+                str(paths.features_train),
+                "-s",
+                str(paths.anomaly_stats),
+                "-m",
+                str(paths.anomaly_meta),
+                "--column",
+                "dt_sec",
+                "--seed",
+                str(seed),
+                "--preproc-hash",
+                stats_hash,
+            ]
+            run_command(
+                CommandSpec(
+                    name=f"fold{fold_id}.anom.fit",
+                    argv=argv_anom_fit,
+                    cwd=paths.anomaly_stats.parent,
+                    env=env,
+                    outputs={"stats": paths.anomaly_stats, "meta": paths.anomaly_meta},
+                )
             )
-        )
-        if not DEFAULT_LSTM_CFG.exists():
-            raise WorkflowError(f"dt-lstm 設定ファイルが見つかりません: {DEFAULT_LSTM_CFG}")
+        cfg_path = lstm_cfg or DEFAULT_LSTM_CFG
+        if not cfg_path.exists():
+            raise WorkflowError(f"dt-lstm 設定ファイルが見つかりません: {cfg_path}")
         # dt-lstm train
         lstm_dir = paths.lstm_dir
         lstm_dir.mkdir(parents=True, exist_ok=True)
-        argv_lstm_train = [
-            dt_lstm_bin,
-            "train",
-            "--train",
-            str(paths.features_train),
-            "--dev",
-            str(paths.features_validation),
-            "--cfg",
-            str(DEFAULT_LSTM_CFG),
-            "--seed",
-            str(seed),
-            "--out",
-            str(lstm_dir),
-        ]
-        run_command(
-            CommandSpec(
-                name=f"fold{fold_id}.lstm.train",
-                argv=argv_lstm_train,
-                cwd=lstm_dir,
-                env=env,
-                outputs={"dir": lstm_dir},
+        model_path = lstm_dir / "model.pt"
+        if resume and model_path.exists():
+            _LOGGER.debug("resume.skip", extra={"stage": "lstm.train", "fold": fold_id})
+        else:
+            argv_lstm_train = [
+                dt_lstm_bin,
+                "train",
+                "--train",
+                str(paths.features_train),
+                "--dev",
+                str(paths.features_validation),
+                "--cfg",
+                str(cfg_path),
+                "--seed",
+                str(seed),
+                "--out",
+                str(lstm_dir),
+            ]
+            run_command(
+                CommandSpec(
+                    name=f"fold{fold_id}.lstm.train",
+                    argv=argv_lstm_train,
+                    cwd=lstm_dir,
+                    env=env,
+                    outputs={"dir": lstm_dir},
+                )
             )
-        )
         # dt-lstm calibrate
         calib_path = lstm_dir / "calib.json"
-        argv_lstm_calibrate = [
-            dt_lstm_bin,
-            "calibrate",
-            "--dev",
-            str(paths.features_validation),
-            "--model",
-            str(lstm_dir / "model.pt"),
-            "--out",
-            str(calib_path),
-            "--cfg",
-            str(DEFAULT_LSTM_CFG),
-            "--seed",
-            str(seed),
-        ]
-        run_command(
-            CommandSpec(
-                name=f"fold{fold_id}.lstm.calibrate",
-                argv=argv_lstm_calibrate,
-                cwd=lstm_dir,
-                env=env,
-                outputs={"calib": calib_path},
+        if resume and calib_path.exists():
+            _LOGGER.debug("resume.skip", extra={"stage": "lstm.calibrate", "fold": fold_id})
+        else:
+            argv_lstm_calibrate = [
+                dt_lstm_bin,
+                "calibrate",
+                "--dev",
+                str(paths.features_validation),
+                "--model",
+                str(model_path),
+                "--out",
+                str(calib_path),
+                "--cfg",
+                str(cfg_path),
+                "--seed",
+                str(seed),
+            ]
+            run_command(
+                CommandSpec(
+                    name=f"fold{fold_id}.lstm.calibrate",
+                    argv=argv_lstm_calibrate,
+                    cwd=lstm_dir,
+                    env=env,
+                    outputs={"calib": calib_path},
+                )
             )
-        )
 
 
 def _join_scores(
@@ -302,6 +353,8 @@ def _score_subset(
     env: Mapping[str, str],
     thresholds: Optional[Mapping[str, float]] = None,
     bins: int = 15,
+    resume: bool = False,
+    lstm_cfg: Path | None = None,
 ) -> tuple[Optional[Path], Dict[str, float]]:
     raw_path = {
         "validation": paths.raw_validation,
@@ -341,6 +394,20 @@ def _score_subset(
     _ensure_parent(metrics_output)
     audit_path = anom_output.with_suffix(".audit.jsonl")
     _ensure_parent(audit_path)
+    lstm_audit = paths.lstm_dir / "audit" / f"{subset}_lstm_audit.jsonl"
+    _ensure_parent(lstm_audit)
+    outputs_exist = (
+        anom_output.exists()
+        and lstm_output.exists()
+        and fisher_output.exists()
+        and metrics_output.exists()
+        and audit_path.exists()
+        and lstm_audit.exists()
+    )
+    if resume and outputs_exist:
+        restored = dict(thresholds or {})
+        restored.update(_thresholds_from_metrics(metrics_output))
+        return metrics_output, restored
     # dt-anom score
     argv_anom_score = [
         dt_anom_bin,
@@ -373,8 +440,7 @@ def _score_subset(
     calib_path = paths.lstm_dir / "calib.json"
     if not calib_path.exists():
         raise WorkflowError(f"Calibration artifact not found: {calib_path}")
-    lstm_audit = paths.lstm_dir / "audit" / f"{subset}_lstm_audit.jsonl"
-    _ensure_parent(lstm_audit)
+    cfg_path = lstm_cfg or DEFAULT_LSTM_CFG
     argv_lstm_infer = [
         dt_lstm_bin,
         "infer",
@@ -389,7 +455,7 @@ def _score_subset(
         "--audit",
         str(lstm_audit),
         "--cfg",
-        str(DEFAULT_LSTM_CFG),
+        str(cfg_path),
         "--seed",
         str(env.get("DT_GLOBAL_SEED", "0")),
     ]
@@ -475,6 +541,9 @@ def run_eval(
     dt_lstm_bin: str,
     seed: int,
     gpu_mode: Optional[str],
+    bins: int = 15,
+    resume: bool = False,
+    lstm_cfg: Path | None = None,
 ) -> None:
     splits = load_splits(splits_path)
     base_dir = splits_path.parent
@@ -492,6 +561,9 @@ def run_eval(
                 dt_lstm_bin=dt_lstm_bin,
                 env=env,
                 thresholds=thresholds_map,
+                bins=bins,
+                resume=resume,
+                lstm_cfg=lstm_cfg,
             )
             if new_thresholds:
                 if thresholds_map is None:

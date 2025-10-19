@@ -927,6 +927,40 @@ tscv search \
 
 探索中の特徴エンコーダはfoldごとの学習データでfit→検証へ凍結適用され、リークを防止します。
 
+### Rolling-origin ワークフローの自動実行（`tscv run-all`）
+`configs/tscv.yaml` に分割パラメータと使用バイナリを記述すると、以下のワンコマンドで
+split→preproc→anom→lstm→eval→report を決定論的に再実行できます。
+
+```bash
+tscv run-all \
+  --in data/all/logs.csv \
+  --cfg configs/tscv.yaml \
+  --out artifacts/tscv/ \
+  --report reports/tscv/ \
+  --seed 42 \
+  --gpu-mode ada6000
+```
+
+- `--resume` を付けると途中失敗後に欠損アーティファクトのみ再生成します。既存の `env.txt`/`artifacts_index.json`
+  を検査し、バイト一致な成果物は再作成しません。
+- 入力CSVを複数指定した場合は昇順に結合して `out/dataset.csv` として保存します（ヘッダは1行のみ出力）。
+- `configs/tscv.yaml` の `split`・`binaries`・`lstm.cfg`・`eval` は CLI にそのまま伝搬され、GPU_MODE も `env.txt` に記録されます。
+
+### レポート配布パッケージの生成（`tscv report`）
+`tscv eval --out` で得たサマリーと `fold_*/` アーティファクトを集約し、再現手順付きの配布物を作るには次を実行します。
+
+```bash
+tscv report \
+  --splits artifacts/tscv/splits.yaml \
+  --summary artifacts/tscv/summary/ \
+  --fold-artifacts artifacts/tscv/ \
+  --out reports/tscv/
+```
+
+- `reports/tscv/` には `splits.yaml`・`env.txt`・各 fold の `preproc/anom/lstm/fisher/metrics`・`cv_report.json`・`metrics_summary.json`
+  ・`results.md`（手順・閾値・最終指標を記録）・`manifest.json` が生成されます。
+- `results.md` は平均適合率/AP と ROC-AUC の fold 集約統計を表形式で掲載し、再現シード/使用GPUモード/実行コマンドを明記します。
+
 ### 5.10 dt-lstm Electron ブリッジ（自己診断）
 - ビルドと起動:
   ```bash

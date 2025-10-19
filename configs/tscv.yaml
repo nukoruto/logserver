@@ -1,0 +1,23 @@
+version: 1
+split:
+  session_column: session_id
+  timestamp_column: timestamp_utc
+  label_column: anomaly_label
+  train_size: 1000
+  val_size: 200
+  test_size: 200
+  step_size: 200
+  purge_count: 0
+  embargo_count: 0
+  max_folds: null
+binaries:
+  dt_preproc: dt-preproc
+  dt_anom: dt-anom
+  dt_lstm: dt-lstm
+lstm:
+  cfg: configs/best_from_search.yaml
+eval:
+  subsets:
+    - validation
+    - test
+  bins: 15

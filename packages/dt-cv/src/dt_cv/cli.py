@@ -8,7 +8,11 @@ import sys
 from pathlib import Path
 from typing import Sequence
 
+import pandas as pd
+
 from .config import RollingOriginSplitConfig
+from .reporting import build_report_package
+from .settings import load_run_all_settings
 from .splitter import generate_splits
 from .summary import summarize_folds
 from .workflow import run_eval, run_report, run_train
@@ -71,16 +75,26 @@ def _parse_args(argv: Sequence[str] | None = None) -> argparse.Namespace:
     )
     eval_parser.add_argument("--out", help="Output directory for aggregated summary metrics")
 
-    report_parser = subparsers.add_parser("report", help="Aggregate fold metrics")
-    report_parser.add_argument("--splits", required=True, help="Path to splits.yaml")
+    report_parser = subparsers.add_parser("report", help="Aggregate fold metrics and package artifacts")
+    report_parser.add_argument("--splits", help="Path to splits.yaml")
+    report_parser.add_argument("--summary", help="Directory containing metrics_summary.json")
+    report_parser.add_argument("--fold-artifacts", help="Directory containing fold_* artifacts")
+    report_parser.add_argument("--out", required=True, help="Output directory for packaged report")
+    report_parser.add_argument(
+        "--subsets",
+        nargs="+",
+        default=["validation", "test"],
+        help="Evaluation subsets to include (default: validation test)",
+    )
 
     run_all = subparsers.add_parser("run-all", help="Train, evaluate, and report sequentially")
-    run_all.add_argument("--splits", required=True, help="Path to splits.yaml")
-    run_all.add_argument("--dt-preproc", default="dt-preproc", help="dt-preproc CLI binary")
-    run_all.add_argument("--dt-anom", default="dt-anom", help="dt-anom CLI binary")
-    run_all.add_argument("--dt-lstm", default="dt-lstm", help="dt-lstm CLI binary")
+    run_all.add_argument("--in", dest="inputs", nargs="+", required=True, help="Input CSV files (shell-expanded)")
+    run_all.add_argument("--cfg", required=True, help="Run-all configuration YAML")
+    run_all.add_argument("--out", required=True, help="Output directory for fold artifacts")
+    run_all.add_argument("--report", required=True, help="Directory where the packaged report will be written")
     run_all.add_argument("--seed", type=int, default=42, help="Seed override")
     run_all.add_argument("--gpu-mode", choices=["ada6000", "4060", "cpu"], default="ada6000", help="GPU mode")
+    run_all.add_argument("--resume", action="store_true", help="Resume incomplete workflow steps")
 
     fuse_parser = subparsers.add_parser("fuse", help="Fuse dt-anom and dt-lstm scores in probability space")
     fuse_parser.add_argument("--anom", required=True, help="Path to dt-anom scores CSV")
@@ -129,6 +143,31 @@ def _normalize_gpu_mode(mode: str | None) -> str | None:
     if mode in (None, "cpu"):
         return None
     return mode
+
+
+def _materialize_inputs(inputs: Sequence[str]) -> list[Path]:
+    paths = []
+    for value in inputs:
+        path = Path(value).expanduser().resolve()
+        if not path.exists():
+            raise FileNotFoundError(f"Input dataset not found: {path}")
+        paths.append(path)
+    return sorted(paths)
+
+
+def _combine_datasets(sources: Sequence[Path], dest: Path, *, resume: bool) -> Path:
+    if resume and dest.exists():
+        return dest
+    frames = []
+    for source in sources:
+        frame = pd.read_csv(source, dtype="string")
+        frames.append(frame)
+    if not frames:
+        raise ValueError("No input datasets provided")
+    combined = pd.concat(frames, ignore_index=True)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    combined.to_csv(dest, index=False, lineterminator="\n")
+    return dest
 
 
 def main(argv: Sequence[str] | None = None) -> int:
@@ -207,30 +246,92 @@ def main(argv: Sequence[str] | None = None) -> int:
         return 0
 
     if args.command == "report":
-        report_path = run_report(Path(args.splits).expanduser().resolve())
-        _LOGGER.info("report.completed", extra={"report": str(report_path)})
+        splits_path = Path(args.splits).expanduser().resolve() if args.splits else None
+        summary_dir = Path(args.summary).expanduser().resolve() if args.summary else None
+        fold_root: Path | None = None
+        if args.fold_artifacts:
+            fold_root = Path(args.fold_artifacts).expanduser().resolve()
+        elif splits_path is not None:
+            fold_root = splits_path.parent
+        elif summary_dir is not None:
+            fold_root = summary_dir.parent
+        if fold_root is None:
+            raise ValueError("Report requires --fold-artifacts, --summary, or --splits")
+        cv_report_path: Path | None = None
+        if splits_path is not None:
+            cv_report_path = run_report(splits_path, subsets=args.subsets)
+        else:
+            candidate = fold_root / "cv_report.json"
+            if candidate.exists():
+                cv_report_path = candidate
+        out_dir = Path(args.out).expanduser().resolve()
+        summary_dir = summary_dir or (fold_root / "summary")
+        results_path = build_report_package(
+            fold_root=fold_root,
+            out_dir=out_dir,
+            subsets=tuple(args.subsets),
+            summary_dir=summary_dir,
+            splits_path=splits_path,
+            cv_report_path=cv_report_path,
+        )
+        _LOGGER.info("report.completed", extra={"report": str(results_path)})
         return 0
 
     if args.command == "run-all":
-        splits_path = Path(args.splits).expanduser().resolve()
+        input_paths = _materialize_inputs(args.inputs)
+        cfg_path = Path(args.cfg).expanduser().resolve()
+        out_dir = Path(args.out).expanduser().resolve()
+        out_dir.mkdir(parents=True, exist_ok=True)
+        report_dir = Path(args.report).expanduser().resolve()
+        report_dir.mkdir(parents=True, exist_ok=True)
+        settings = load_run_all_settings(cfg_path)
+        dataset_path = _combine_datasets(input_paths, out_dir / "dataset.csv", resume=args.resume)
+        splits_path = out_dir / "splits.yaml"
+        if not args.resume or not splits_path.exists():
+            split_config = settings.build_split_config(dataset_path, out_dir, args.seed)
+            generate_splits(split_config)
         gpu_mode = _normalize_gpu_mode(args.gpu_mode)
         run_train(
             splits_path,
-            dt_preproc_bin=args.dt_preproc,
-            dt_anom_bin=args.dt_anom,
-            dt_lstm_bin=args.dt_lstm,
+            dt_preproc_bin=settings.dt_preproc_bin,
+            dt_anom_bin=settings.dt_anom_bin,
+            dt_lstm_bin=settings.dt_lstm_bin,
             seed=args.seed,
             gpu_mode=gpu_mode,
+            resume=args.resume,
+            lstm_cfg=settings.lstm_cfg,
         )
         run_eval(
             splits_path,
-            dt_anom_bin=args.dt_anom,
-            dt_lstm_bin=args.dt_lstm,
+            dt_anom_bin=settings.dt_anom_bin,
+            dt_lstm_bin=settings.dt_lstm_bin,
             seed=args.seed,
             gpu_mode=gpu_mode,
+            resume=args.resume,
+            bins=settings.fisher_bins,
+            lstm_cfg=settings.lstm_cfg,
         )
-        report_path = run_report(splits_path)
-        _LOGGER.info("run_all.completed", extra={"report": str(report_path)})
+        summary_dir = out_dir / "summary"
+        summary_ready = (summary_dir / "metrics_summary.json").exists()
+        if not args.resume or not summary_ready:
+            summarize_folds(
+                out_dir,
+                out_dir=summary_dir,
+                bootstrap="none",
+                block_mean=None,
+                bootstrap_samples=0,
+                seed=args.seed,
+            )
+        cv_report_path = run_report(splits_path, subsets=settings.subsets)
+        results_path = build_report_package(
+            fold_root=out_dir,
+            out_dir=report_dir,
+            subsets=settings.subsets,
+            summary_dir=summary_dir,
+            splits_path=splits_path,
+            cv_report_path=cv_report_path,
+        )
+        _LOGGER.info("run_all.completed", extra={"report": str(results_path)})
         return 0
 
     if args.command == "fuse":
