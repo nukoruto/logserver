@@ -31,7 +31,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - 評価担当: 指標設計、実験・検証、報告
 
 ## 5. システム概要（アーキテクチャ）
-1. データ層: ログ収集（Node.js/Express）、永続化（CSV/Parquet）  
+1. データ層: シナリオ駆動ログ生成（TypeScript シミュレーション）、永続化（CSV/Parquet）  
 2. 前処理層: セッション分割、イベント埋め込み、Δt 付与、標準化  
 3. 学習層: LSTM（予測型または再構成型）学習、検証  
 4. 推論層: 異常スコア算出、オンライン/バッチ推論  
@@ -39,28 +39,37 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 
 ## 6. データ要件
 ### 6.1 収集
-- ランタイム: Node.js v20 以上、Express  
+- ランタイム: Node.js v20 以上（シミュレーション CLI）  
 - 収集対象: テストシナリオに基づく正常ログ、自動/半自動生成の異常ログ（順序逸脱、再送、Δt 異常など）  
 - 保存形式: CSV または Parquet（列指向推奨）  
 - タイムゾーン: UTC で統一
 
-### 6.2 スキーマ（列挙）
-- timestamp（ISO8601、UTC）  
-- session_id（文字列）  
-- user_id（文字列）  
-- event（有限語彙: login、view、edit、save、logout など）  
-- method（HTTP メソッド等、任意）  
-- path（リソース識別、任意）  
-- status（整数、任意）  
-- latency_ms（整数、応答遅延）  
-- meta.user_agent（文字列、任意）  
-- meta.referrer（文字列、任意）
+### 6.2 基本データ契約（9 列）
+- timestamp_utc（RFC 3339 UTC 文字列）
+- uid（擬似匿名化済みユーザ ID。HKDF-SHA256 で導出した K_ds による HMAC-SHA256 を base64url 化）
+- session_id（文字列）
+- method（HTTP メソッド）
+- path（リソース識別子）
+- referer（参照元 URL。欠損は空文字も可）
+- user_agent（クライアント識別子）
+- ip（IPv4/IPv6。疑似化済み）
+- op_category（AUTH / READ / UPDATE の 3 区分）
+
+### 6.3 派生特徴・ラベル（別工程）
+- Δt 系列（dt_sec, log_dt, delta_z, delta_robust_z, delta_quantile_0_25/0_5/0_75 等）
+- 応答時間統計（latency_ms、移動平均・分位点）
+- 連続特徴量のロバスト正規化値（z_clipped, z_deseas など）
+- 異常スコア（Score_total, neglog10_p 等）
+- 異常ラベル（anomaly_label, alarm, alarm_reason 等）
+
+これらの派生列は 9 列 CSV を入力として `dt-preproc fit/transform` → `trainer.scripts.score` → `trainer.scripts.threshold` の順に生成し、成果物は data/processed/, outputs/, reports/ 以下へ保存する。
 
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  
-- Δt 計算: Δt_t = timestamp_t - timestamp_t-1（秒）  
-- カテゴリ: 事前定義語彙でエンコード（埋め込み利用）  
-- 数値特徴: 標準化（学習データの平均・分散を保存して再利用）  
+- Δt 計算: Δt_t = timestamp_t - timestamp_t-1（秒）、有効サンプル集合の最小値を min Δt_measured とすると測定許容値 ε は ε = max(1e-6, min(0.5 × min Δt_measured, 1e-2)) で固定
+- カテゴリ: 事前定義語彙でエンコード（埋め込み利用）
+- テンプレート ID: method/path/op_category から正規化 (`AUTH::GET::dashboard` 形式) し、Python/TypeScript 共通ヘルパーで決定的に生成する
+- 数値特徴: 標準化（学習データの平均・分散を保存して再利用）
 - 入力テンソル: 時刻 t の特徴ベクトル = [event_embed, Δt, latency, status, …]  
 - 分割: train/val/test = 7/1/2（セッション単位）  
 - 欠損: イベントは専用トークン、数値は中央値補完
@@ -113,12 +122,18 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
   Score_total(t) = Score(t) + Score_Δ(t)
 
 ### 11.2 閾値設計
-- 平均・分散方式:  
-  θ = μ_normal + k × σ_normal（k は 2 または 3 など）  
-- 分位点方式:  
-  θ = Q_p(Score_normal)（p は 0.99 など）  
-- セッション判定（多数決/積分）:  
+- 平均・分散方式:
+  θ = μ_normal + k × σ_normal（k は 2 または 3 など）
+- 分位点方式:
+  θ = Q_p(Score_normal)（p は 0.99 など）
+- SPOT 式（極値理論）:
+  τ = u + (β / ξ) × ((p_ref / q_star)^ξ - 1)、|ξ| → 0 の極限は τ = u + β × ln(p_ref / q_star)、p_ref = 基準尾確率、q_star = 監視対象の尾確率
+- 参照確率:
+  p_ref^*(y) = p_ref × exp(-y / β) （ξ → 0 極限）
+- セッション判定（多数決/積分）:
   A(session) = 1[ Σ_t 1( Score_total(t) > θ ) ≥ m ]
+- 比ヒステリシス:
+  アラーム保持指標 s_evt = Δt_current / τ_current とし、H > 1 のとき解除条件は s_evt ≤ 1 / H
 
 ## 12. 実験計画（ハイレベル）
 1. 正常/異常ログ生成 → スナップショット固定（seed、バージョン）  
@@ -147,7 +162,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
   - SRS.md
   - CONSTRAINTS.md
   - Makefile
-  - collector/（ログ収集サーバ。Node.js/Express 実装）
+  - collector/（ログシミュレーション CLI。TypeScript 実装）
     - package.json / package-lock.json
     - server.js
     - src/（config, middleware, routes, services, storage, utils）

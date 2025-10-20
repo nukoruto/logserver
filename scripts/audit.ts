@@ -5,6 +5,8 @@ import process from 'node:process';
 type AuditOptions = {
   paths: string[];
   failOnError: boolean;
+  allowDerived: boolean;
+  allowedExtraColumns: Set<string>;
 };
 
 type CsvRow = Record<string, string>;
@@ -58,9 +60,75 @@ const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 const OP_CATEGORIES = new Set(['AUTH', 'READ', 'UPDATE']);
 const CSV_EXTENSION = '.csv';
 const EPSILON = 1e-6;
+const REQUIRED_HEADER_COLUMNS = [
+  'timestamp_utc',
+  'session_id',
+  'uid',
+  'method',
+  'path',
+  'referer',
+  'user_agent',
+  'ip',
+  'op_category',
+];
+
+const OPTIONAL_CONTRACT_COLUMNS = [
+  'metadata',
+  'latency_ms',
+  'dt_sec',
+  'delta_seconds',
+  'delta_t',
+  'DeltaT',
+  'time_label',
+  'timeLabel',
+  'sid_final',
+  'generated_session_id',
+  'delta_threshold',
+  'delta_t_threshold',
+  'idle_timeout_seconds',
+  'user_id',
+  'userId',
+  'event',
+  'status',
+  'response_bytes',
+  'host',
+  'params',
+];
+
+const DERIVED_DATA_COLUMNS = ['status_code'];
+
+const isNullLike = (value: string | undefined): boolean => {
+  if (value === undefined || value === null) {
+    return true;
+  }
+  const trimmed = value.trim();
+  return trimmed.length === 0 || trimmed.toLowerCase() === 'null';
+};
+
+const isValidIpv4 = (value: string): boolean => {
+  const parts = value.split('.');
+  if (parts.length !== 4) {
+    return false;
+  }
+  return parts.every((part) => {
+    if (part.length === 0 || part.length > 3) {
+      return false;
+    }
+    if (!/^[0-9]+$/.test(part)) {
+      return false;
+    }
+    const numeric = Number(part);
+    return numeric >= 0 && numeric <= 255;
+  });
+};
 
 const parseArgs = (argv: string[]): AuditOptions => {
-  const options: AuditOptions = { paths: [], failOnError: false };
+  const options: AuditOptions = {
+    paths: [],
+    failOnError: false,
+    allowDerived: false,
+    allowedExtraColumns: new Set<string>(),
+  };
   for (let index = 0; index < argv.length; index += 1) {
     const arg = argv[index];
     if (arg === '--dir' || arg === '--path') {
@@ -72,6 +140,19 @@ const parseArgs = (argv: string[]): AuditOptions => {
       index += 1;
     } else if (arg === '--fail-on-error' || arg === '--fail') {
       options.failOnError = true;
+    } else if (arg === '--allow-derived') {
+      options.allowDerived = true;
+    } else if (arg === '--allow-column' || arg === '--allow-columns') {
+      const value = argv[index + 1];
+      if (!value) {
+        throw new Error(`${arg} requires a value`);
+      }
+      value
+        .split(',')
+        .map((column) => column.trim())
+        .filter((column) => column.length > 0)
+        .forEach((column) => options.allowedExtraColumns.add(column));
+      index += 1;
     }
   }
 
@@ -313,15 +394,55 @@ const resolveThresholdFromRow = (
   return null;
 };
 
+const buildAllowedHeaderColumns = (options: AuditOptions): Set<string> => {
+  const allowed = new Set<string>([...REQUIRED_HEADER_COLUMNS, ...OPTIONAL_CONTRACT_COLUMNS]);
+  options.allowedExtraColumns.forEach((column) => allowed.add(column));
+  if (options.allowDerived) {
+    DERIVED_DATA_COLUMNS.forEach((column) => allowed.add(column));
+  }
+  return allowed;
+};
+
+const validateHeader = (
+  header: readonly string[],
+  file: string,
+  findings: AuditFinding[],
+  options: AuditOptions,
+): void => {
+  for (const required of REQUIRED_HEADER_COLUMNS) {
+    if (!header.includes(required)) {
+      findings.push({ file, line: 1, message: `Missing column ${required}` });
+    }
+  }
+
+  if (!header.includes('sid_final') && !header.includes('generated_session_id')) {
+    findings.push({
+      file,
+      line: 1,
+      message: 'Missing column sid_final (or generated_session_id) for ΔT compliance check',
+    });
+  }
+  if (!header.includes('dt_sec') && !header.includes('delta_seconds') && !header.includes('delta_t')) {
+    findings.push({ file, line: 1, message: 'Missing Δt column (dt_sec/delta_seconds/delta_t)' });
+  }
+
+  const allowedColumns = buildAllowedHeaderColumns(options);
+  header.forEach((column) => {
+    if (!allowedColumns.has(column)) {
+      findings.push({ file, line: 1, message: `Unexpected column ${column}` });
+    }
+  });
+};
+
 const validateRow = (
   row: CsvRow,
   file: string,
   lineNumber: number,
   header: readonly string[],
-  findings: AuditFinding[]
+  findings: AuditFinding[],
+  options: AuditOptions,
 ): void => {
   const method = row.method || '';
-  const timestamp = row.timestamp_utc || row.timestamp || '';
   const category = row.op_category || '';
 
   if (row.timestamp_utc && !RFC3339_PATTERN.test(row.timestamp_utc)) {
@@ -334,25 +455,38 @@ const validateRow = (
     findings.push({ file, line: lineNumber, message: `Invalid op_category: ${category}` });
   }
 
-  for (const required of ['timestamp_utc', 'method', 'op_category']) {
-    if (!header.includes(required)) {
-      findings.push({ file, line: 1, message: `Missing column ${required}` });
-    }
+  if (isNullLike(row.uid)) {
+    findings.push({ file, line: lineNumber, message: 'Missing uid value' });
   }
 
-  if (!header.includes('sid_final') && !header.includes('generated_session_id')) {
-    findings.push({ file, line: 1, message: 'Missing column sid_final (or generated_session_id) for ΔT compliance check' });
+  if (!isNullLike(row.referer) && !/^https?:\/\//i.test(row.referer)) {
+    findings.push({ file, line: lineNumber, message: `Invalid referer URL: ${row.referer}` });
   }
-  if (!header.includes('dt_sec') && !header.includes('delta_seconds') && !header.includes('delta_t')) {
-    findings.push({ file, line: 1, message: 'Missing Δt column (dt_sec/delta_seconds/delta_t)' });
+
+  if (isNullLike(row.user_agent)) {
+    findings.push({ file, line: lineNumber, message: 'Missing user_agent value' });
+  }
+
+  if (isNullLike(row.ip) || !isValidIpv4(row.ip)) {
+    findings.push({ file, line: lineNumber, message: `Invalid IP address: ${row.ip ?? 'null'}` });
+  }
+
+  if (options.allowDerived && header.includes('status_code')) {
+    const statusCode = parseNumber(row.status_code);
+    if (statusCode === null || !Number.isInteger(statusCode) || statusCode < 0) {
+      findings.push({ file, line: lineNumber, message: `Invalid status_code: ${row.status_code}` });
+    }
   }
 };
 
 const collectUid = (row: CsvRow): string | null => {
   const candidates = [row.uid, row.user_id, row.userId];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.trim().length > 0) {
-      return candidate;
+    if (typeof candidate === 'string') {
+      if (isNullLike(candidate)) {
+        continue;
+      }
+      return candidate.trim();
     }
   }
   return null;
@@ -361,7 +495,10 @@ const collectUid = (row: CsvRow): string | null => {
 const collectSidFinal = (row: CsvRow): string | null => {
   const candidates = [row.sid_final, row.generated_session_id, row.session_id];
   for (const candidate of candidates) {
-    if (typeof candidate === 'string' && candidate.length > 0) {
+    if (typeof candidate === 'string') {
+      if (isNullLike(candidate)) {
+        continue;
+      }
       return candidate;
     }
   }
@@ -482,6 +619,7 @@ const audit = async (options: AuditOptions): Promise<number> => {
     const directory = path.dirname(file);
     const content = await readFile(file, 'utf8');
     const { header, rows } = parseCsvContent(content);
+    validateHeader(header, file, findings, options);
     totalRows += rows.length;
     const eventsMap = new Map<string, ParsedEvent[]>();
     const uidsInFile = new Set<string>();
@@ -490,7 +628,7 @@ const audit = async (options: AuditOptions): Promise<number> => {
 
     rows.forEach((row, index) => {
       const lineNumber = index + 2;
-      validateRow(row, file, lineNumber, header, findings);
+      validateRow(row, file, lineNumber, header, findings, options);
 
       const uid = collectUid(row);
       if (uid) {

@@ -1,0 +1,85 @@
+import { describe, expect, it } from 'vitest';
+
+import { algoVersion, estimateThresholdsWithMeta } from '../dist/index.js';
+
+type BackoffTestRow = {
+  algo_ver: typeof algoVersion;
+  uid: string;
+  generatedSessionId: string;
+  sessionSequence: number;
+  sessionIndex: number;
+  timestampUtc: string;
+  deltaSeconds: number | null;
+  idleTimeoutSeconds: number;
+  splitReason: 'continuous';
+  original: { user_agent_type?: string | null };
+};
+
+function makeRow(
+  uid: string,
+  deltaSeconds: number | null,
+  userAgentType: string | null,
+  index = 0
+): BackoffTestRow {
+  return {
+    algo_ver: algoVersion,
+    uid,
+    generatedSessionId: `${uid}-session-0`,
+    sessionSequence: 0,
+    sessionIndex: index,
+    timestampUtc: '2024-01-01T00:00:00Z',
+    deltaSeconds,
+    idleTimeoutSeconds: 1800,
+    splitReason: 'continuous',
+    original: { user_agent_type: userAgentType }
+  };
+}
+
+describe('threshold backoff', () => {
+  it('provides stable thresholds for sparse users', async () => {
+    const rows: BackoffTestRow[] = [];
+
+    for (let i = 0; i < 100; i += 1) {
+      rows.push(makeRow('rich-desktop', 5, 'desktop', i));
+    }
+
+    rows.push(makeRow('sparse-desktop', null, 'desktop', 0));
+    rows.push(makeRow('sparse-desktop', 15, 'desktop', 1));
+    rows.push(makeRow('sparse-desktop', 15, 'desktop', 2));
+
+    rows.push(makeRow('solo-mobile', null, 'mobile', 0));
+    rows.push(makeRow('solo-mobile', 30, 'mobile', 1));
+
+    rows.push(makeRow('only-null', null, 'robot', 0));
+
+    const result = await estimateThresholdsWithMeta(rows, {
+      minimumSamples: 1000,
+      fallbackPercentile: 0.9,
+      min_events: 50,
+      backoff: true
+    });
+
+    const thresholds = result.thresholds;
+    const details = result.perUser;
+
+    const expected = 5;
+
+    expect(details.get('rich-desktop')?.backoff_level).toBe('user');
+    expect(details.get('sparse-desktop')?.backoff_level).toBe('group:user_agent_type=desktop');
+    expect(details.get('solo-mobile')?.backoff_level).toBe('global');
+    expect(details.get('only-null')?.backoff_level).toBe('global');
+
+    expect(Math.abs((thresholds.get('rich-desktop') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Math.abs((thresholds.get('sparse-desktop') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Math.abs((thresholds.get('solo-mobile') ?? 0) - expected)).toBeLessThan(1e-9);
+    expect(Number.isFinite(thresholds.get('only-null'))).toBe(true);
+
+    const repeat = await estimateThresholdsWithMeta(rows, {
+      minimumSamples: 1000,
+      fallbackPercentile: 0.9,
+      min_events: 50,
+      backoff: true
+    });
+    expect(Array.from(repeat.thresholds.entries())).toStrictEqual(Array.from(thresholds.entries()));
+  });
+});

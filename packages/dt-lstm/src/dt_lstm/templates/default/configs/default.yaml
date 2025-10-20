@@ -1,0 +1,39 @@
+# Default configuration for dt-lstm training template
+# The values are intentionally minimal to keep template executions fast.
+data:
+  processed_dir: ./data/processed
+  splits:
+    train: ./splits/train.txt
+    dev: ./splits/dev.txt
+    test: ./splits/test.txt
+  loader:
+    batch_size: 16
+    bptt_len: 32
+  vocab:
+    field: template_id
+    path: ./artifacts/runs/default/vocab.json
+logging:
+  dir: ./artifacts/runs/default
+  files:
+    history: history.json
+    metrics: metrics.json
+    repro: repro.json
+artifacts:
+  dir: ./artifacts/runs/default
+  checkpoints:
+    best: model.pt
+    last: model_last.pt
+  exports:
+    bundle: model.tar
+device:
+  prefer: auto
+  gpu_mode: ${GPU_MODE}
+model:
+  arch: lstm_delta
+  emb_dim: 32
+  hidden_dim: 64
+  num_layers: 1
+train:
+  max_epochs: 3
+  lr: 0.001
+  optimizer: adam

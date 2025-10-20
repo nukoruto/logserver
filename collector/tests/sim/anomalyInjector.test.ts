@@ -95,6 +95,7 @@ describe('injectAnomaly', () => {
         timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 480 },
         authenticationBypass: { weight: 0 },
       },
+      session: { sessionId: 'sess-auto', userId: 'user-auto', uid: 'uid-auto' },
     });
 
     const deviations = mutated.filter((event: any) => event._anomalyType === 'timeDeviation');
@@ -108,6 +109,135 @@ describe('injectAnomaly', () => {
     expect(Math.round(target.deltaSeconds ?? 0)).toBe(480);
     expect(Math.round(deltaMillis / 1000)).toBe(480);
     expect(target.deltaOffsetSeconds).toBeGreaterThanOrEqual(470);
+    const timeMeta = target.metadata?.time_anomaly as Record<string, any> | undefined;
+    expect(Number(timeMeta?.desired_delta)).toBeCloseTo(480, 6);
+    const weights = (timeMeta?.weights as Record<string, number> | undefined) ?? {};
+    expect(Number(weights.propagate)).toBeGreaterThanOrEqual(0);
+    expect(target._anomalyDetails?.propagationMode).toBeDefined();
+    expect(timeMeta?.propagation_mode).toBe(target._anomalyDetails?.propagationMode);
+  });
+
+  it('auto モードは決定的に同一パターンを再現する', () => {
+    const base = createBaseSequence();
+    const first = injectAnomaly(base, {
+      anomalyCount: 2,
+      seed: 'auto-deterministic',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 0.5, longGapSeconds: 240, shortGapSeconds: 0.25 },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-det', userId: 'user-det', uid: 'uid-det' },
+    });
+    const second = injectAnomaly(base, {
+      anomalyCount: 2,
+      seed: 'auto-deterministic',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 0.5, longGapSeconds: 240, shortGapSeconds: 0.25 },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-det', userId: 'user-det', uid: 'uid-det' },
+    });
+
+    const firstModes = first
+      .filter((event: any) => event._anomalyType === 'timeDeviation')
+      .map((event: any) => event._anomalyDetails?.propagationMode);
+    const secondModes = second
+      .filter((event: any) => event._anomalyType === 'timeDeviation')
+      .map((event: any) => event._anomalyDetails?.propagationMode);
+
+    expect(secondModes).toEqual(firstModes);
+  });
+
+  it('local モードを強制すると後続イベントのタイムスタンプが変化しない', () => {
+    const base = createBaseSequence();
+    const mutated = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'local-mode',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 120, mode: 'local' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-local', userId: 'user-local', uid: 'uid-local' },
+    });
+
+    const deviation = mutated.find((event: any) => event._anomalyType === 'timeDeviation');
+    expect(deviation?._anomalyDetails?.propagationMode).toBe('local');
+    if (!deviation) {
+      throw new Error('time deviation not injected');
+    }
+    const index = mutated.indexOf(deviation as any);
+    for (let i = index + 1; i < mutated.length; i += 1) {
+      expect(mutated[i].timestamp).toBe(base[i].timestamp);
+    }
+  });
+
+  it('propagate モードを強制すると後続イベントがシフトする', () => {
+    const base = createBaseSequence();
+    const mutated = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'prop-mode',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 90, mode: 'propagate' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-prop', userId: 'user-prop', uid: 'uid-prop' },
+    });
+
+    const deviation = mutated.find((event: any) => event._anomalyType === 'timeDeviation');
+    expect(deviation?._anomalyDetails?.propagationMode).toBe('propagate');
+    if (!deviation) {
+      throw new Error('time deviation not injected');
+    }
+    const index = mutated.indexOf(deviation as any);
+    for (let i = index + 1; i < mutated.length; i += 1) {
+      expect(mutated[i].timestamp).not.toBe(base[i].timestamp);
+    }
+  });
+
+  it('propagate と local モードで後続イベントのシフト量が一致しない', () => {
+    const base = createBaseSequence();
+    const propagateSequence = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'mode-diff',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 180, mode: 'propagate' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-mode', userId: 'user-mode', uid: 'uid-mode' },
+    });
+
+    const localSequence = injectAnomaly(base, {
+      anomalyCount: 1,
+      seed: 'mode-diff',
+      strategies: {
+        protocolViolation: { weight: 0 },
+        timeDeviation: { weight: 1, longProbability: 1, longGapSeconds: 180, mode: 'local' },
+        authenticationBypass: { weight: 0 },
+      },
+      session: { sessionId: 'sess-mode', userId: 'user-mode', uid: 'uid-mode' },
+    });
+
+    const propagateDeviation = propagateSequence.find((event: any) => event._anomalyType === 'timeDeviation');
+    const localDeviation = localSequence.find((event: any) => event._anomalyType === 'timeDeviation');
+    expect(propagateDeviation?._anomalyDetails?.propagationMode).toBe('propagate');
+    expect(localDeviation?._anomalyDetails?.propagationMode).toBe('local');
+    if (!propagateDeviation || !localDeviation) {
+      throw new Error('time deviation not injected');
+    }
+
+    const propagateIndex = propagateSequence.indexOf(propagateDeviation as any);
+    const localIndex = localSequence.indexOf(localDeviation as any);
+    expect(localIndex).toBe(propagateIndex);
+
+    for (let i = propagateIndex + 1; i < base.length; i += 1) {
+      expect(localSequence[i].timestamp).toBe(base[i].timestamp);
+      expect(propagateSequence[i].timestamp).not.toBe(localSequence[i].timestamp);
+    }
   });
 
   it('認証不備を注入しセッションIDとユーザIDを不正化する', () => {

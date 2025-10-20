@@ -1,53 +1,41 @@
 {
   "name": "session-anomaly-detection",
   "version": "1.0.0",
-  "description": "Web session operation sequence logging server for anomaly detection research",
-  "main": "server.js",
+  "description": "Scenario-driven session log simulator for anomaly detection research",
+  "main": "dist/services/simulationService.js",
   "scripts": {
-    "start": "node server.js",
-    "dev": "nodemon server.js",
     "lint": "eslint .",
     "test": "jest --config jest.config.cjs",
-    "build": "tsc --project tsconfig.json",
-    "e2e": "ts-node --project tsconfig.json scripts/run-e2e.ts",
-    "audit": "ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"target\":\"ES2020\"} ../scripts/audit.ts",
-    "seed": "ts-node scripts/seed.ts"
+    "build": "tsc --project tsconfig.build.json",
+    "metrics": "node ../dist/collector/metrics/cli.js",
+    "audit": "ts-node --transpile-only --compiler-options {\"module\":\"commonjs\",\"target\":\"ES2020\"} ../scripts/audit.ts"
   },
   "keywords": [
-    "express",
     "session",
     "logging",
     "anomaly-detection",
     "lstm",
-    "control-engineering"
+    "control-engineering",
+    "simulation",
+    "generator"
   ],
   "author": "Your Name",
   "license": "MIT",
   "dependencies": {
-    "axios": "^1.7.4",
-    "body-parser": "^1.20.2",
-    "cors": "^2.8.5",
     "dotenv": "^16.4.5",
-    "express": "^4.19.2",
-    "jsonwebtoken": "^9.0.2",
-    "morgan": "^1.10.0",
-    "node-fetch": "^3.3.2",
-    "sqlite3": "^5.1.7",
-    "undici": "^6.19.7",
+    "seedrandom": "^3.0.5",
     "winston": "^3.11.0",
-    "yargs": "^17.7.2",
-    "zod": "^4.1.12"
+    "yargs": "^17.7.2"
   },
   "devDependencies": {
+    "@types/seedrandom": "^3.0.8",
     "@eslint/js": "^9.36.0",
-    "@types/express": "^5.0.3",
     "@types/jest": "^30.0.0",
     "@typescript-eslint/eslint-plugin": "^8.8.1",
     "@typescript-eslint/parser": "^8.8.1",
     "eslint": "^9.5.0",
     "globals": "^15.14.0",
     "jest": "^30.2.0",
-    "nodemon": "^3.1.0",
     "ts-jest": "^29.4.5",
     "ts-node": "^10.9.2",
     "typescript": "^5.9.3"

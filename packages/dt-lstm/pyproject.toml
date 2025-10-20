@@ -1,0 +1,41 @@
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "dt-lstm"
+version = "0.1.0"
+description = "Δt-aware LSTM toolkit with deterministic scaffolding and CLI"
+requires-python = ">=3.11"
+authors = [{ name = "LogServer Team" }]
+license = { text = "MIT" }
+readme = "README.md"
+dependencies = [
+  "torch>=2.1.0",
+  "numpy>=1.26",
+  "pyyaml>=6.0",
+  "pandas>=2.1",
+  "matplotlib>=3.8",
+]
+
+[project.optional-dependencies]
+dev = [
+  "pytest>=7.4",
+]
+
+[project.scripts]
+"dt-lstm" = "dt_lstm.cli:main"
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+include-package-data = true
+packages = ["dt_lstm"]
+
+[tool.setuptools.package-data]
+"dt_lstm" = [
+  "templates/default/*",
+  "templates/default/configs/*",
+  "templates/default/dt_lstm/*",
+  "templates/default/scripts/*",
+  "templates/default/tests/*",
+]

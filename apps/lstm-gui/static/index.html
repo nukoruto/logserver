@@ -1,0 +1,224 @@
+<!doctype html>
+<html lang="ja">
+  <head>
+    <meta charset="utf-8" />
+    <title>dt-lstm GUI Bridge</title>
+    <style>
+      body { font-family: sans-serif; margin: 2rem; }
+      pre { background: #f4f4f4; padding: 1rem; border-radius: 4px; }
+      button {
+        border-radius: 6px;
+        border: 1px solid #0f172a;
+        background: #0f172a;
+        color: #fff;
+        padding: 0.5rem 1rem;
+        cursor: pointer;
+        margin-bottom: 1rem;
+      }
+      button.secondary {
+        background: #fff;
+        color: #0f172a;
+      }
+      dialog {
+        border: 1px solid #0f172a;
+        border-radius: 6px;
+        padding: 1.5rem;
+        max-width: 640px;
+        box-shadow: 0 8px 24px rgba(15, 23, 42, 0.2);
+      }
+      dialog[open][data-severity='error'] {
+        border-color: #dc2626;
+      }
+      dialog[open][data-severity='warning'] {
+        border-color: #f97316;
+      }
+      dialog h2 {
+        margin-top: 0;
+      }
+      .health-tags {
+        display: flex;
+        flex-wrap: wrap;
+        gap: 0.5rem;
+        margin-bottom: 1rem;
+      }
+      .health-tag {
+        border-radius: 9999px;
+        padding: 0.25rem 0.75rem;
+        font-size: 0.85rem;
+        font-weight: 600;
+        color: #fff;
+      }
+      .health-tag.error {
+        background: #dc2626;
+      }
+      .health-tag.warning {
+        background: #f97316;
+      }
+      .health-tag.ok {
+        background: #16a34a;
+      }
+      .health-section {
+        margin-bottom: 1rem;
+      }
+      .health-section ul {
+        padding-left: 1.2rem;
+      }
+      .health-actions {
+        display: flex;
+        justify-content: flex-end;
+        gap: 0.5rem;
+        margin-top: 1rem;
+      }
+    </style>
+  </head>
+  <body>
+    <h1>dt-lstm GUI Bridge</h1>
+    <p>このウィンドウは dt-lstm CLI 実行の進捗を Electron IPC で受け取る用途向けのスタブです。</p>
+    <p>レンダラープロセスから <code>window.dtLstm</code> API を利用してください。</p>
+    <button id="health-button" type="button">環境診断を開く</button>
+    <dialog id="health-dialog">
+      <h2>システム自己診断</h2>
+      <div class="health-tags" id="health-tags"></div>
+      <div id="health-content"></div>
+      <div class="health-actions">
+        <button id="health-refresh" type="button" class="secondary">再診断</button>
+        <button id="health-close" value="close">閉じる</button>
+      </div>
+    </dialog>
+    <pre id="log"></pre>
+    <script>
+      const logElement = document.getElementById('log');
+      const healthButton = document.getElementById('health-button');
+      const healthDialog = document.getElementById('health-dialog');
+      const healthContent = document.getElementById('health-content');
+      const healthTags = document.getElementById('health-tags');
+      const healthClose = document.getElementById('health-close');
+      const healthRefresh = document.getElementById('health-refresh');
+      let lastHealthReport = null;
+
+      function formatBytes(bytes) {
+        if (typeof bytes !== 'number' || Number.isNaN(bytes)) {
+          return '不明';
+        }
+        const gib = bytes / (1024 ** 3);
+        return `${gib.toFixed(1)} GiB`;
+      }
+
+      function renderHealth(report) {
+        lastHealthReport = report;
+        if (!healthDialog) {
+          return;
+        }
+        const severity = report.errors.length > 0 ? 'error' : report.warnings.length > 0 ? 'warning' : 'ok';
+        healthDialog.dataset.severity = severity;
+        if (healthTags) {
+          const tags = [];
+          if (report.errors.length > 0) {
+            tags.push(`<span class="health-tag error">重大: ${report.errors.length}</span>`);
+          }
+          if (report.warnings.length > 0) {
+            tags.push(`<span class="health-tag warning">注意: ${report.warnings.length}</span>`);
+          }
+          if (report.errors.length === 0 && report.warnings.length === 0) {
+            tags.push('<span class="health-tag ok">OK</span>');
+          }
+          healthTags.innerHTML = tags.join('');
+        }
+        if (healthContent) {
+          const dirItems = report.io.directories
+            .map((dir) => {
+              const status = dir.exists ? (dir.writable ? '書き込み可' : '書き込み不可') : '未作成';
+              const detail = dir.message ? ` — ${dir.message}` : '';
+              return `<li><code>${dir.path}</code>: ${status}${detail}</li>`;
+            })
+            .join('');
+          const disk = report.disk;
+          const gpu = report.gpu;
+          const warningList = report.warnings.map((w) => `<li>${w}</li>`).join('');
+          const errorList = report.errors.map((e) => `<li>${e}</li>`).join('');
+          healthContent.innerHTML = `
+            <div class="health-section">
+              <h3>I/O 診断</h3>
+              <ul>${dirItems || '<li>対象ディレクトリなし</li>'}</ul>
+            </div>
+            <div class="health-section">
+              <h3>ディスク容量</h3>
+              <p>空き容量: ${formatBytes(disk.freeBytes)} / 閾値: ${formatBytes(disk.thresholdBytes)} / パス: <code>${disk.path}</code></p>
+              ${disk.message ? `<p>${disk.message}</p>` : ''}
+            </div>
+            <div class="health-section">
+              <h3>GPU モード</h3>
+              <p>GPU_MODE: <code>${gpu.mode}</code> / CUDA_VISIBLE_DEVICES: <code>${gpu.cudaVisibleDevices ?? '未設定'}</code></p>
+              <p>検出結果: ${gpu.available ? '利用可能' : '未検出'}</p>
+              ${gpu.devices.length > 0 ? `<ul>${gpu.devices.map((d) => `<li>${d}</li>`).join('')}</ul>` : ''}
+              ${gpu.message ? `<p>${gpu.message}</p>` : ''}
+              ${gpu.error ? `<p>エラー: ${gpu.error}</p>` : ''}
+            </div>
+            <div class="health-section">
+              <h3>警告 / エラー</h3>
+              <p>更新時刻: ${new Date(report.timestamp).toLocaleString()}</p>
+              ${errorList ? `<h4>重大</h4><ul>${errorList}</ul>` : ''}
+              ${warningList ? `<h4>注意</h4><ul>${warningList}</ul>` : ''}
+              ${!errorList && !warningList ? '<p>問題は検出されませんでした。</p>' : ''}
+            </div>
+          `;
+        }
+        if (severity !== 'ok' && typeof healthDialog.showModal === 'function' && !healthDialog.open) {
+          healthDialog.showModal();
+        }
+      }
+
+      async function requestHealth() {
+        if (!window.dtLstm) {
+          return;
+        }
+        try {
+          const report = await window.dtLstm.health();
+          renderHealth(report);
+          if (typeof healthDialog?.showModal === 'function' && !healthDialog.open) {
+            healthDialog.showModal();
+          }
+        } catch (error) {
+          console.error('ヘルスチェックに失敗しました', error);
+        }
+      }
+
+      if (window.dtLstm) {
+        window.dtLstm.onProgress((event) => {
+          const next = `${new Date().toISOString()}\n${JSON.stringify(event)}\n\n`;
+          logElement.textContent = next + logElement.textContent;
+        });
+        window.dtLstm.onHealth((report) => {
+          renderHealth(report);
+        });
+      }
+
+      if (healthButton) {
+        healthButton.addEventListener('click', () => {
+          if (lastHealthReport) {
+            renderHealth(lastHealthReport);
+            if (typeof healthDialog?.showModal === 'function') {
+              healthDialog.showModal();
+            }
+          } else {
+            void requestHealth();
+          }
+        });
+      }
+
+      if (healthClose && typeof healthClose.addEventListener === 'function') {
+        healthClose.addEventListener('click', () => {
+          if (typeof healthDialog?.close === 'function') {
+            healthDialog.close();
+          }
+        });
+      }
+
+      if (healthRefresh) {
+        healthRefresh.addEventListener('click', () => {
+          void requestHealth();
+        });
+      }
+    </script>
+  </body>
+</html>

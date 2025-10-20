@@ -370,6 +370,9 @@ async function exportDataset(dataset: LoadedDataset, request: ExportRequest): Pr
   const bimodality = sortRecord(
     Object.fromEntries(perUserEntries.map(([uid, detail]) => [uid, detail.bimodality_test ?? null]))
   );
+  const backoffLevel = sortRecord(
+    Object.fromEntries(perUserEntries.map(([uid, detail]) => [uid, detail.backoff_level]))
+  );
 
   const kid = createHash('sha256').update(dataset.datasetKey).digest('hex').slice(0, 32);
 
@@ -384,6 +387,7 @@ async function exportDataset(dataset: LoadedDataset, request: ExportRequest): Pr
     tau_final: tauFinal,
     DeltaT: deltaT,
     bimodality_test: bimodality,
+    backoff_level: backoffLevel,
     k: dataset.thresholds.k,
     scan_step: dataset.thresholds.scan_step,
     hkdf_info: HKDF_INFO_BASE64,

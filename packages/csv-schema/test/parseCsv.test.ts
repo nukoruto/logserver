@@ -1,7 +1,7 @@
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { Readable, PassThrough } from 'node:stream';
-import { parseCsv, CsvSchemaError, CsvRow } from '../src/index.js';
+import { parseCsv, CsvSchemaError, CsvRow, parseEpochSec } from '../src/index.js';
 
 const HEADER = [
   'timestamp_utc',
@@ -29,7 +29,7 @@ test('parses valid CSV rows with normalized timestamp and row index', async () =
   assert.equal(collected[0].timestamp_utc, timestamp);
   assert.equal(
     collected[0].timestamp_epoch_seconds,
-    Date.parse(timestamp) / 1000
+    parseEpochSec(timestamp)
   );
   assert.equal(collected[0].row_index, 0);
   assert.equal(collected[0].uid, 'user-1');
@@ -39,6 +39,38 @@ test('parses valid CSV rows with normalized timestamp and row index', async () =
   assert.equal(stats.invalidRows, 0);
   assert.equal(stats.totalRows, 1);
   assert.equal(stats.schemaValidated, true);
+});
+
+test('row_index preserves ingestion order even when invalid rows are skipped', async () => {
+  const timestamp = '2024-08-01T12:34:56.000Z';
+  const lines = [
+    HEADER,
+    `${timestamp},user-a,sess-1,GET,/alpha,https://ref,UA,127.0.0.1,READ`,
+    `invalid-timestamp,user-a,sess-1,GET,/beta,https://ref,UA,127.0.0.1,READ`,
+    `${timestamp},user-a,sess-1,POST,/gamma,https://ref,UA,127.0.0.1,UPDATE`
+  ];
+  const invalid: { reason: string; rowIndex: number }[] = [];
+  const parser = parseCsv(Readable.from([`${lines.join('\n')}\n`]), {
+    onInvalidRow: ({ reason, rowIndex }) => invalid.push({ reason, rowIndex })
+  });
+
+  const collected: CsvRow[] = [];
+  for await (const row of parser) {
+    collected.push(row);
+  }
+
+  assert.equal(collected.length, 2);
+  assert.deepEqual(
+    collected.map((row) => row.row_index),
+    [0, 2]
+  );
+  assert.deepEqual(invalid, [{ reason: 'invalid_timestamp_format', rowIndex: 1 }]);
+
+  const stats = parser.getStats();
+  assert.equal(stats.totalRows, 3);
+  assert.equal(stats.validRows, 2);
+  assert.equal(stats.invalidRows, 1);
+  assert.equal(stats.invalidReasons['invalid_timestamp_format'], 1);
 });
 
 test('counts invalid RFC3339 timestamps and skips the row', async () => {
@@ -61,6 +93,24 @@ test('counts invalid RFC3339 timestamps and skips the row', async () => {
   assert.equal(stats.totalRows, 1);
   assert.equal(stats.invalidReasons['invalid_timestamp_format'], 1);
   assert.deepEqual(invalid, [{ reason: 'invalid_timestamp_format', rowIndex: 0 }]);
+});
+
+test('rejects rows violating schema constraints', async () => {
+  const csv = `${HEADER}\n2024-08-01T12:34:56Z,,sess-2,POST,/api,-,UA,127.0.0.2,WRITE\n`;
+  const invalid: { reason: string }[] = [];
+  const parser = parseCsv(Readable.from([csv]), {
+    onInvalidRow: ({ reason }) => invalid.push({ reason })
+  });
+
+  for await (const _ of parser) {
+    // consume
+  }
+
+  const stats = parser.getStats();
+  assert.equal(stats.validRows, 0);
+  assert.equal(stats.invalidRows, 1);
+  assert.equal(stats.invalidReasons['missing_value:uid'], 1);
+  assert.deepEqual(invalid, [{ reason: 'missing_value:uid' }]);
 });
 
 test('throws when required columns are missing in header', async () => {

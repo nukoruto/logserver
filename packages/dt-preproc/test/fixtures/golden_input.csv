@@ -1,0 +1,14 @@
+timestamp_utc,timestamp_epoch_seconds,uid,session_id,method,path,referer,user_agent,ip,op_category,row_index
+2024-07-03T09:46:40Z,1720000000,user-extreme,sess-extreme,GET,/resource,,tester,127.0.0.1,READ,0
+2024-07-03T09:46:40.250000Z,1720000000.25,user-extreme,sess-extreme,GET,/resource,,tester,127.0.0.1,READ,1
+2024-07-03T09:51:40Z,1720000300,user-extreme,sess-extreme,GET,/resource,,tester,127.0.0.1,READ,2
+2024-07-03T10:16:40Z,1720001800,user-extreme,sess-extreme,GET,/resource,,tester,127.0.0.1,READ,3
+2024-07-03T10:46:40Z,1720003600,user-seasonal,sess-seasonal,GET,/resource,,tester,127.0.0.1,READ,4
+2024-07-03T10:47:40Z,1720003660,user-seasonal,sess-seasonal,GET,/resource,,tester,127.0.0.1,READ,5
+2024-07-03T11:47:40Z,1720007260,user-seasonal,sess-seasonal,GET,/resource,,tester,127.0.0.1,READ,6
+2024-07-03T11:48:40Z,1720007320,user-seasonal,sess-seasonal,GET,/resource,,tester,127.0.0.1,READ,7
+2024-07-03T11:00:00Z,,user-missing,sess-missing,POST,/login,,tester,127.0.0.1,AUTH,8
+invalid-timestamp,1720008000,user-missing,sess-missing,POST,/login,,tester,127.0.0.1,AUTH,9
+2024-07-03T11:00:00.010000Z,1720004400.01,user-missing,sess-missing,POST,/login,,tester,127.0.0.1,AUTH,10
+2024-07-03T12:03:20Z,1720009400,user-small,sess-small,PUT,/update,,tester,127.0.0.1,UPDATE,11
+2024-07-03T12:03:50Z,1720009430,user-small,sess-small,PUT,/update,,tester,127.0.0.1,UPDATE,12

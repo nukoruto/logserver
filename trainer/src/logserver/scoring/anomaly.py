@@ -11,7 +11,11 @@ import numpy as np
 import torch
 import torch.nn.functional as F
 
-from ..features.batching import SessionExample, build_sessions, collate_examples
+from ..features.batching import (
+    build_sessions,
+    collate_examples,
+    create_array_session_loader,
+)
 from ..features.encoders import FeaturePack
 from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
 
@@ -47,16 +51,15 @@ class AnomalyScorer:
         return cls(model, feature_pack, config)
 
     def score(self, encoded: Dict[str, np.ndarray], session_ids: List[str]) -> Dict[str, np.ndarray]:
-        sessions, keys = build_sessions(encoded, session_ids)
+        slices, _, ordered_numeric = build_sessions(
+            encoded, session_ids, self.feature_pack.numeric_features
+        )
+        loader = create_array_session_loader(encoded, ordered_numeric)
         scores: Dict[str, np.ndarray] = {}
-        for session, key in zip(sessions, keys):
-            example = SessionExample(
-                event_ids=session["event_ids"],
-                numeric=session["numeric"],
-                target_event=session["target_event"],
-            )
+        for descriptor in slices:
+            example = loader(descriptor)
             batch = collate_examples([example])
-            scores[key] = self._score_batch(batch)
+            scores[descriptor.key] = self._score_batch(batch)
         return scores
 
     def _score_batch(self, batch: Dict[str, torch.Tensor]) -> np.ndarray:

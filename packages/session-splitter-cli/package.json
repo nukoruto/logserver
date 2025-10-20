@@ -3,7 +3,7 @@
   "version": "0.1.0",
   "description": "CLI for session splitter library",
   "bin": {
-    "session-splitter": "dist/index.js",
+    "session-splitter": "dist/cli.js",
     "split-sessions": "dist/bulk.js"
   },
   "scripts": {

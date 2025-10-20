@@ -1,0 +1,118 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://logserver.dev/schema/dt_lstm_metrics.schema.json",
+  "title": "dt-lstm Evaluation Metrics",
+  "type": "object",
+  "additionalProperties": false,
+  "required": ["version", "generated_at", "metrics", "counts", "threshold", "artifacts"],
+  "properties": {
+    "version": {
+      "type": "string",
+      "pattern": "^1\\.0$"
+    },
+    "generated_at": {
+      "type": "string",
+      "format": "date-time"
+    },
+    "metrics": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "auroc",
+        "f1",
+        "average_detection_delay_sec",
+        "topk_accuracy",
+        "rmtpp_negloglik",
+        "ece"
+      ],
+      "properties": {
+        "auroc": {
+          "type": ["number", "null"],
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "f1": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "average_detection_delay_sec": {
+          "type": ["number", "null"],
+          "minimum": 0.0
+        },
+        "topk_accuracy": {
+          "type": ["number", "null"],
+          "minimum": 0.0,
+          "maximum": 1.0
+        },
+        "rmtpp_negloglik": {
+          "type": ["number", "null"],
+          "minimum": 0.0
+        },
+        "ece": {
+          "type": ["number", "null"],
+          "minimum": 0.0
+        }
+      }
+    },
+    "counts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": [
+        "events",
+        "positive_events",
+        "predicted_positive_events",
+        "anomaly_segments",
+        "detected_segments"
+      ],
+      "properties": {
+        "events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "positive_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "predicted_positive_events": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "anomaly_segments": {
+          "type": "integer",
+          "minimum": 0
+        },
+        "detected_segments": {
+          "type": "integer",
+          "minimum": 0
+        }
+      }
+    },
+    "threshold": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["decision_threshold", "source"],
+      "properties": {
+        "decision_threshold": {
+          "type": ["number", "null"]
+        },
+        "source": {
+          "type": "string"
+        }
+      }
+    },
+    "artifacts": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["pr_curve_png", "calibration_png"],
+      "properties": {
+        "pr_curve_png": {
+          "type": "string"
+        },
+        "calibration_png": {
+          "type": "string"
+        }
+      }
+    }
+  }
+}

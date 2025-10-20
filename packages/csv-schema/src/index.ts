@@ -1,6 +1,7 @@
 import { createReadStream } from 'node:fs';
 import { Readable } from 'node:stream';
 import { parse, Parser } from 'csv-parse';
+import { z } from 'zod';
 
 export const expectedColumns = [
   'timestamp_utc',
@@ -14,18 +15,10 @@ export const expectedColumns = [
   'op_category'
 ] as const;
 
-const REQUIRED_VALUE_COLUMNS = new Set<keyof CsvRow>([
-  'timestamp_utc',
-  'uid',
-  'session_id',
-  'method',
-  'path',
-  'ip',
-  'op_category'
-]);
-
 const RFC3339_REGEX =
-  /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d{1,9})?(?:Z|[+-]\d{2}:\d{2})$/;
+  /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/;
+
+export type OpCategory = 'AUTH' | 'READ' | 'UPDATE';
 
 export interface ParseCsvOptions {
   validateSchema?: boolean;
@@ -50,7 +43,7 @@ export interface CsvRow {
   referer: string;
   user_agent: string;
   ip: string;
-  op_category: string;
+  op_category: OpCategory;
   row_index: number;
 }
 
@@ -115,16 +108,110 @@ function validateHeader(header: string[], normalized: NormalizedOptions): void {
   }
 }
 
-function parseTimestamp(value: string): number {
-  if (!RFC3339_REGEX.test(value)) {
-    throw new CsvSchemaError('invalid_timestamp_format', value);
+function assertFinite(value: number, message: string, cause?: string): void {
+  if (!Number.isFinite(value)) {
+    throw new CsvSchemaError(message, cause);
   }
-  const epochMs = Date.parse(value);
-  if (Number.isNaN(epochMs)) {
-    throw new CsvSchemaError('invalid_timestamp_value', value);
-  }
-  return epochMs / 1000;
 }
+
+export function parseEpochSec(timestamp: string): number {
+  const match = RFC3339_REGEX.exec(timestamp);
+  if (!match) {
+    throw new CsvSchemaError('invalid_timestamp_format', timestamp);
+  }
+
+  const [
+    ,
+    yearStr,
+    monthStr,
+    dayStr,
+    hourStr,
+    minuteStr,
+    secondStr,
+    fractionalStr = '',
+    zone,
+    sign,
+    offsetHourStr,
+    offsetMinuteStr
+  ] = match;
+
+  const year = Number(yearStr);
+  const month = Number(monthStr);
+  const day = Number(dayStr);
+  const hour = Number(hourStr);
+  const minute = Number(minuteStr);
+  const second = Number(secondStr);
+
+  if (
+    month < 1 ||
+    month > 12 ||
+    day < 1 ||
+    day > 31 ||
+    hour > 23 ||
+    minute > 59 ||
+    second > 59
+  ) {
+    throw new CsvSchemaError('invalid_timestamp_value', timestamp);
+  }
+
+  const baseMs = Date.UTC(year, month - 1, day, hour, minute, second);
+  assertFinite(baseMs, 'invalid_timestamp_value', timestamp);
+
+  const baseDate = new Date(baseMs);
+  if (
+    baseDate.getUTCFullYear() !== year ||
+    baseDate.getUTCMonth() + 1 !== month ||
+    baseDate.getUTCDate() !== day ||
+    baseDate.getUTCHours() !== hour ||
+    baseDate.getUTCMinutes() !== minute ||
+    baseDate.getUTCSeconds() !== second
+  ) {
+    throw new CsvSchemaError('invalid_timestamp_value', timestamp);
+  }
+
+  let fractionalSeconds = 0;
+  if (fractionalStr !== '') {
+    const scale = 10 ** fractionalStr.length;
+    fractionalSeconds = Number(fractionalStr) / scale;
+  }
+
+  let offsetSeconds = 0;
+  if (zone !== 'Z') {
+    const offsetHours = Number(offsetHourStr);
+    const offsetMinutes = Number(offsetMinuteStr);
+    if (offsetHours > 23 || offsetMinutes > 59) {
+      throw new CsvSchemaError('invalid_timestamp_value', timestamp);
+    }
+    offsetSeconds = offsetHours * 3600 + offsetMinutes * 60;
+    if (sign === '-') {
+      offsetSeconds *= -1;
+    }
+  }
+
+  const epochSeconds = baseMs / 1000 - offsetSeconds + fractionalSeconds;
+  assertFinite(epochSeconds, 'invalid_timestamp_value', timestamp);
+
+  return epochSeconds;
+}
+
+const optionalString = z.string().optional().transform((value) => value ?? '');
+
+const rowSchema = z.object({
+  timestamp_utc: z
+    .string()
+    .nonempty({ message: 'missing_timestamp' })
+    .refine((value) => RFC3339_REGEX.test(value), { message: 'invalid_timestamp_format' }),
+  uid: z.string().min(1, { message: 'missing_value:uid' }),
+  session_id: z.string().min(1, { message: 'missing_value:session_id' }),
+  method: z.string().min(1, { message: 'missing_value:method' }),
+  path: z.string().min(1, { message: 'missing_value:path' }),
+  referer: optionalString,
+  user_agent: optionalString,
+  ip: z.string().min(1, { message: 'missing_value:ip' }),
+  op_category: z.custom<OpCategory>((value) => value === 'AUTH' || value === 'READ' || value === 'UPDATE', {
+    message: 'invalid_value:op_category'
+  })
+});
 
 type ProcessResult =
   | { ok: true; value: Omit<CsvRow, 'row_index'> }
@@ -185,7 +272,6 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
 
   private async *iterate(): AsyncGenerator<CsvRow> {
     let rawRowIndex = 0;
-    let emittedIndex = 0;
     try {
       for await (const record of this.pipeline as AsyncIterable<Record<string, string>>) {
         const result = this.processRecord(record);
@@ -193,9 +279,8 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
         if (result.ok) {
           const row: CsvRow = {
             ...result.value,
-            row_index: emittedIndex
+            row_index: rawRowIndex
           };
-          emittedIndex += 1;
           this.stats.validRows += 1;
           yield row;
         } else {
@@ -229,32 +314,33 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
     }
 
     try {
-      const timestampValue = record.timestamp_utc;
-      if (timestampValue === undefined || timestampValue === '') {
-        return { ok: false, reason: 'missing_timestamp' };
+      const schemaResult = rowSchema.safeParse(record);
+      if (!schemaResult.success) {
+        const issue = schemaResult.error.issues[0];
+        const reason = issue?.message ?? 'invalid_row';
+        return {
+          ok: false,
+          reason,
+          error: new CsvSchemaError(reason, schemaResult.error)
+        };
       }
-      const timestampEpochSeconds = parseTimestamp(timestampValue);
 
-      for (const column of REQUIRED_VALUE_COLUMNS) {
-        const value = record[column];
-        if (value === undefined || value === '') {
-          return { ok: false, reason: `missing_value:${column}` };
-        }
-      }
+      const normalized = schemaResult.data;
+      const timestampEpochSeconds = parseEpochSec(normalized.timestamp_utc);
 
       return {
         ok: true,
         value: {
-          timestamp_utc: timestampValue,
+          timestamp_utc: normalized.timestamp_utc,
           timestamp_epoch_seconds: timestampEpochSeconds,
-          uid: record.uid ?? '',
-          session_id: record.session_id ?? '',
-          method: record.method ?? '',
-          path: record.path ?? '',
-          referer: record.referer ?? '',
-          user_agent: record.user_agent ?? '',
-          ip: record.ip ?? '',
-          op_category: record.op_category ?? ''
+          uid: normalized.uid,
+          session_id: normalized.session_id,
+          method: normalized.method,
+          path: normalized.path,
+          referer: normalized.referer,
+          user_agent: normalized.user_agent,
+          ip: normalized.ip,
+          op_category: normalized.op_category
         }
       };
     } catch (error) {

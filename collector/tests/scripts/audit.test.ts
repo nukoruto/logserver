@@ -23,15 +23,14 @@ describe('audit CLI', () => {
       const metaPath = path.join(dir, 'meta.json');
       const header = [
         'timestamp_utc',
-        'uid',
         'session_id',
+        'uid',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
         'op_category',
-        'status_code',
         'latency_ms',
         'metadata',
         'dt_sec',
@@ -40,9 +39,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:01:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
+        '2024-01-01T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,session,uid-1,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:01:00.000Z,session,uid-1,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -80,15 +79,14 @@ describe('audit CLI', () => {
       const metaPath = path.join(dir, 'meta.json');
       const header = [
         'timestamp_utc',
-        'uid',
         'session_id',
+        'uid',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
         'op_category',
-        'status_code',
         'latency_ms',
         'metadata',
         'dt_sec',
@@ -97,9 +95,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:00:20.000Z,uid-1,session,GET,/health,,agent,127.0.0.1,READ,200,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
+        '2024-01-01T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '2024-01-01T00:00:10.000Z,session,uid-1,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '2024-01-01T00:00:20.000Z,session,uid-1,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -120,6 +118,113 @@ describe('audit CLI', () => {
       const result = runAudit(['--dir', dir, '--fail-on-error']);
       expect(result.status).toBe(1);
       expect(result.stderr).toContain('sid_final changed without exceeding ΔT');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('fails when schema columns are missing', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-schema-'));
+    try {
+      const filePath = path.join(dir, '2024-01-02.csv');
+      const header = [
+        'timestamp_utc',
+        'session_id',
+        'uid',
+        'method',
+        'path',
+        'referer',
+        'ip',
+        'op_category',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+      ].join(',');
+      const rows = [
+        '2024-01-02T00:00:00.000Z,uid-1,session,GET,/health,null,127.0.0.1,READ,200,1.0,"{}",,30,ok,s-final-1',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+
+      const result = runAudit(['--dir', dir, '--fail-on-error']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Missing column user_agent');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('reports unexpected columns when not allow-listed', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-unexpected-'));
+    try {
+      const filePath = path.join(dir, '2024-01-03.csv');
+      const header = [
+        'timestamp_utc',
+        'session_id',
+        'uid',
+        'method',
+        'path',
+        'referer',
+        'user_agent',
+        'ip',
+        'op_category',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+        'unexpected_field',
+      ].join(',');
+      const rows = [
+        '2024-01-03T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{}",,30,ok,s-final-1,extra',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+
+      const result = runAudit(['--dir', dir]);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Unexpected column unexpected_field');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
+  it('validates derived status_code when enabled', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-derived-'));
+    try {
+      const filePath = path.join(dir, '2024-01-04.csv');
+      const header = [
+        'timestamp_utc',
+        'session_id',
+        'uid',
+        'method',
+        'path',
+        'referer',
+        'user_agent',
+        'ip',
+        'op_category',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'DeltaT',
+        'time_label',
+        'sid_final',
+        'status_code',
+      ].join(',');
+      const rows = [
+        '2024-01-04T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{}",,30,ok,s-final-1,abc',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+
+      const result = runAudit(['--dir', dir, '--allow-derived']);
+      expect(result.status).toBe(1);
+      expect(result.stderr).toContain('Invalid status_code: abc');
+
+      const resultWithoutDerived = runAudit(['--dir', dir]);
+      expect(resultWithoutDerived.status).toBe(1);
+      expect(resultWithoutDerived.stderr).toContain('Unexpected column status_code');
     } finally {
       rmSync(dir, { recursive: true, force: true });
     }

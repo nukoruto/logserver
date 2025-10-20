@@ -24,10 +24,11 @@
 - docs/: ドキュメント（README, SRS, 本ファイル, ほか）
 
 ## 3. データ制約（列挙）
-- 入力ログの必須列: timestamp, session_id, user_id, event, message, level, module
-- オプション列: params（JSON 互換の辞書）, latency_ms, status_code, host
+- 入力ログの必須列: timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category（9 列固定）
+- オプション列: なし（追加情報は JSON カラムまたは別ファイルに保持し、契約 CSV に列追加しない）
+- 派生列: Δt 系列、latency 統計、異常スコア、ラベル等は `dt-preproc`・`trainer.scripts.score`・`trainer.scripts.threshold` で生成する
 - タイムゾーン: すべて UTC に正規化
-- Δt (delta t) の定義: セッション内で同一 user_id の連続イベント間の経過秒（float）
+- Δt (delta t) の定義: セッション内で同一 uid の連続イベント間の経過秒（float）
 - 欠損時刻: 前件欠落・逆順は除外またはセッション断絶として扱う（設定で選択）
 - セッション化: idle_timeout 秒で区切り（デフォルト 1800）
 
@@ -51,7 +52,7 @@
 ## 7. Simulink 連携制約
 - エクスポート形式: ONNX または重み .pt + 入出力仕様 .json
 - ブロック I/F: 入力（イベントID, Δt (delta t), 他特徴の連結ベクトル）, 出力（制御アクション or 正常確率）
-- ユーザ別ブロック: user_id ごとにハイパラ差分を吸収。切替ロジックは外部（Switch/Variant Subsystem）
+- ユーザ別ブロック: uid ごとにハイパラ差分を吸収。切替ロジックは外部（Switch/Variant Subsystem）
 - PID 比較: 同一テストシナリオで LSTM と PID の出力を比較。可視化は数表（画像出力は任意）
 
 ## 8. コーディング標準
@@ -66,7 +67,7 @@
 - 各 CLI は `--help` が通ること、終了コード 0
 
 ## 10. ライセンス/セキュリティ
-- 外部データ送信禁止、個人情報（user_id など）は疑似化
+- 外部データ送信禁止、個人情報（uid など）は疑似化
 - 依存は明示（requirements.txt, environment.yml）
 - OSS ライセンス遵守（Simulink 関連は社内/学内配布範囲で扱う）
 
@@ -80,14 +81,21 @@
 - 致命的に不明な場合は、必要最小限の質問を 1 回だけ付すか、`TODO:` としてコード内に明示して先に進める。
 
 ## 方針
-- リポ構成：logserver をモノレポ（収集＝`collector/`、学習＝`trainer/`）
-- 実行環境：収集＝Windows 11 ネイティブ（Node.js/Express）／学習＝WSL2 上の Docker（GPU）
+- リポ構成：logserver をモノレポ（シミュレーション＝`collector/`、学習＝`trainer/`）
+- 実行環境：シミュレーション＝Windows 11 / Ubuntu 22.04（Node.js CLI）／学習＝WSL2 上の Docker（GPU）
 - データ契約：`/contract/` に CSV スキーマ、op_category 辞書、セッション分割設定（Otsu/ε/肘法）を明記
-- 出力先：収集は `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
+- 出力先：シミュレーションは `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
 - セキュリティ／表記：擬似匿名化＝HKDF-SHA256(JWT_HMAC_KEY, info="sid") で導出した `K_ds` による HMAC-SHA256（`kid` を .env / メタデータに記録）、時刻＝UTC（RFC 3339）
 - GPU 切替：`GPU_MODE=ada6000|4060` で `CUDA_VISIBLE_DEVICES` を切替
 
 ## ディレクトリ
+
+## 受け渡し契約（要約）
+- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, op_category
+- 形式：UTC/RFC 3339、CSV(RFC 4180)
+- 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
+- 派生特徴：Δt/統計/異常ラベルは 9 列 CSV を `dt-preproc fit/transform`→`trainer.scripts.score`→`trainer.scripts.threshold` に通して生成し、契約ファイルと分離して保存する
+
 - logserver/
 - collector/
 - trainer/
@@ -95,11 +103,6 @@
 - artifacts/ # Git 管理外
 - outputs/ # Git 管理外
 - .gitattributes # * text=auto eol=lf
-
-## 受け渡し契約（要約）
-- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, op_category
-- 形式：UTC/RFC 3339、CSV(RFC 4180)
-- 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
 
 - 参照ファイル: README.md
 - 参照ファイル: dev_prompt.md

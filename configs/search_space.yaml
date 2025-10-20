@@ -1,0 +1,40 @@
+trainer:
+  batch_size:
+    type: choice
+    values: [32, 64]
+  max_epochs:
+    type: choice
+    values: [10]
+  learning_rate:
+    type: loguniform
+    low: 0.0005
+    high: 0.005
+  early_stopping_patience:
+    type: choice
+    values: [3, 5]
+  device:
+    type: choice
+    values: ["cpu"]
+model:
+  embedding_dim:
+    type: choice
+    values: [64, 128]
+  hidden_size:
+    type: choice
+    values: [64, 128]
+  num_layers:
+    type: choice
+    values: [1, 2]
+  dropout:
+    type: uniform
+    low: 0.0
+    high: 0.3
+features:
+  extra:
+    type: choice
+    values:
+      - []
+      - ["dt"]
+  smoothing_window:
+    type: choice
+    values: [1, 5]

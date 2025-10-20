@@ -6,11 +6,11 @@
   "initialState": "start",
   "terminalStates": ["completed"],
   "defaultDeltaSeconds": {
-    "distribution": "normal",
-    "mean": 2.0,
-    "stdDev": 1.0,
-    "min": 0.2,
-    "max": 6.0
+    "distribution": "lognormal",
+    "medianLog": 0.581575404903,
+    "sigmaLog": 0.472380727077,
+    "madLog": 0.318616435369,
+    "epsilon": 0.001
   },
   "transitions": [
     {
@@ -19,7 +19,13 @@
       "event": "login",
       "probability": 1.0,
       "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/login"},
-      "deltaSeconds": { "min": 0.0, "max": 0.6 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -1.530135397346,
+        "sigmaLog": 0.536360021303,
+        "madLog": 0.361769878121,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "authenticated",
@@ -27,7 +33,13 @@
       "event": "browse",
       "probability": 0.8,
       "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
-      "deltaSeconds": { "min": 0.5, "max": 2.0 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.166479208661,
+        "sigmaLog": 0.336643261194,
+        "madLog": 0.227062768915,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "authenticated",
@@ -35,7 +47,13 @@
       "event": "logout",
       "probability": 0.2,
       "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
@@ -43,7 +61,13 @@
       "event": "edit",
       "probability": 0.6,
       "metadata": {"op_category": "UPDATE", "method": "POST", "path": "/workspace/edit"},
-      "deltaSeconds": { "min": 1.0, "max": 3.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.761967447631,
+        "sigmaLog": 0.312930562857,
+        "madLog": 0.211068773005,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
@@ -51,7 +75,13 @@
       "event": "browse",
       "probability": 0.25,
       "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
-      "deltaSeconds": { "min": 0.8, "max": 2.2 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.370425757352,
+        "sigmaLog": 0.264723821205,
+        "madLog": 0.178553771216,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "browsing",
@@ -59,7 +89,13 @@
       "event": "logout",
       "probability": 0.15,
       "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
@@ -67,7 +103,13 @@
       "event": "save",
       "probability": 0.7,
       "metadata": {"op_category": "UPDATE", "method": "PUT", "path": "/workspace/save"},
-      "deltaSeconds": { "min": 0.6, "max": 2.0 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.216235619138,
+        "sigmaLog": 0.303738852733,
+        "madLog": 0.204869049462,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
@@ -75,7 +117,13 @@
       "event": "browse",
       "probability": 0.2,
       "metadata": {"op_category": "READ", "method": "GET", "path": "/workspace/feed"},
-      "deltaSeconds": { "min": 0.8, "max": 2.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": 0.458393195396,
+        "sigmaLog": 0.291142894526,
+        "madLog": 0.196373192045,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "editing",
@@ -83,7 +131,13 @@
       "event": "logout",
       "probability": 0.1,
       "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     },
     {
       "from": "saving",
@@ -91,7 +145,13 @@
       "event": "logout",
       "probability": 1.0,
       "metadata": {"op_category": "AUTH", "method": "POST", "path": "/auth/logout"},
-      "deltaSeconds": { "min": 0.5, "max": 1.5 }
+      "deltaSeconds": {
+        "distribution": "lognormal",
+        "medianLog": -0.040021353837,
+        "sigmaLog": 0.282918199615,
+        "madLog": 0.190825711328,
+        "epsilon": 0.001
+      }
     }
   ]
 }
