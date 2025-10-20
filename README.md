@@ -369,6 +369,7 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 - `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。
 - `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
 - `--dump-hist` を指定すると、異常スコアのヒストグラム（bin 辺・中心・密度・要約統計）を JSON 形式で保存し、二峰性の可視化にそのまま利用できます。`--hist-bins` でビン数を調整できます。
+- `threshold` セクションでは `method` に `quantile` / `spot` / `otsu` / `knee` を指定でき、`side`（`upper` / `lower` / `both`）、`transform`（`score` / `raw_dt` / `log_dt`）、`group_keys`（既定は `[uid, op_category]`）を組み合わせて閾値学習を行います。`spot` は `q`（監視尾リスク）、`u_quantile`、`calib_frac`、`min_exceed` 等を制御でき、`otsu` は Freedman–Diaconis のビン幅とヒストグラム二峰性チェック、`knee` は距離最大法による肘検出をサポートします。いずれの方式でも `(uid, op_category)` → `(uid)` → `global` の順にバックオフし、閾値とメタ情報は `threshold.json` と `thresholds.json` に保存されます。
 
 ### 5.1 Δt ロバスト統計フィッティング CLI（Fit / Transform ランブック）
 
