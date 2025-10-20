@@ -61,21 +61,23 @@ def test_generate_rolling_origin_splits_disjoint_sets():
         seed=123,
     )
     result = generate_rolling_origin_splits(frame, config)
-    assert result["summary"]["total_sessions"] == 9
-    assert result["summary"]["total_events"] == len(frame)
-    assert result["config"]["embargo_seconds"] == pytest.approx(20.0)
-    assert len(result["folds"]) == 2
-    for fold in result["folds"]:
-        train = set(fold["sessions"]["train"])
-        dev = set(fold["sessions"]["dev"])
-        test = set(fold["sessions"]["test"])
-        embargo = set(fold["sessions"]["embargo"])
+    summary = result["summary"]
+    params = result["meta"]["params"]
+    assert summary["total_sessions"] == 9
+    assert summary["total_events"] == len(frame)
+    assert params["embargo_seconds"] == pytest.approx(20.0)
+    assert len(result["splits"]) == 2
+    for fold in result["splits"]:
+        train = set(fold["train"]["sessions"])
+        dev = set(fold["dev"]["sessions"])
+        test = set(fold["test"]["sessions"])
+        embargo = set(fold["embargo"]["sessions"])
         assert train.isdisjoint(dev)
         assert train.isdisjoint(test)
         assert train.isdisjoint(embargo)
-        assert fold["counts"]["train"]["sessions"] > 0
-        assert fold["counts"]["dev"]["sessions"] == 1
-        assert fold["counts"]["test"]["sessions"] == 1
+        assert fold["train"]["counts"]["sessions"] > 0
+        assert fold["dev"]["counts"]["sessions"] == 1
+        assert fold["test"]["counts"]["sessions"] == 1
 
 
 def test_tscv_cli_split(tmp_path):
@@ -114,13 +116,13 @@ def test_tscv_cli_split(tmp_path):
     with output_path.open("r", encoding="utf-8") as handle:
         payload = yaml.safe_load(handle)
     assert payload["summary"]["total_sessions"] == 9
-    assert payload["config"]["group_column"] == "uid"
-    assert len(payload["folds"]) == 2
-    for fold in payload["folds"]:
-        train = set(fold["sessions"]["train"])
-        dev = set(fold["sessions"]["dev"])
-        test = set(fold["sessions"]["test"])
-        embargo = set(fold["sessions"]["embargo"])
+    assert payload["meta"]["params"]["group_column"] == "uid"
+    assert len(payload["splits"]) == 2
+    for fold in payload["splits"]:
+        train = set(fold["train"]["sessions"])
+        dev = set(fold["dev"]["sessions"])
+        test = set(fold["test"]["sessions"])
+        embargo = set(fold["embargo"]["sessions"])
         assert train.isdisjoint(dev)
         assert train.isdisjoint(test)
         assert train.isdisjoint(embargo)
