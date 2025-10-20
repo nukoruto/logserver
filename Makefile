@@ -29,12 +29,12 @@ lint:
 	$(PYTHON) -m ruff check trainer/src trainer/scripts trainer/tests
 
 node-build:
-        pnpm --filter @logserver/session-splitter run build
-        pnpm --filter @logserver/session-splitter-cli build
-        pnpm --filter @logserver/dt-preproc build
-        pnpm --filter @logserver/dt-anom build
-        pnpm --filter @logserver/splitter-gui run build
-        pnpm -r build
+	pnpm --filter @logserver/session-splitter run build
+	pnpm --filter @logserver/session-splitter-cli build
+	pnpm --filter @logserver/dt-preproc build
+	pnpm --filter @logserver/dt-anom build
+	pnpm --filter @logserver/splitter-gui run build
+	pnpm -r build
 
 audit-missing:
 	$(PYTHON) tools/audit_missing.py artifacts/latest/log.csv --output artifacts/latest/completeness.json
