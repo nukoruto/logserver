@@ -7,7 +7,12 @@ from pathlib import Path
 import pandas as pd
 
 from trainer.logserver.features.encoders import build_feature_pack, encode_dataframe
-from trainer.logserver.training.trainer import TrainerConfig, create_session_split, train_model
+from trainer.logserver.training.trainer import (
+    TrainerConfig,
+    create_session_split,
+    fit_model,
+    train_model,
+)
 
 
 def test_train_model_produces_artifacts(tmp_path: Path) -> None:
@@ -83,6 +88,64 @@ def test_train_model_with_response_bytes(tmp_path: Path) -> None:
         model_config = json.load(handle)
     assert "num_workers" in model_config
     assert "pin_memory" in model_config
+    assert model_config.get("target_mode") == "next"
+
+
+def test_next_mode_losses_monotonic() -> None:
+    timestamps = pd.to_datetime(
+        [
+            "2024-01-01T00:00:00Z",
+            "2024-01-01T00:01:00Z",
+            "2024-01-01T00:02:00Z",
+            "2024-01-02T00:00:00Z",
+            "2024-01-02T00:01:00Z",
+            "2024-01-02T00:02:00Z",
+            "2024-01-03T00:00:00Z",
+            "2024-01-03T00:01:00Z",
+            "2024-01-03T00:02:00Z",
+        ],
+        utc=True,
+    )
+    df = pd.DataFrame(
+        {
+            "event": [
+                "login",
+                "view",
+                "logout",
+                "login",
+                "view",
+                "logout",
+                "login",
+                "view",
+                "logout",
+            ],
+            "delta_t": [0.0, 1.0, 1.0, 0.0, 1.0, 1.0, 0.0, 1.0, 1.0],
+            "latency_ms": [100, 110, 105, 95, 100, 98, 90, 94, 93],
+            "status": [200] * 9,
+            "session_id": ["s1"] * 3 + ["s2"] * 3 + ["s3"] * 3,
+            "timestamp": timestamps,
+        }
+    )
+    session_ids = df["session_id"].astype(str).tolist()
+    config = TrainerConfig(
+        max_epochs=3,
+        batch_size=1,
+        validation_split=0.34,
+        early_stopping_patience=3,
+        learning_rate=0.01,
+        target_mode="next",
+    )
+    split = create_session_split(session_ids, df["timestamp"].tolist(), config)
+    train_df = df[df["session_id"].isin(split.train_ids)]
+    pack = build_feature_pack(train_df, extra_features=None)
+    encoded = encode_dataframe(df, pack)
+    _, history, _, _, _ = fit_model(encoded, session_ids, pack, config, split=split)
+    event_losses = history["train_event_loss"]
+    delta_losses = history["train_delta_loss"]
+    assert len(event_losses) >= 2
+    assert len(delta_losses) >= 2
+    assert all(event_losses[idx] <= event_losses[idx - 1] + 1e-6 for idx in range(1, len(event_losses)))
+    assert all(delta_losses[idx] <= delta_losses[idx - 1] + 1e-6 for idx in range(1, len(delta_losses)))
 
 
 def test_train_cli_help_succeeds() -> None:

@@ -7,7 +7,7 @@ import json
 import logging
 from glob import glob
 from pathlib import Path
-from typing import Iterable, Sequence
+from typing import Iterable, Optional, Sequence
 
 import pandas as pd
 
@@ -125,7 +125,11 @@ def _log_feature_usage(feature_pack, requested: Sequence[str]) -> None:
         logger.info(json.dumps(payload, ensure_ascii=False))
 
 
-def main(config_path: Path, features: Sequence[str] | None = None) -> None:
+def main(
+    config_path: Path,
+    features: Sequence[str] | None = None,
+    target_mode_override: Optional[str] = None,
+) -> None:
     config = _load_config(config_path)
     data_cfg = config.get("data", {})
     model_cfg = config.get("model", {})
@@ -154,6 +158,11 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
     else:
         raise RuntimeError("Processed dataset must include timestamp column for deterministic split")
 
+    target_mode_cfg = str(train_cfg.get("target_mode", "next")).lower()
+    selected_mode = target_mode_override or target_mode_cfg
+    if selected_mode not in {"next", "same"}:
+        raise ValueError("target_mode must be either 'next' or 'same'")
+
     trainer_config = TrainerConfig(
         batch_size=int(train_cfg.get("batch_size", 64)),
         max_epochs=int(train_cfg.get("max_epochs", 20)),
@@ -166,6 +175,7 @@ def main(config_path: Path, features: Sequence[str] | None = None) -> None:
         num_layers=int(model_cfg.get("num_layers", 1)),
         dropout=float(model_cfg.get("dropout", 0.1)),
         device=train_cfg.get("device", "cpu"),
+        target_mode=selected_mode,
     )
 
     output_dir = Path(logging_cfg.get("dir", "runs"))
@@ -193,6 +203,12 @@ if __name__ == "__main__":  # pragma: no cover
         default="",
         help="Comma separated feature switches (e.g. dt)",
     )
+    parser.add_argument(
+        "--target-mode",
+        choices=["next", "same"],
+        default=None,
+        help="Target alignment mode: next-event prediction (default) or same-timestep",
+    )
     args = parser.parse_args()
     feature_list = [item.strip() for item in args.features.split(",") if item.strip()]
-    main(Path(args.config), feature_list)
+    main(Path(args.config), feature_list, args.target_mode)
