@@ -26,7 +26,7 @@ def _write_scores(
     session_ids = ["session-1" for _ in scores]
     dt_values = [float("nan")] + [1.0 for _ in range(len(scores) - 1)]
     data = {
-        "timestamp_utc": [ts.isoformat() for ts in timestamps],
+        "timestamp_utc": [ts.timestamp() for ts in timestamps],
         "uid": [uid for _ in scores],
         "session_id": session_ids,
         "op_category": [op_category for _ in scores],
@@ -60,7 +60,7 @@ def _write_reference(path: Path, scores: list[float]) -> None:
     timestamps = [base_time + pd.Timedelta(seconds=i) for i in range(len(scores))]
     df = pd.DataFrame(
         {
-            "timestamp_utc": [ts.isoformat() for ts in timestamps],
+            "timestamp_utc": [ts.timestamp() for ts in timestamps],
             "uid": ["user-1" for _ in scores],
             "session_id": ["session-ref" for _ in scores],
             "op_category": ["READ" for _ in scores],

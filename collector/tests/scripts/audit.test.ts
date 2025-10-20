@@ -23,13 +23,14 @@ describe('audit CLI', () => {
       const metaPath = path.join(dir, 'meta.json');
       const header = [
         'timestamp_utc',
-        'session_id',
         'uid',
+        'session_id',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
+        'cookie',
         'op_category',
         'latency_ms',
         'metadata',
@@ -39,9 +40,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,session,uid-1,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:01:00.000Z,session,uid-1,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
+        '1704067200,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,"sid=uid-1.001; HttpOnly",READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '1704067210,uid-1,session,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,"sid=uid-1.001; HttpOnly",READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '1704067260,uid-1,session,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,"sid=uid-1.002; HttpOnly",READ,1.23,"{\"DeltaT\":30}",60,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -79,13 +80,14 @@ describe('audit CLI', () => {
       const metaPath = path.join(dir, 'meta.json');
       const header = [
         'timestamp_utc',
-        'session_id',
         'uid',
+        'session_id',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
+        'cookie',
         'op_category',
         'latency_ms',
         'metadata',
@@ -95,9 +97,9 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-01T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
-        '2024-01-01T00:00:10.000Z,session,uid-1,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
-        '2024-01-01T00:00:20.000Z,session,uid-1,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,READ,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
+        '1704067200,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,"sid=uid-1.001; HttpOnly",READ,1.23,"{\"DeltaT\":30}",,30,ok,s-final-1',
+        '1704067210,uid-1,session,GET,/health,https://app.simulated.local/health,"Mozilla/5.0",127.0.0.1,"sid=uid-1.001; HttpOnly",READ,1.23,"{\"DeltaT\":30}",10,30,ok,s-final-1',
+        '1704067220,uid-1,session,GET,/health,https://app.simulated.local/dashboard,"Mozilla/5.0",127.0.0.1,"sid=uid-1.002; HttpOnly",READ,1.23,"{\"DeltaT\":30}",5,30,ok,s-final-2',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
       writeFileSync(
@@ -123,18 +125,52 @@ describe('audit CLI', () => {
     }
   });
 
+  it('rejects CSV rows that leak authorization data in metadata', () => {
+    const dir = mkdtempSync(path.join(tmpdir(), 'audit-metadata-'));
+    try {
+      const filePath = path.join(dir, '2024-01-05.csv');
+      const header = [
+        'timestamp_utc',
+        'uid',
+        'session_id',
+        'method',
+        'path',
+        'referer',
+        'user_agent',
+        'ip',
+        'cookie',
+        'op_category',
+        'latency_ms',
+        'metadata',
+        'dt_sec',
+        'sid_final',
+      ].join(',');
+      const rows = [
+        '1704499200,uid-5,session,GET,/secure,null,"Mozilla/5.0",127.0.0.1,"sid=uid-5.001; HttpOnly",READ,1.23,"{""headers"":{""Authorization"":""Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.payload.signature""}}",10,s-final-1',
+      ];
+      writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
+
+      const result = runAudit(['--dir', dir, '--fail-on-error']);
+      expect(result.status).not.toBe(0);
+      expect(result.stderr).toContain('metadata contains forbidden authorization/cookie/token fields');
+    } finally {
+      rmSync(dir, { recursive: true, force: true });
+    }
+  });
+
   it('fails when schema columns are missing', () => {
     const dir = mkdtempSync(path.join(tmpdir(), 'audit-schema-'));
     try {
       const filePath = path.join(dir, '2024-01-02.csv');
       const header = [
         'timestamp_utc',
-        'session_id',
         'uid',
+        'session_id',
         'method',
         'path',
         'referer',
         'ip',
+        'cookie',
         'op_category',
         'latency_ms',
         'metadata',
@@ -144,7 +180,7 @@ describe('audit CLI', () => {
         'sid_final',
       ].join(',');
       const rows = [
-        '2024-01-02T00:00:00.000Z,uid-1,session,GET,/health,null,127.0.0.1,READ,200,1.0,"{}",,30,ok,s-final-1',
+        '1704153600,uid-1,session,GET,/health,null,127.0.0.1,"sid=uid-1.003; HttpOnly",READ,200,1.0,"{}",,30,ok,s-final-1',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
 
@@ -162,13 +198,14 @@ describe('audit CLI', () => {
       const filePath = path.join(dir, '2024-01-03.csv');
       const header = [
         'timestamp_utc',
-        'session_id',
         'uid',
+        'session_id',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
+        'cookie',
         'op_category',
         'latency_ms',
         'metadata',
@@ -179,7 +216,7 @@ describe('audit CLI', () => {
         'unexpected_field',
       ].join(',');
       const rows = [
-        '2024-01-03T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{}",,30,ok,s-final-1,extra',
+        '1704240000,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,"sid=uid-1.004; HttpOnly",READ,1.23,"{}",,30,ok,s-final-1,extra',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
 
@@ -197,13 +234,14 @@ describe('audit CLI', () => {
       const filePath = path.join(dir, '2024-01-04.csv');
       const header = [
         'timestamp_utc',
-        'session_id',
         'uid',
+        'session_id',
         'method',
         'path',
         'referer',
         'user_agent',
         'ip',
+        'cookie',
         'op_category',
         'latency_ms',
         'metadata',
@@ -214,7 +252,7 @@ describe('audit CLI', () => {
         'status_code',
       ].join(',');
       const rows = [
-        '2024-01-04T00:00:00.000Z,session,uid-1,GET,/health,null,"Mozilla/5.0",127.0.0.1,READ,1.23,"{}",,30,ok,s-final-1,abc',
+        '1704326400,uid-1,session,GET,/health,null,"Mozilla/5.0",127.0.0.1,"sid=uid-1.005; HttpOnly",READ,1.23,"{}",,30,ok,s-final-1,abc',
       ];
       writeFileSync(filePath, `${header}\n${rows.join('\n')}\n`, 'utf8');
 

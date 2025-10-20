@@ -37,6 +37,9 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   runMetaFileName?: string;
   auditFileName?: string;
   schemaFileName?: string;
+  fairFileName?: string;
+  datasheetFileName?: string;
+  provenanceFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
@@ -56,12 +59,18 @@ export interface PersistSimulationResult {
   runMetaPath: string;
   auditPath: string;
   schemaPath: string;
+  fairPath: string;
+  datasheetPath: string;
+  provenancePath: string;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
   csvHash: string;
   featuresCsvHash: string | null;
   schemaSha256: string;
+  fairSha256: string;
+  datasheetSha256: string;
+  provenanceSha256: string;
   auditRecordCount: number;
   runMeta: RunMeta;
   featureHeader?: string[];

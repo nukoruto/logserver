@@ -26,7 +26,7 @@ artifacts:
   exports:
     bundle: model.tar
 device:
-  prefer: auto
+  prefer: "__DEVICE__"
   gpu_mode: ${GPU_MODE}
 model:
   arch: lstm_delta
