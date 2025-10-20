@@ -9,12 +9,30 @@ from pathlib import Path
 import pandas as pd
 import pytest
 
-from trainer.logserver.scoring.threshold import ThresholdConfig, compute_threshold
+from trainer.logserver.thresholds import ThresholdConfig, ThresholdStatus, resolve_threshold
 from trainer.scripts import threshold as threshold_script
 
 
-def _write_scores(path: Path, scores: list[float], annotations: list[int] | None = None) -> None:
-    data = {"anomaly_score": scores}
+def _write_scores(
+    path: Path,
+    scores: list[float],
+    annotations: list[int] | None = None,
+    *,
+    uid: str = "user-1",
+    op_category: str = "READ",
+) -> None:
+    base_time = pd.Timestamp("2024-01-01T00:00:00Z")
+    timestamps = [base_time + pd.Timedelta(seconds=i) for i in range(len(scores))]
+    session_ids = ["session-1" for _ in scores]
+    dt_values = [float("nan")] + [1.0 for _ in range(len(scores) - 1)]
+    data = {
+        "timestamp_utc": [ts.isoformat() for ts in timestamps],
+        "uid": [uid for _ in scores],
+        "session_id": session_ids,
+        "op_category": [op_category for _ in scores],
+        "anomaly_score": scores,
+        "dt_sec": dt_values,
+    }
     if annotations is not None:
         data["boundary_annotation"] = annotations
     df = pd.DataFrame(data)
@@ -27,8 +45,10 @@ def _write_config(path: Path, processed_dir: Path) -> None:
         "scoring": {"smoothing": "none"},
         "threshold": {
             "method": "quantile",
-            "quantile": 0.5,
-            "target_alpha": 0.5,
+            "side": "upper",
+            "transform": "score",
+            "alpha": 0.5,
+            "group_keys": ["uid", "op_category"],
             "normal_reference": "reference.csv",
         },
     }
@@ -36,15 +56,25 @@ def _write_config(path: Path, processed_dir: Path) -> None:
 
 
 def _write_reference(path: Path, scores: list[float]) -> None:
-    df = pd.DataFrame({"anomaly_score": scores})
+    base_time = pd.Timestamp("2024-01-01T01:00:00Z")
+    timestamps = [base_time + pd.Timedelta(seconds=i) for i in range(len(scores))]
+    df = pd.DataFrame(
+        {
+            "timestamp_utc": [ts.isoformat() for ts in timestamps],
+            "uid": ["user-1" for _ in scores],
+            "session_id": ["session-ref" for _ in scores],
+            "op_category": ["READ" for _ in scores],
+            "anomaly_score": scores,
+            "dt_sec": [float("nan")] + [1.0 for _ in range(len(scores) - 1)],
+        }
+    )
     df.to_csv(path, index=False)
 
 
-def test_compute_threshold_handles_nan_skip() -> None:
-    threshold, meta = compute_threshold([float("nan"), float("nan")], ThresholdConfig())
-    assert threshold is None
-    assert meta["status"] == "skipped"
-    assert meta["reason"] == "no_finite_scores"
+def test_resolve_threshold_handles_nan_skip() -> None:
+    result = resolve_threshold([float("nan"), float("nan")], ThresholdConfig(transform="score"), allow_small_sample=True)
+    assert result.status == ThresholdStatus.SKIPPED
+    assert result.fallback_reason == "no_finite_samples"
 
 
 def test_run_success_writes_outputs(tmp_path: Path) -> None:
@@ -61,8 +91,10 @@ def test_run_success_writes_outputs(tmp_path: Path) -> None:
 
     threshold_file = processed_dir / "threshold.json"
     labels_file = processed_dir / "scores_with_labels.csv"
+    thresholds_file = processed_dir / "thresholds.json"
     assert threshold_file.exists()
     assert labels_file.exists()
+    assert thresholds_file.exists()
 
     with threshold_file.open("r", encoding="utf-8") as handle:
         saved_meta = json.load(handle)
@@ -74,6 +106,18 @@ def test_run_success_writes_outputs(tmp_path: Path) -> None:
         expected_hash = hashlib.sha256(handle.read()).hexdigest()
     assert saved_meta["data_sha256"] == expected_hash
     assert payload["scoring_config"] == {"smoothing": "none"}
+
+    with thresholds_file.open("r", encoding="utf-8") as handle:
+        thresholds_meta = json.load(handle)
+    assert thresholds_meta["thresholds"]
+    global_entries = [entry for entry in thresholds_meta["thresholds"] if entry["group"] == []]
+    assert len(global_entries) == 1
+    assert pytest.approx(global_entries[0]["tau_hi"], rel=1e-6) == 0.5
+
+    df_labels = pd.read_csv(labels_file)
+    assert "anomaly_label" in df_labels.columns
+    assert "tau_hi" in df_labels.columns
+    assert df_labels["anomaly_label"].sum() >= 1
 
 
 def test_run_skips_when_no_valid_scores(tmp_path: Path) -> None:
