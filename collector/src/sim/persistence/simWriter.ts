@@ -1,6 +1,7 @@
 import * as fs from 'node:fs/promises';
 import * as path from 'node:path';
 import * as crypto from 'node:crypto';
+import { execSync } from 'node:child_process';
 import packageJson from '../../../package.json';
 import config from '../../config';
 import { labelSequence } from '../labeler';
@@ -14,6 +15,9 @@ const SIMULATOR_ALGO_VERSION = 'sim-delta-v1';
 const DEFAULT_RUN_META_FILE = 'run_meta.json';
 const DEFAULT_AUDIT_FILE = 'audit.jsonl';
 const DEFAULT_SCHEMA_FILE = 'schema.json';
+const DEFAULT_FAIR_FILE = 'fair.json';
+const DEFAULT_DATASHEET_FILE = 'datasheet.json';
+const DEFAULT_PROVENANCE_FILE = 'provenance.json';
 const SCHEMA_VERSION = '1.0.0';
 const SCHEMA_ID = 'https://logserver.dev/schemas/session-run/1-0-0';
 const DEFAULT_DATASET_KEY_LENGTH = 32;
@@ -57,6 +61,7 @@ const RAW_SCHEMA_COLUMNS: RawSchemaColumn[] = [
   { name: 'referer', type: 'string', description: 'HTTP referer header' },
   { name: 'user_agent', type: 'string', description: 'HTTP user-agent header' },
   { name: 'ip', type: 'string', description: 'Client IP (documentation range)' },
+  { name: 'cookie', type: 'string', description: 'HTTP cookie header (pseudonymised)' },
   {
     name: 'op_category',
     type: 'string',
@@ -112,6 +117,12 @@ const FEATURE_COLUMN_DEFINITIONS: Record<string, FeatureSchemaColumn> = {
     type: 'string',
     unit: 'ip_address',
     description: 'Client IP (documentation range)',
+  },
+  cookie: {
+    name: 'cookie',
+    type: 'string',
+    unit: 'cookie_header',
+    description: 'HTTP cookie header (pseudonymised)',
   },
   op_category: {
     name: 'op_category',
@@ -208,6 +219,9 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   runMetaFileName?: string;
   auditFileName?: string;
   schemaFileName?: string;
+  fairFileName?: string;
+  datasheetFileName?: string;
+  provenanceFileName?: string;
   parameters?: Record<string, unknown>;
   sessionIds?: readonly string[];
   featureOverrides?: FeatureOverrides;
@@ -227,12 +241,18 @@ export interface PersistSimulationResult {
   runMetaPath: string;
   auditPath: string;
   schemaPath: string;
+  fairPath: string;
+  datasheetPath: string;
+  provenancePath: string;
   runId: string;
   events: SimulationEvent[];
   manifest: Record<string, unknown>;
   csvHash: string;
   featuresCsvHash: string | null;
   schemaSha256: string;
+  fairSha256: string;
+  datasheetSha256: string;
+  provenanceSha256: string;
   auditRecordCount: number;
   runMeta: RunMeta;
   featureHeader?: string[];
@@ -715,13 +735,14 @@ const baseExtrasResolvers: Record<string, FeatureResolver | null> = BASE_EXTRA_C
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'session_id',
   'uid',
+  'session_id',
   'method',
   'path',
   'referer',
   'user_agent',
   'ip',
+  'cookie',
   'op_category',
 ] as const;
 
@@ -1238,14 +1259,63 @@ const computeSessionStats = (events: readonly SimulationEvent[]): { totalSession
   };
 };
 
+const SENSITIVE_METADATA_KEY_PATTERN = /^(authorization|cookie|cookies|set-cookie|jwt|token|id_token|access_token|refresh_token)$/i;
+const SENSITIVE_METADATA_VALUE_PATTERN = /(bearer\s+[a-z0-9._~-]+\.[a-z0-9._~-]+\.[a-z0-9._~-]+|eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,})/i;
+
+const sanitizeMetadataValue = (value: unknown): unknown | undefined => {
+  if (value === null || value === undefined) {
+    return null;
+  }
+  if (typeof value === 'string') {
+    if (SENSITIVE_METADATA_VALUE_PATTERN.test(value)) {
+      return undefined;
+    }
+    return value;
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return value;
+  }
+  if (Array.isArray(value)) {
+    const sanitizedArray = value
+      .map((entry) => sanitizeMetadataValue(entry))
+      .filter((entry) => entry !== undefined);
+    if (sanitizedArray.length === 0) {
+      return undefined;
+    }
+    return sanitizedArray;
+  }
+  if (typeof value === 'object') {
+    const record = value as Record<string, unknown>;
+    const sanitized: Record<string, unknown> = {};
+    Object.entries(record).forEach(([key, entry]) => {
+      if (SENSITIVE_METADATA_KEY_PATTERN.test(key)) {
+        return;
+      }
+      const sanitizedEntry = sanitizeMetadataValue(entry);
+      if (sanitizedEntry !== undefined) {
+        sanitized[key] = sanitizedEntry;
+      }
+    });
+    if (Object.keys(sanitized).length === 0) {
+      return undefined;
+    }
+    return sanitized;
+  }
+  return undefined;
+};
+
 const serializeMetadata = (metadata: unknown): Record<string, unknown> => {
-  if (!metadata || typeof metadata !== 'object') {
+  const sanitized = sanitizeMetadataValue(metadata);
+  if (sanitized === undefined || sanitized === null) {
     return {};
   }
-  if (Array.isArray(metadata)) {
-    return { value: metadata };
+  if (Array.isArray(sanitized)) {
+    return { value: sanitized };
   }
-  return metadata as Record<string, unknown>;
+  if (typeof sanitized === 'object') {
+    return sanitized as Record<string, unknown>;
+  }
+  return { value: sanitized };
 };
 
 const clampWeight = (value: unknown, fallback: number): number => {
@@ -1741,6 +1811,25 @@ const sanitizeStringField = (value: unknown): string | null => {
   return trimmed.length > 0 ? trimmed : null;
 };
 
+const resolveGitCommit = (): string | null => {
+  try {
+    const output = execSync('git rev-parse HEAD', {
+      encoding: 'utf8',
+      stdio: ['ignore', 'pipe', 'ignore'],
+    });
+    const trimmed = output.trim();
+    return trimmed.length > 0 ? trimmed : null;
+  } catch (error) {
+    return null;
+  }
+};
+
+const writeJsonArtifact = async (targetPath: string, payload: unknown): Promise<string> => {
+  const content = `${JSON.stringify(payload, null, 2)}\n`;
+  await fs.writeFile(targetPath, content, { encoding: 'utf8' });
+  return crypto.createHash('sha256').update(content, 'utf8').digest('hex');
+};
+
 const sanitizeNumberField = (value: unknown): number | null => {
   if (typeof value === 'number' && Number.isFinite(value)) {
     return value;
@@ -1756,6 +1845,35 @@ const sanitizeNumberField = (value: unknown): number | null => {
     }
   }
   return null;
+};
+
+const sanitizeEpochSeconds = (value: unknown): number | null => {
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return null;
+    }
+    const absolute = Math.abs(value);
+    if (absolute >= 1e12) {
+      return value / 1000;
+    }
+    return value;
+  }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+    const numeric = Number(trimmed);
+    if (Number.isFinite(numeric)) {
+      return sanitizeEpochSeconds(numeric);
+    }
+  }
+  const parsed = parseTimestamp(value);
+  if (!parsed) {
+    return null;
+  }
+  const seconds = parsed.getTime() / 1000;
+  return Number.isFinite(seconds) ? seconds : null;
 };
 
 const sanitizeSessionIdentifier = (value: unknown): string | null => {
@@ -1782,9 +1900,9 @@ const resolveCsvRowPayload = (
   const safeEvent = event && typeof event === 'object' ? event : ({} as AugmentedSimulationEvent);
   const metadata = serializeMetadata(safeEvent.metadata);
   const sidFinal = resolveSidFinal(safeEvent);
-  const timestampUtc =
-    sanitizeStringField(safeEvent.timestamp_utc ?? (safeEvent as Record<string, unknown>).timestamp)
-      ?? CSV_NULL_LITERAL;
+  const timestampEpoch =
+    sanitizeEpochSeconds(safeEvent.timestamp_utc ?? (safeEvent as Record<string, unknown>).timestamp)
+      ?? null;
   const uid = sanitizeStringField(safeEvent.uid) ?? CSV_NULL_LITERAL;
   const sessionId = sanitizeSessionIdentifier(safeEvent.session_id) ?? CSV_NULL_LITERAL;
   const method = sanitizeStringField(safeEvent.method) ?? CSV_NULL_LITERAL;
@@ -1792,6 +1910,7 @@ const resolveCsvRowPayload = (
   const refererValue = sanitizeStringField(safeEvent.referer) ?? CSV_NULL_LITERAL;
   const userAgent = sanitizeStringField((safeEvent as Record<string, unknown>).user_agent) ?? CSV_NULL_LITERAL;
   const ipValue = sanitizeStringField((safeEvent as Record<string, unknown>).ip) ?? CSV_NULL_LITERAL;
+  const cookieValue = sanitizeStringField((safeEvent as Record<string, unknown>).cookie) ?? CSV_NULL_LITERAL;
   const opCategoryValue = sanitizeStringField((safeEvent as Record<string, unknown>).op_category) ?? CSV_NULL_LITERAL;
   const userId = sanitizeStringField(safeEvent.user_id) ?? CSV_NULL_LITERAL;
   const eventName = sanitizeStringField(safeEvent.event) ?? CSV_NULL_LITERAL;
@@ -1803,14 +1922,15 @@ const resolveCsvRowPayload = (
   const deltaT = extractDeltaSeconds(safeEvent);
   const featureValues = featureColumns.map((column) => (safeEvent as Record<string, unknown>)[column] ?? null);
   const baseValues = [
-    timestampUtc,
-    sessionId,
+    timestampEpoch ?? CSV_NULL_LITERAL,
     uid,
+    sessionId,
     method,
     pathValue,
     refererValue,
     userAgent,
     ipValue,
+    cookieValue,
     opCategoryValue,
   ];
   const featureExtras = [userId, eventName, statusCode, latency, deltaT, metadata];
@@ -2146,6 +2266,110 @@ export const persistSimulationRun = async (
 
   await fs.writeFile(runMetaPath, `${JSON.stringify(runMeta, null, 2)}\n`, { encoding: 'utf8' });
 
+  const fairFileName = input?.fairFileName || DEFAULT_FAIR_FILE;
+  const datasheetFileName = input?.datasheetFileName || DEFAULT_DATASHEET_FILE;
+  const provenanceFileName = input?.provenanceFileName || DEFAULT_PROVENANCE_FILE;
+  const fairPath = path.join(outputDir, fairFileName);
+  const datasheetPath = path.join(outputDir, datasheetFileName);
+  const provenancePath = path.join(outputDir, provenanceFileName);
+  const gitCommit = resolveGitCommit();
+  const gpuMode = typeof process.env.GPU_MODE === 'string' ? process.env.GPU_MODE : null;
+
+  const fairPayload = {
+    dataset: {
+      run_id: runId,
+      generated_at_utc: generatedAt,
+      rows: labeled.length,
+      schema_version: SCHEMA_VERSION,
+      csv_sha256: csvHash,
+      features_csv_sha256: featuresCsvHash,
+      schema_sha256: schemaSha256,
+    },
+    reproducibility: {
+      seed: typeof manifest.seed === 'string' ? manifest.seed : null,
+      measurement_epsilon_seconds: measurementEpsilon,
+      epsilon_t_seconds: epsilonT,
+      gpu_mode: gpuMode,
+    },
+    provenance: {
+      git_commit: gitCommit,
+      simulator_version: SIMULATOR_VERSION,
+      algo_version: SIMULATOR_ALGO_VERSION,
+      node_version: process.version,
+      platform: process.platform,
+    },
+    privacy: {
+      uid: 'hex(HMAC-SHA256(session_jwt))',
+      cookie: 'Derived from uid; no raw JWT persisted',
+      authorization_header_retained: false,
+    },
+  } as Record<string, unknown>;
+
+  const datasheetPayload = {
+    title: 'Synthetic session log dataset',
+    description: 'Simulation output for Δt-aware LSTM experiments',
+    run_id: runId,
+    schema_version: SCHEMA_VERSION,
+    scenario_id: input?.scenarioId ?? manifest.scenario_id ?? null,
+    required_columns: CSV_BASE_COLUMNS,
+    feature_columns: featureHeader ?? [],
+    hashing: {
+      csv_sha256: csvHash,
+      features_csv_sha256: featuresCsvHash,
+      schema_sha256: schemaSha256,
+    },
+    contact: {
+      project: packageJson.name ?? 'logserver',
+      version: packageJson.version ?? SIMULATOR_VERSION,
+    },
+    environment: {
+      node_version: process.version,
+      gpu_mode: gpuMode,
+    },
+    random_seed: typeof manifest.seed === 'string' ? manifest.seed : null,
+    dependencies: {
+      simulator: SIMULATOR_VERSION,
+      algo_version: SIMULATOR_ALGO_VERSION,
+    },
+  } as Record<string, unknown>;
+
+  const provenancePayload = {
+    run_id: runId,
+    generated_at_utc: generatedAt,
+    git_commit: gitCommit,
+    schema_version: SCHEMA_VERSION,
+    csv_sha256: csvHash,
+    features_csv_sha256: featuresCsvHash,
+    schema_sha256: schemaSha256,
+    gpu_mode: gpuMode,
+    seed: typeof manifest.seed === 'string' ? manifest.seed : null,
+    scenario_id: manifest.scenario_id ?? null,
+    environment: {
+      node_version: process.version,
+      platform: process.platform,
+      arch: process.arch,
+    },
+  } as Record<string, unknown>;
+
+  const fairSha256 = await writeJsonArtifact(fairPath, fairPayload);
+  const datasheetSha256 = await writeJsonArtifact(datasheetPath, datasheetPayload);
+  const provenanceSha256 = await writeJsonArtifact(provenancePath, provenancePayload);
+
+  const manifestOutput = (manifest.output ?? {}) as Record<string, unknown>;
+  manifestOutput.fair_path = fairPath;
+  manifestOutput.fair_sha256 = fairSha256;
+  manifestOutput.datasheet_path = datasheetPath;
+  manifestOutput.datasheet_sha256 = datasheetSha256;
+  manifestOutput.provenance_path = provenancePath;
+  manifestOutput.provenance_sha256 = provenanceSha256;
+  manifest.output = manifestOutput;
+  manifest.provenance = {
+    git_commit: gitCommit,
+    gpu_mode: gpuMode,
+    schema_version: SCHEMA_VERSION,
+  };
+  await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, { encoding: 'utf8' });
+
   return {
     csvPath,
     featuresCsvPath,
@@ -2154,12 +2378,18 @@ export const persistSimulationRun = async (
     runMetaPath,
     auditPath,
     schemaPath,
+    fairPath,
+    datasheetPath,
+    provenancePath,
     runId,
     events: labeled,
     manifest,
     csvHash,
     featuresCsvHash,
     schemaSha256,
+    fairSha256,
+    datasheetSha256,
+    provenanceSha256,
     auditRecordCount,
     runMeta,
     featureHeader: featureHeader ?? undefined,

@@ -29,7 +29,7 @@
 - **異常スコア**：次イベント対数尤度の負値 `s_ev(i+1) = -log p(y_{i+1} | h_i)` と Δt 回帰誤差 `s_time(i+1) = |\hat z_{i+1} - z_{i+1}|` を合算し、既存の移動平均平滑化を適用
 - **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
 - **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、データセット SHA-256 を保存し、追試・監査を支援
-- **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（9 列 raw / 派生 features のスキーマ定義）を出力し、`manifest.schema_sha256` に `schema.json` の SHA-256 を記録
+- **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（10 列 raw / 派生 features のスキーマ定義）、`fair.json`（FAIR 要約）、`datasheet.json`（データセット仕様）、`provenance.json`（git_commit/seed/gpu_mode 等）を出力し、`manifest.schema_sha256` および各メタファイルの SHA-256 を記録
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
@@ -147,13 +147,14 @@
    ```
 
 ### 4.2 データ配置
-- `data/raw/` には **9 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category` で固定し、RFC 3339 UTC と HKDF-HMAC 擬似匿名化を前提とする。
+  - `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` は uid から決定的に生成した擬似匿名化セッションクッキーとし、生 JWT は永続化しない。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。
+- CSV 作成後は `python tools/audit_missing.py <csv-path> --output <report-path>` を実行し、必須列の comp(c) が 1.0 未満であれば修正する。CI でも同スクリプトを用いて自動検証する。
 - セッション化 (`trainer.scripts.preprocess`) では `method` / `path` / `op_category` から `template_id` を決定的に導出し、`AUTH::GET::dashboard` のような形式で `template_id` 列と `event` 列の双方に保存する。TypeScript 側の `@logserver/dt-preproc` も同じテンプレート生成ロジックを利用するため、Python/Node 間でテンプレート語彙が一致する。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
-- 派生特徴は別工程で生成する。9 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
+- 派生特徴は別工程で生成する。10 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
 - `trainer/configs/default.yaml` の `data.feature_merge.patterns` で `*-features.csv` を指定すると、`trainer.scripts.train` が `uid/session_id/timestamp_utc/template_id` をキーとして自動マージし、新しい特徴列のみを結合する。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）、マニフェスト（`scenario-<run-id>.json`）、監査メタ（`run_meta.json` / `audit.jsonl` / `schema.json`）が保存され、`manifest.schema_sha256` に `schema.json` のハッシュが追記される。
-- `logs/` には 9 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
+- `logs/` には 10 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
 
   ```bash
   mkdir -p data/raw

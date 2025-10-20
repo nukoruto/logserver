@@ -57,7 +57,7 @@ def test_cli_init_creates_expected_structure(tmp_path, capsys):
 
     config_text = (out_dir / "configs" / "default.yaml").read_text(encoding="utf-8")
     assert "__DEVICE__" not in config_text
-    assert "device: \"cpu\"" in config_text
+    assert "prefer: \"cpu\"" in config_text or "prefer: cpu" in config_text
 
     mode = (out_dir / "scripts" / "train.py").stat().st_mode
     assert mode & stat.S_IXUSR, "train.py が実行可能ではありません"

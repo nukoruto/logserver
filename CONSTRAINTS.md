@@ -24,7 +24,7 @@
 - docs/: ドキュメント（README, SRS, 本ファイル, ほか）
 
 ## 3. データ制約（列挙）
-- 入力ログの必須列: timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category（9 列固定）
+- 入力ログの必須列: timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category（10 列固定、timestamp_utc は UTC epoch 秒 double）
 - オプション列: なし（追加情報は JSON カラムまたは別ファイルに保持し、契約 CSV に列追加しない）
 - 派生列: Δt 系列、latency 統計、異常スコア、ラベル等は `dt-preproc`・`trainer.scripts.score`・`trainer.scripts.threshold` で生成する
 - タイムゾーン: すべて UTC に正規化
@@ -85,16 +85,16 @@
 - 実行環境：シミュレーション＝Windows 11 / Ubuntu 22.04（Node.js CLI）／学習＝WSL2 上の Docker（GPU）
 - データ契約：`/contract/` に CSV スキーマ、op_category 辞書、セッション分割設定（Otsu/ε/肘法）を明記
 - 出力先：シミュレーションは `artifacts/`（CSV＋manifest.json＋checksums.txt）、学習成果は `outputs/`
-- セキュリティ／表記：擬似匿名化＝HKDF-SHA256(JWT_HMAC_KEY, info="sid") で導出した `K_ds` による HMAC-SHA256（`kid` を .env / メタデータに記録）、時刻＝UTC（RFC 3339）
+- セキュリティ／表記：擬似匿名化＝HKDF-SHA256(JWT_HMAC_KEY, info="sid") で導出した `K_ds` による HMAC-SHA256（`kid` を .env / メタデータに記録）、時刻＝UTC epoch 秒（必要に応じて RFC 3339 を派生保存）
 - GPU 切替：`GPU_MODE=ada6000|4060` で `CUDA_VISIBLE_DEVICES` を切替
 
 ## ディレクトリ
 
 ## 受け渡し契約（要約）
-- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, op_category
-- 形式：UTC/RFC 3339、CSV(RFC 4180)
+- 必須列：timestamp_utc, uid(HMAC-SHA256 with K_ds), session_id, method, path, referer, user_agent, ip, cookie, op_category
+- 形式：UTC epoch 秒（double）を CSV(RFC 4180) で保存し、必要に応じて RFC 3339 文字列を別出力
 - 生成物：`manifest.json`（収集条件・commitID）と `checksums.txt` を同梱
-- 派生特徴：Δt/統計/異常ラベルは 9 列 CSV を `dt-preproc fit/transform`→`trainer.scripts.score`→`trainer.scripts.threshold` に通して生成し、契約ファイルと分離して保存する
+- 派生特徴：Δt/統計/異常ラベルは 10 列 CSV を `dt-preproc fit/transform`→`trainer.scripts.score`→`trainer.scripts.threshold` に通して生成し、契約ファイルと分離して保存する
 
 - logserver/
 - collector/

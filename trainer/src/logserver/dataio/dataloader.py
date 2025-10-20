@@ -135,11 +135,15 @@ def _read_csv(source: Path) -> pd.DataFrame:
 
 def _normalise_timestamps(frame: pd.DataFrame, timezone: str) -> pd.DataFrame:
     if "timestamp_utc" in frame.columns:
-        timestamps = pd.to_datetime(frame["timestamp_utc"], utc=True, errors="coerce")
+        source = frame["timestamp_utc"]
     elif "timestamp" in frame.columns:
-        timestamps = pd.to_datetime(frame["timestamp"], utc=True, errors="coerce")
+        source = frame["timestamp"]
     else:
         raise ValueError("Input CSV must contain timestamp_utc or timestamp column")
+    timestamps = pd.to_datetime(source, utc=True, errors="coerce")
+    if timestamps.isna().any():
+        numeric = pd.to_numeric(source, errors="coerce")
+        timestamps = pd.to_datetime(numeric, utc=True, unit="s", errors="coerce")
     if timestamps.isna().any():
         raise ValueError("Invalid timestamps detected in input data")
     frame = frame.copy()

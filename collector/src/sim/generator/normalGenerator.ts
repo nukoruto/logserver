@@ -6,6 +6,7 @@ import {
   createSessionCategoryPrng,
   type CategoryPrngFactory,
 } from './prng';
+import { sampleNhppDelta, resolveNhppConfig, type NhppSineConfig } from './nhpp';
 
 export interface GenerateNormalSequenceOptions extends Record<string, unknown> {
   scenario?: ScenarioDefinition | string;
@@ -66,6 +67,7 @@ interface DeltaSpec {
   muLog: number;
   sigmaLog: number;
   epsilon: number;
+  nhpp?: NhppSineConfig | null;
 }
 
 interface ScenarioTransition extends Record<string, unknown> {
@@ -84,6 +86,7 @@ const DEFAULT_DELTA_SPEC: DeltaSpec = {
   muLog: 0.5815754049028404,
   sigmaLog: 0.47238072707743883,
   epsilon: DEFAULT_DELTA_EPSILON,
+  nhpp: null,
 };
 
 const isFiniteNumber = (value: unknown): value is number =>
@@ -169,6 +172,7 @@ const cloneDeltaSpec = (spec: DeltaSpec | undefined | null, epsilonFloor: number
     muLog: spec.muLog,
     sigmaLog: Math.max(spec.sigmaLog, MIN_SIGMA_LOG),
     epsilon: clampEpsilon(spec.epsilon, epsilonFloor),
+    nhpp: spec.nhpp ? { ...spec.nhpp } : null,
   };
 };
 
@@ -223,6 +227,11 @@ const normalizeDeltaSpec = (candidate: unknown, fallbackSpec: DeltaSpec = DEFAUL
     record.epsilon ?? record.floor ?? record.minEpsilon ?? record.eps ?? record.minimum,
   );
   const epsilon = clampEpsilon(epsilonCandidate, fallback.epsilon);
+
+  let nhppConfig: NhppSineConfig | null = null;
+  if (distribution === 'nhpp_sine') {
+    nhppConfig = resolveNhppConfig(record, epsilon);
+  }
 
   let muLog =
     toFiniteNumber(record.muLog ?? record.mu_log ?? record.medianLog ?? record.median_log ?? record.location) ?? null;
@@ -292,6 +301,7 @@ const normalizeDeltaSpec = (candidate: unknown, fallbackSpec: DeltaSpec = DEFAUL
     muLog,
     sigmaLog: Math.max(sigmaLog, MIN_SIGMA_LOG),
     epsilon,
+    nhpp: nhppConfig,
   };
 };
 
@@ -306,7 +316,10 @@ const sampleStandardNormal = (randomFn: () => number): number => {
   return magnitude * Math.cos(2.0 * Math.PI * u2);
 };
 
-const sampleFromSpec = (spec: DeltaSpec, randomFn: () => number): number => {
+const sampleFromSpec = (spec: DeltaSpec, randomFn: () => number, currentSeconds: number): number => {
+  if (spec.nhpp) {
+    return sampleNhppDelta(randomFn, spec.nhpp, currentSeconds);
+  }
   const epsilon = spec.epsilon > 0 ? spec.epsilon : DEFAULT_DELTA_EPSILON;
   const standard = sampleStandardNormal(randomFn);
   const logSample = spec.muLog + spec.sigmaLog * standard;
@@ -322,10 +335,11 @@ const sampleDeltaSeconds = (
   transition: ScenarioTransition,
   randomFn: () => number,
   defaultSpec: DeltaSpec,
+  currentSeconds: number,
 ): number => {
   const fallbackSpec = cloneDeltaSpec(defaultSpec, defaultSpec.epsilon);
   const spec = normalizeDeltaSpec(transition.deltaSeconds, fallbackSpec);
-  const sampled = sampleFromSpec(spec, randomFn);
+  const sampled = sampleFromSpec(spec, randomFn, currentSeconds);
   return Number.isFinite(sampled) && sampled > 0 ? sampled : spec.epsilon;
 };
 
@@ -542,7 +556,7 @@ export const generateNormalSequence = (
     }
 
     const deltaRng = rngFactory(`delta|${String(chosen.event ?? 'unknown')}|step-${steps}`);
-    const deltaSeconds = sampleDeltaSeconds(chosen, deltaRng, defaultDeltaSpec);
+    const deltaSeconds = sampleDeltaSeconds(chosen, deltaRng, defaultDeltaSpec, currentUtcMillis / 1000);
     currentUtcMillis += deltaSeconds * 1000;
     const timestampUtc = new Date(currentUtcMillis).toISOString();
     const timestampLocal = formatTimestampWithOffset(currentUtcMillis, offsetMinutes);

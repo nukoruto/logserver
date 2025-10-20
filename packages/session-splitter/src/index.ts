@@ -388,6 +388,14 @@ function toIso(ms: number): string {
 }
 
 function parseTimestamp(value: string, column: string): number {
+  if (value === undefined || value === null) {
+    throw new SessionSplitterError(`Invalid timestamp in column ${column}: ${value}`);
+  }
+  const numeric = Number(value);
+  if (Number.isFinite(numeric)) {
+    const milliseconds = Math.abs(numeric) >= 1e12 ? numeric : numeric * 1000;
+    return milliseconds;
+  }
   const parsed = Date.parse(value);
   if (Number.isNaN(parsed)) {
     throw new SessionSplitterError(`Invalid timestamp in column ${column}: ${value}`);

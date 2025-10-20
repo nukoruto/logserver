@@ -24,7 +24,7 @@ def _write_csv(path: Path, frame: pd.DataFrame) -> None:
 def _base_rows() -> List[dict]:
     return [
         {
-            "timestamp_utc": "2024-01-01T00:00:03Z",
+            "timestamp_utc": 1704067203,
             "sid_final": "s-1",
             "uid": "u-1",
             "cat_id": 3,
@@ -37,7 +37,7 @@ def _base_rows() -> List[dict]:
             "dt_sec": 1.5,
         },
         {
-            "timestamp_utc": "2024-01-01T00:00:01Z",
+            "timestamp_utc": 1704067201,
             "sid_final": "s-1",
             "uid": "u-1",
             "cat_id": 1,
@@ -50,7 +50,7 @@ def _base_rows() -> List[dict]:
             "dt_sec": 0.0,
         },
         {
-            "timestamp_utc": "2024-01-01T00:00:05Z",
+            "timestamp_utc": 1704067205,
             "sid_final": "s-2",
             "uid": "u-1",
             "cat_id": 2,

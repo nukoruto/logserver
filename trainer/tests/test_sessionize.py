@@ -17,11 +17,7 @@ def test_sessionize_computes_delta(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": [
-                "2024-01-01T00:00:00Z",
-                "2024-01-01T00:00:05Z",
-                "2024-01-01T00:00:12Z",
-            ],
+            "timestamp_utc": [1704067200, 1704067205, 1704067212],
             "uid": ["u1", "u1", "u1"],
             "session_id": ["s1", "s1", "s1"],
             "method": ["GET", "GET", "POST"],
@@ -49,7 +45,7 @@ def test_sessionize_rejects_raw_token_columns(tmp_path: Path, forbidden_column: 
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": ["2024-01-01T00:00:00Z"],
+            "timestamp_utc": [1704067200],
             "uid": ["u1"],
             "session_id": ["s1"],
             "method": ["GET"],
@@ -72,11 +68,7 @@ def test_load_events_chunk_iteration(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": [
-                "2024-01-01T00:00:00Z",
-                "2024-01-01T00:00:01Z",
-                "2024-01-01T00:00:02Z",
-            ],
+            "timestamp_utc": [1704067200, 1704067201, 1704067202],
             "uid": ["u1", "u1", "u2"],
             "session_id": ["s1", "s1", "s2"],
             "method": ["GET", "GET", "POST"],
@@ -98,12 +90,7 @@ def test_iter_sessionized_frames_streams(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": [
-                "2024-01-01T00:00:00Z",
-                "2024-01-01T00:00:01Z",
-                "2024-01-01T00:00:03Z",
-                "2024-01-01T00:05:00Z",
-            ],
+            "timestamp_utc": [1704067200, 1704067201, 1704067203, 1704067500],
             "uid": ["u1", "u1", "u1", "u1"],
             "method": ["GET", "GET", "POST", "POST"],
             "path": ["/login", "/view", "/edit", "/logout"],
@@ -129,7 +116,7 @@ def test_sessionize_event_column_backwards_compatible(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": ["2024-01-01T00:00:00Z", "2024-01-01T00:00:05Z"],
+            "timestamp_utc": [1704067200, 1704067205],
             "uid": ["u1", "u1"],
             "session_id": ["s1", "s1"],
             "method": ["GET", "POST"],

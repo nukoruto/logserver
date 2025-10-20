@@ -238,6 +238,7 @@ export interface SimulationEvent extends Record<string, unknown> {
   referer?: string | null;
   user_agent?: string | null;
   ip?: string | null;
+  cookie?: string | null;
   op_category?: string | null;
   anomaly?: boolean;
   anomaly_type?: string;
@@ -386,6 +387,7 @@ interface SessionIdentifiers {
   userAgent: string;
   ip: string;
   refererHost: string;
+  cookie: string;
 }
 
 interface DefaultParameterInput {
@@ -659,6 +661,7 @@ const createSessionIdentifiers = (seed: string, index: number): SessionIdentifie
   const cryptoMaterial = resolveSessionCryptoMaterial();
   const rawToken = mintSessionJwt(seed, index, cryptoMaterial.datasetKey);
   const uid = crypto.createHmac('sha256', cryptoMaterial.datasetKey).update(rawToken, 'utf8').digest('hex');
+  const cookie = `sid=${uid.slice(0, 32)}.${suffix}; Path=/; HttpOnly; Secure`;
   return {
     sessionId: `sess-${sanitizedBase}-${suffix}`,
     userId: `user-${sanitizedBase}-${suffix}`,
@@ -666,6 +669,7 @@ const createSessionIdentifiers = (seed: string, index: number): SessionIdentifie
     userAgent: computeSessionUserAgent(index),
     ip: computeSessionIp(index),
     refererHost: computeRefererHost(index),
+    cookie,
   };
 };
 
@@ -762,6 +766,7 @@ const decorateEvent = ({
     op_category: resolvedCategory ?? null,
     user_agent: normalizeNullableString(event.user_agent) ?? session.userAgent,
     ip: normalizeNullableString(event.ip) ?? session.ip,
+    cookie: normalizeNullableString(event.cookie) ?? session.cookie,
   };
 
   if (event.protocolViolationFlag === true) {
