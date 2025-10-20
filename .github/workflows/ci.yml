@@ -125,8 +125,13 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        device: [cpu, cuda]
-        gpu_mode: [ada6000, "4060"]
+        include:
+          - device: cpu
+            gpu_mode: none
+          - device: cuda
+            gpu_mode: ada6000
+          - device: cuda
+            gpu_mode: "4060"
     defaults:
       run:
         shell: bash
@@ -143,17 +148,23 @@ jobs:
         with:
           python-version: "3.11"
           cache: "pip"
-          cache-dependency-path: trainer/requirements_cpu.txt
+          cache-dependency-path: |
+            trainer/requirements_cpu.txt
+            trainer/requirements_cuda121.txt
 
       - name: Install Python dependencies
         run: |
           python -m pip install --upgrade pip
           pip install --upgrade setuptools wheel
-          if [ "${{ matrix.device }}" = "cuda" ] && command -v nvidia-smi >/dev/null 2>&1; then
-            echo "Installing CUDA 12.1 dependencies"
-            pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements_cuda121.txt
+          if [ "${{ matrix.device }}" = "cuda" ]; then
+            if command -v nvidia-smi >/dev/null 2>&1; then
+              echo "Installing CUDA 12.1 dependencies for GPU mode ${{ matrix.gpu_mode }}"
+              pip install --extra-index-url https://download.pytorch.org/whl/cu121 -r requirements_cuda121.txt
+            else
+              echo "CUDA device not available on runner; installing CPU fallback wheels"
+              pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements_cpu.txt
+            fi
           else
-            echo "CUDA device not available, installing CPU fallback wheels"
             pip install --extra-index-url https://download.pytorch.org/whl/cpu -r requirements_cpu.txt
           fi
 
