@@ -96,19 +96,25 @@ if isfield(cfg, 'waveforms_decimation') && cfg.waveforms_decimation > 0
     decimation = max(1, floor(cfg.waveforms_decimation));
 end
 
+start_time = min(loaded.r.time(1), loaded.yLSTM.time(1));
+stop_time = max(loaded.r.time(end), loaded.yLSTM.time(end));
+if stop_time <= start_time
+    error('Simulink:InvalidTimeRange', '停止時刻が開始時刻以下です。');
+end
+% Align the signals with the simulation timeline. The exported MAT files
+% may store absolute UTC timestamps, so shift them to start at zero to keep
+% the From Workspace blocks synchronized with the model start time.
+loaded.r.time = loaded.r.time - start_time;
+loaded.yLSTM.time = loaded.yLSTM.time - start_time;
+
+stop_duration = max(loaded.r.time(end), loaded.yLSTM.time(end));
+
 assignin('base', 'Ts', Ts);
 assignin('base', 'r', loaded.r);
 assignin('base', 'yLSTM', loaded.yLSTM);
 assignin('base', 'meta', loaded.meta);
 
 mdl = ensure_model(this_dir, Ts, pid_cfg, K, tau, settle_band, bounds);
-
-start_time = min(loaded.r.time(1), loaded.yLSTM.time(1));
-stop_time = max(loaded.r.time(end), loaded.yLSTM.time(end));
-if stop_time <= start_time
-    error('Simulink:InvalidTimeRange', '停止時刻が開始時刻以下です。');
-end
-stop_duration = stop_time - start_time;
 
 simIn = Simulink.SimulationInput(mdl);
 simIn = setModelParameter(simIn, 'StopTime', num2str(stop_duration));
