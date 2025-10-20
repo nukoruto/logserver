@@ -25,8 +25,8 @@
 ## 2. 主な機能
 - **シナリオ駆動シミュレーション**：`collector/src/services/simulationService.ts` が正常／異常シナリオを決定的に生成し、Δt と操作イベントを含むログ系列を CSV + manifest で永続化
 - **セッション化 / 前処理**：生成済みログをセッション単位へ分割し、操作カテゴリ（抽象化）と Δt を特徴量として付与
-- **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力、次イベント／Δt 予測による**予測誤差型**の異常検知
-- **異常スコア**：予測確率の逸脱 + Δt 予測誤差/尤度を統合
+- **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力し、各ステップで **BOS** を挿入した入力系列から「次イベント」と「次Δt」を同時予測する**予測誤差型**の異常検知（`--target-mode same` で旧来の同時刻ターゲットへ切替可）
+- **異常スコア**：次イベント対数尤度の負値 `s_ev(i+1) = -log p(y_{i+1} | h_i)` と Δt 回帰誤差 `s_time(i+1) = |\hat z_{i+1} - z_{i+1}|` を合算し、既存の移動平均平滑化を適用
 - **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
 - **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、データセット SHA-256 を保存し、追試・監査を支援
 - **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（9 列 raw / 派生 features のスキーマ定義）を出力し、`manifest.schema_sha256` に `schema.json` の SHA-256 を記録
@@ -354,13 +354,15 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 `trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_quantile_0_25`（`delta_m25`）, `delta_quantile_0_5`（`delta_m50`）, `delta_quantile_0_75`（`delta_m75`）を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
+既定のターゲットモードは `next` であり、DataLoader は各セッション先頭に **BOS** を挿入して入力系列を 1 ステップ左へシフトし、分類・Δt 回帰の双方で「次イベント」を教師信号とします。末尾ステップは損失・スコアから自動的にマスクされ、`model_config.json` / `repro.json` に使用モードが記録されます。旧来の「同時刻ターゲット」を再現したい場合は `python -m trainer.scripts.train ... --target-mode same`（または YAML の `training.target_mode: same`）を指定してください。
+
 - `TrainerConfig.device` は `auto` が既定で、`GPU_MODE=ada6000`（RTX 6000 Ada）または `GPU_MODE=4060`（RTX 4060）を指定すると、自動で `cuda:0` と最適化済みの `num_workers` / `prefetch_factor` / `pin_memory` / `persistent_workers` を適用します。`GPU_MODE` を未設定か、対応表に存在しない値の場合は CUDA 利用可否を判定し `cuda:0` または `cpu` を選択します。
 - `data.feature_merge.patterns` に `*-features.csv` を設定すると、`trainer.scripts.train` が該当 CSV を探索し、`uid` / `session_id` / `timestamp_utc` / `template_id` をキーに追加列のみを結合する。テンプレート語彙の一致は Python/TypeScript 共通のテンプレート ID 生成ヘルパーで保証する。
 - DataLoader は IterableDataset ベースで、メモリ常駐の numpy 配列だけでなく `numpy.memmap` やスライス呼び出し可能オブジェクトから必要なセッションのみを読み出してバッチ化します。学習実行後は `model.pt` / `features.json` / `model_config.json` に加えて乱数種・DataLoader パラメタ・Git コミットを記録した `repro.json` が生成され、再現性監査を支援します。
 
 - 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。
 - `trainer.scripts.preprocess` は `data.chunksize`（既定 100,000）と `data.use_pyarrow` に従って CSV/JSON/Parquet をチャンク単位で読み込み、Δt 計算・セッション化した結果を `events.csv` / `events.parquet` へ追記します。監査レポート用のサンプルは `report.max_rows` で上限制御され、`null` を指定すると全行を統計用に読み込み、`0` 以下でサンプル取得を完全に無効化します。
-- `trainer.scripts.score` は `scoring.chunksize` と `scoring.use_pyarrow` を用いて Parquet ストリーミング推論を行い、セッションが分割されないようにチャンク境界の carry-over を保持しつつ `scores.csv` に追記します。既存の `runs/latest` ディレクトリ構造は変更せず、モデル読込と異常スコア平滑化は従来どおりです。
+- `trainer.scripts.score` は `scoring.chunksize` と `scoring.use_pyarrow` を用いて Parquet ストリーミング推論を行い、セッションが分割されないようにチャンク境界の carry-over を保持しつつ `scores.csv` に追記します。既存の `runs/latest` ディレクトリ構造は変更せず、モデル読込と異常スコア平滑化は従来どおりです。学習時に保存した `target_mode` を読み出し、次イベント基準の `s_ev + s_time` を再計算して元のイベント長と一致するスコア系列を出力します。
 - 100 万行のモックデータを対象にした統合テスト（`trainer/tests/test_streaming_large.py`）で処理時間（180 秒以内）とメモリ上限（約 1.2 GB 未満）を検証しており、チャンク処理に失敗した場合はテストが失敗するようになっています。
 
 - 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。

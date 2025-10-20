@@ -13,6 +13,7 @@ from .robust import choose_epsilon
 
 PAD_TOKEN = "<pad>"
 UNK_TOKEN = "<unk>"
+BOS_TOKEN = "<bos>"
 
 DT_FEATURE_CANDIDATES: Dict[str, Tuple[str, ...]] = {
     "z": ("delta_robust_z",),
@@ -67,6 +68,7 @@ class EventVocabulary:
         vocab = cls()
         vocab.add_token(PAD_TOKEN)
         vocab.add_token(UNK_TOKEN)
+        vocab.add_token(BOS_TOKEN)
         for event, freq in sorted(counts.items(), key=lambda item: (-item[1], item[0])):
             if freq < min_freq:
                 continue
@@ -154,6 +156,8 @@ class FeaturePack:
         vocab = EventVocabulary()
         for token in data["event_vocab"]:
             vocab.add_token(token)
+        if BOS_TOKEN not in vocab.token_to_idx:
+            vocab.add_token(BOS_TOKEN)
         delta = ContinuousNormalizer(mean=data["delta_normalizer"]["mean"], std=data["delta_normalizer"]["std"])
         latency = ContinuousNormalizer(mean=data["latency_normalizer"]["mean"], std=data["latency_normalizer"]["std"])
         epsilon = float(data.get("delta_epsilon", 1e-6))
@@ -185,6 +189,10 @@ class FeaturePack:
             additional_normalizers=additional_normalizers,
             response_normalizer=response,
         )
+
+    @property
+    def bos_index(self) -> int:
+        return self.event_vocab.to_index(BOS_TOKEN)
 
 
 def _discover_dt_features(df: pd.DataFrame) -> List[Tuple[str, str, ContinuousNormalizer]]:
