@@ -113,8 +113,17 @@ def safe_roc_auc(y_true: Sequence[int], y_score: Sequence[float]) -> Tuple[float
         return float("nan"), False
     scores = _ensure_numpy(y_score)
     order = np.argsort(scores, kind="mergesort")
-    ranks = np.empty_like(order, dtype=float)
-    ranks[order] = np.arange(1, scores.size + 1)
+    sorted_scores = scores[order]
+    ranks = np.empty_like(scores, dtype=float)
+    start = 0
+    n_scores = sorted_scores.size
+    while start < n_scores:
+        end = start + 1
+        while end < n_scores and sorted_scores[end] == sorted_scores[start]:
+            end += 1
+        average_rank = 0.5 * ((start + 1) + end)
+        ranks[order[start:end]] = average_rank
+        start = end
     pos = labels == 1
     neg = ~pos
     n_pos = int(pos.sum())
