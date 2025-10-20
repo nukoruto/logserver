@@ -50,7 +50,7 @@ def compute_threshold(
 ) -> Tuple[Optional[float], Dict[str, object]]:
     modern = config.to_modern()
     result = resolve_threshold(scores, modern, allow_small_sample=True)
-    threshold = result.tau_hi or result.tau_lo
+    threshold = result.tau_hi if result.tau_hi is not None else result.tau_lo
     meta: Dict[str, object] = {
         "status": result.status,
         "method": modern.method,
