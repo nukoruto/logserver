@@ -927,8 +927,10 @@ tscv search \
 ```
 
 - `--splits`: foldごとの `train_sessions` / `validation_sessions` を記述したYAML。`dataset.processed_dir` `label_column` `timestamp_column` を含める。
-- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。
-- 出力: ベスト構成を `--out` にJSONで書き出し、同階層に `<out>.jsonl` の全試行ログ（各trialのseed・fold指標・AP/ROC-AUC）を生成。種を固定すればベスト構成が再現できます。
+- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。`--config random_search.yaml` を併用すると `search.base_seed` / `search.parallel` / `search.resume` / `search.dedup` や `objective.primary` / `objective.aggregator`、`device.gpu_mode` をまとめて指定でき、探索空間も `space.*` として同ファイルに内包できる。
+- `--metric`: `ap` / `roc_auc` / `f1` から一次指標を選択。`--aggregator mean_minus_std --lambda-std 1.0` のようにフォールド集約器を切り替えられる。
+- `--parallel` / `--dedup` / `--resume` / `--gpu-mode`: 並列実行数、重複パラメータのスキップ、途中再開、RTX6000 Ada / RTX4060 の固定を制御。いずれも決定論的な `trial_seed = base_seed + trial_index` を維持する。
+- 出力: ベスト構成を `--out`（任意のファイル名）と `summary.json` に保存し、同階層に `best.json` と `<out_basename>.jsonl` を生成。JSONL には `trial_id` / `trial_seed` / `params` / `fold_metrics`（AP・ROC-AUC・F1・最適しきい値・n_pos/n_neg）/ `aggregated`（平均・標準偏差・有効fold数・集約値）/ `valid_mask` / `status`（ok/invalid/failed/skipped）が記録される。AP/F1 は正例ゼロ fold を自動で除外し、`dedup` 有効時は重複試行が `status="skipped"` として記録される。
 
 探索中の特徴エンコーダはfoldごとの学習データでfit→検証へ凍結適用され、リークを防止します。
 

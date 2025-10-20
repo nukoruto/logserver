@@ -17,7 +17,10 @@ from trainer.logserver.cv import RollingSplitConfig, generate_rolling_origin_spl
 
 # --- search サブコマンドに必要（内側CVまで） ---
 from trainer.logserver.dataio.processed import load_processed_events
+from trainer.logserver.metrics import AggregatorConfig, ObjectiveConfig, SearchDeviceConfig, SearchExecutionConfig
 from trainer.logserver.training.search import (
+    CVConfig,
+    load_random_search_manifest,
     load_search_space,
     load_split_plan,
     run_random_search,
@@ -147,19 +150,41 @@ def _cmd_search(args: argparse.Namespace) -> int:
     else:
         df = pd.concat(list(dataset), ignore_index=True) if dataset else pd.DataFrame()
 
-    search_space = load_search_space(Path(args.space))
     out_path = Path(args.out)
     log_path = _resolve_log_path(out_path, args.log)
+
+    if args.config:
+        exec_cfg, objective_cfg, cv_cfg, device_cfg, search_space = load_random_search_manifest(Path(args.config))
+    else:
+        if not args.space:
+            raise ValueError("--space or --config must be provided for search")
+        search_space = load_search_space(Path(args.space))
+        aggregator_cfg = AggregatorConfig(
+            name=args.aggregator,
+            lambda_std=args.lambda_std,
+            trim_ratio=args.trim_ratio,
+        )
+        objective_cfg = ObjectiveConfig(primary=args.metric.upper(), aggregator=aggregator_cfg)
+        exec_cfg = SearchExecutionConfig(
+            n_trials=args.n_trials,
+            base_seed=args.seed,
+            parallel=max(args.parallel, 1),
+            resume=args.resume,
+            dedup=args.dedup,
+        )
+        device_cfg = SearchDeviceConfig(gpu_mode=args.gpu_mode)
+        cv_cfg = CVConfig()
 
     run_random_search(
         df,
         plan,
         search_space,
-        n_trials=args.n_trials,
-        metric=args.metric,
         out_path=out_path,
         log_path=log_path,
-        base_seed=args.seed,
+        execution=exec_cfg,
+        objective=objective_cfg,
+        cv_cfg=cv_cfg,
+        device_cfg=device_cfg,
     )
     return 0
 
@@ -193,14 +218,22 @@ def build_parser() -> argparse.ArgumentParser:
     # search
     search = subparsers.add_parser("search", help="Run random search with rolling-origin inner CV")
     search.add_argument("--splits", required=True, help="YAML file describing inner CV folds")
-    search.add_argument("--space", required=True, help="YAML search space definition")
-    search.add_argument("--n_trials", type=int, default=10, help="Number of random trials")
+    search.add_argument("--config", help="Optional manifest file describing search/objective/device/space")
+    search.add_argument("--space", help="YAML search space definition (ignored when --config provided)")
+    search.add_argument("--n_trials", type=int, default=10, help="Number of random trials (ignored by manifest)")
     search.add_argument(
         "--metric",
-        choices=["ap", "roc_auc"],
+        choices=["ap", "roc_auc", "f1"],
         default="ap",
-        help="Primary metric for model selection",
+        help="Primary metric for model selection (ignored by manifest)",
     )
+    search.add_argument("--aggregator", choices=["mean", "mean_minus_std", "worst_case", "trimmed_mean"], default="mean", help="Fold aggregator (ignored by manifest)")
+    search.add_argument("--lambda-std", type=float, default=0.0, help="Lambda for mean_minus_std aggregator")
+    search.add_argument("--trim-ratio", type=float, default=0.1, help="Trim ratio for trimmed_mean aggregator")
+    search.add_argument("--parallel", type=int, default=1, help="Number of trials to evaluate concurrently")
+    search.add_argument("--resume", action="store_true", help="Resume from existing log if present")
+    search.add_argument("--dedup", action="store_true", help="Skip duplicate parameter samples")
+    search.add_argument("--gpu-mode", choices=["auto", "ada6000", "4060"], default="auto", help="GPU selection mode")
     search.add_argument("--out", required=True, help="Path to write best-trial summary JSON")
     search.add_argument("--log", help="Optional path for JSONL trial log")
     search.add_argument("--seed", type=int, default=42, help="Base random seed for reproducibility")
