@@ -22,13 +22,11 @@ const SCHEMA_VERSION = '1.0.0';
 const SCHEMA_ID = 'https://logserver.dev/schemas/session-run/1-0-0';
 const DEFAULT_DATASET_KEY_LENGTH = 32;
 const DEFAULT_CRYPTO_ALGO_VERSION = 'sid-hkdf-sha256-v1';
-const RFC3339_UTC_PATTERN =
-  '^(?:[0-9]{4}-[0-9]{2}-[0-9]{2})T(?:[0-9]{2}:[0-9]{2}:[0-9]{2})(?:\.[0-9]{1,3})?Z$';
-
 type RawSchemaColumn = {
   name: string;
   type: 'string' | 'number' | 'integer';
   pattern?: string;
+  format?: string;
   description: string;
 };
 
@@ -36,15 +34,16 @@ type FeatureSchemaColumn = {
   name: string;
   type: 'string' | 'number' | 'integer';
   unit: string | null;
+  format?: string | null;
   description: string;
 };
 
 const RAW_SCHEMA_COLUMNS: RawSchemaColumn[] = [
   {
     name: 'timestamp_utc',
-    type: 'string',
-    pattern: RFC3339_UTC_PATTERN,
-    description: 'Event timestamp in UTC (RFC 3339)',
+    type: 'number',
+    format: 'epoch_seconds',
+    description: 'UTC epoch seconds (double precision)',
   },
   {
     name: 'session_id',
@@ -72,9 +71,10 @@ const RAW_SCHEMA_COLUMNS: RawSchemaColumn[] = [
 const FEATURE_COLUMN_DEFINITIONS: Record<string, FeatureSchemaColumn> = {
   timestamp_utc: {
     name: 'timestamp_utc',
-    type: 'string',
-    unit: 'rfc3339',
-    description: 'Event timestamp in UTC (RFC 3339)',
+    type: 'number',
+    unit: 'seconds',
+    format: 'epoch_seconds',
+    description: 'UTC epoch seconds (double precision)',
   },
   session_id: {
     name: 'session_id',
@@ -231,6 +231,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   includeFeaturesCsv?: boolean;
   kid?: string | null;
   crypto?: SessionCryptoMetadata | null;
+  allowedIssuers?: readonly string[] | null;
 }
 
 export interface PersistSimulationResult {
@@ -238,6 +239,7 @@ export interface PersistSimulationResult {
   featuresCsvPath: string | null;
   manifestPath: string;
   metaPath: string | null;
+  metaSha256: string | null;
   runMetaPath: string;
   auditPath: string;
   schemaPath: string;
@@ -1127,6 +1129,18 @@ const sanitizeKid = (value: unknown): string | null => {
   return trimmed.replace(/[^a-zA-Z0-9_.:-]+/g, '-').slice(0, 64);
 };
 
+const sanitizeIssuerList = (value: readonly string[] | null | undefined): string[] => {
+  if (!value) {
+    return [];
+  }
+  const normalized = value
+    .filter((issuer): issuer is string => typeof issuer === 'string')
+    .map((issuer) => issuer.trim())
+    .filter((issuer) => issuer.length > 0);
+  const unique = new Set(normalized);
+  return Array.from(unique);
+};
+
 const sanitizeCryptoMetadata = (
   value: SessionCryptoMetadata | null | undefined,
   fallbackKid: string | null,
@@ -1605,6 +1619,7 @@ const buildFeatureSchemaColumns = (columns: readonly string[]): FeatureSchemaCol
         name,
         type: 'number',
         unit: 'seconds',
+        format: null,
         description: 'Quantile of Δt distribution',
       } satisfies FeatureSchemaColumn;
     }
@@ -1612,6 +1627,7 @@ const buildFeatureSchemaColumns = (columns: readonly string[]): FeatureSchemaCol
       name,
       type: 'number',
       unit: null,
+      format: null,
       description: 'Derived feature',
     } satisfies FeatureSchemaColumn;
   });
@@ -1683,6 +1699,7 @@ const buildSchemaDocument = (
           name: { type: 'string' },
           type: { enum: ['string', 'number', 'integer'] },
           pattern: { type: 'string' },
+          format: { type: 'string' },
           description: { type: 'string' },
         },
         required: ['name', 'type', 'description'],
@@ -1694,6 +1711,7 @@ const buildSchemaDocument = (
           name: { type: 'string' },
           type: { enum: ['string', 'number', 'integer'] },
           unit: { type: ['string', 'null'] },
+          format: { type: ['string', 'null'] },
           description: { type: 'string' },
         },
         required: ['name', 'type', 'description', 'unit'],
@@ -2033,12 +2051,14 @@ export const persistSimulationRun = async (
   const featureAugmenter = resolveFeatureAugmenterFromInput(input);
   const featureColumnList = buildFeatureColumnList(featureAugmenter);
   let metaPath: string | null = null;
+  let metaSha256: string | null = null;
   const includeFeaturesCsv = Boolean(input?.includeFeaturesCsv);
   const kid = sanitizeKid(input?.kid ?? input?.manifest?.kid ?? null);
   const cryptoMetadata = sanitizeCryptoMetadata(input?.crypto ?? null, kid);
   if (!cryptoMetadata.kid && kid) {
     cryptoMetadata.kid = kid;
   }
+  const allowedIssuers = sanitizeIssuerList(input?.allowedIssuers ?? null);
   const manifestCrypto = {
     kid: cryptoMetadata.kid,
     kdf: cryptoMetadata.kdf,
@@ -2129,6 +2149,7 @@ export const persistSimulationRun = async (
     delta_seconds: deltaStats,
     session_event_counts: sessionStats.perSession,
     output: {
+      dir: outputDir,
       csv_path: csvPath,
       manifest_path: manifestPath,
       csv_sha256: csvHash,
@@ -2137,6 +2158,7 @@ export const persistSimulationRun = async (
       run_meta_path: runMetaPath,
       audit_path: auditPath,
       schema_path: schemaPath,
+      meta: null,
     },
     source: {
       sim_log_dir: outputDir,
@@ -2149,6 +2171,12 @@ export const persistSimulationRun = async (
   manifest.crypto = manifestCrypto;
 
   manifest.schema_sha256 = schemaSha256;
+
+  if (allowedIssuers.length > 0) {
+    const jwtSection = (manifest.jwt ?? {}) as Record<string, unknown>;
+    jwtSection.allowed_issuers = allowedIssuers;
+    manifest.jwt = jwtSection;
+  }
 
   const existingTiming = (manifest.timing ?? {}) as Record<string, unknown>;
   manifest.timing = {
@@ -2205,8 +2233,26 @@ export const persistSimulationRun = async (
     const metaContent = anomalyMetaRecords.map((record) => JSON.stringify(record)).join('\n').concat('\n');
     await fs.writeFile(resolvedMetaPath, metaContent, { encoding: 'utf8' });
     metaPath = resolvedMetaPath;
+    const digest = crypto.createHash('sha256').update(metaContent, 'utf8').digest('hex');
+    metaSha256 = `sha256:${digest}`;
     const outputSection = (manifest.output ?? {}) as Record<string, unknown>;
-    outputSection.meta_path = resolvedMetaPath;
+    const relativeMetaPath = path.relative(outputDir, resolvedMetaPath) || path.basename(resolvedMetaPath);
+    const normalizedMetaPath = relativeMetaPath.split(path.sep).join('/');
+    delete outputSection.meta_path;
+    delete (outputSection as Record<string, unknown>)['meta_sha256'];
+    outputSection.meta = {
+      path: normalizedMetaPath,
+      sha256: metaSha256,
+    };
+    manifest.output = outputSection;
+    await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
+      encoding: 'utf8',
+    });
+  } else {
+    const outputSection = (manifest.output ?? {}) as Record<string, unknown>;
+    delete outputSection.meta_path;
+    delete (outputSection as Record<string, unknown>)['meta_sha256'];
+    outputSection.meta = null;
     manifest.output = outputSection;
     await fs.writeFile(manifestPath, `${JSON.stringify(manifest, null, 2)}\n`, {
       encoding: 'utf8',
@@ -2375,6 +2421,7 @@ export const persistSimulationRun = async (
     featuresCsvPath,
     manifestPath,
     metaPath,
+    metaSha256,
     runMetaPath,
     auditPath,
     schemaPath,

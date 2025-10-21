@@ -36,6 +36,7 @@ type CliOptions = {
   ntpLastMeasuredAt?: string;
   ntpStatePath?: string;
   ntpFreshnessMs?: number;
+  jwtIssuer?: string | string[];
 };
 
 const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
@@ -45,6 +46,17 @@ const normalizeAnomaliesArg = (input: CliOptions['anomalies']): string[] => {
   const values = Array.isArray(input) ? input : String(input).split(',');
   const normalized = Array.from(normalizeAnomalyList(values)).map((item) => item);
   return normalized;
+};
+
+const normalizeIssuersArg = (input: CliOptions['jwtIssuer']): string[] => {
+  if (!input) {
+    return [];
+  }
+  const values = Array.isArray(input) ? input : [input];
+  const sanitized = values
+    .map((issuer) => issuer.trim())
+    .filter((issuer) => issuer.length > 0);
+  return Array.from(new Set(sanitized));
 };
 
 const main = async (): Promise<void> => {
@@ -123,6 +135,11 @@ const main = async (): Promise<void> => {
       default: true,
       describe: 'Persist outputs to disk (use --no-persist to disable).',
     })
+    .option('jwt-issuer', {
+      type: 'string',
+      describe: 'Allowed JWT issuer (repeat to specify multiple entries).',
+      array: true,
+    })
     .option('start', {
       type: 'string',
       describe: 'ISO8601 timestamp to start the first session.',
@@ -164,6 +181,7 @@ const main = async (): Promise<void> => {
 
   try {
     const anomalies = normalizeAnomaliesArg(argv.anomalies);
+    const allowedIssuers = normalizeIssuersArg(argv.jwtIssuer);
     const ntpOverrideRaw = typeof argv.ntpP95Ms === 'string' ? argv.ntpP95Ms.trim() : undefined;
     const shouldOverrideNtp =
       typeof ntpOverrideRaw === 'string' && ntpOverrideRaw.length > 0 && ntpOverrideRaw.toLowerCase() !== 'auto';
@@ -190,6 +208,7 @@ const main = async (): Promise<void> => {
       includeFeaturesCsv: argv.includeFeatures,
       ntpStatePath: argv.ntpStatePath,
       freshnessMs: argv.ntpFreshnessMs,
+      jwtIssuers: allowedIssuers,
     };
 
     if (shouldOverrideNtp && ntpOverrideRaw !== undefined) {

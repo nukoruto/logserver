@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -180,6 +181,7 @@ describe('simWriter.persistSimulationRun', () => {
       includeFeaturesCsv: true,
       kid: 'KID-UNIT-001',
       crypto: DEFAULT_CRYPTO_METADATA,
+      allowedIssuers: [' https://issuer.example ', 'https://issuer.example'],
     });
 
     expect(result.runId).toBe('unit-test-001');
@@ -313,12 +315,25 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.anomaly_summary).toEqual({ normal: 1, protocol_violation: 1, time_deviation: 1 });
     expect(manifest.session_event_counts).toEqual({ 'sess-001': 2, 'sess-099': 1 });
     expect(manifest.session_ids.sort()).toEqual(['sess-001', 'sess-099']);
+    expect(manifest.output.dir).toBe(tempDir);
     expect(manifest.output.csv_path).toBe(result.csvPath);
     expect(manifest.output.manifest_path).toBe(result.manifestPath);
     expect(manifest.output.csv_sha256).toBe(result.csvHash);
     expect(manifest.output.features_csv_path).toBe(result.featuresCsvPath);
     expect(manifest.output.features_csv_sha256).toBe(result.featuresCsvHash);
-    expect(manifest.output.meta_path).toBe(result.metaPath);
+    expect(manifest.output).not.toHaveProperty('meta_path');
+    expect(manifest.output).not.toHaveProperty('meta_sha256');
+    expect(manifest.output.meta).toBeTruthy();
+    if (!result.metaPath || !result.metaSha256) {
+      throw new Error('metaPath and metaSha256 should be defined when meta records exist');
+    }
+    const expectedMetaRel = path.relative(tempDir, result.metaPath) || path.basename(result.metaPath);
+    expect(manifest.output.meta).toEqual({ path: expectedMetaRel, sha256: result.metaSha256 });
+    const metaContent = await fs.readFile(result.metaPath, 'utf8');
+    const computedMetaSha = `sha256:${createHash('sha256').update(metaContent, 'utf8').digest('hex')}`;
+    expect(result.metaSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.metaSha256).toBe(computedMetaSha);
+    expect(manifest.output.meta.sha256).toBe(computedMetaSha);
     expect(manifest.output.run_meta_path).toBe(result.runMetaPath);
     expect(manifest.output.audit_path).toBe(result.auditPath);
     expect(manifest.output.schema_path).toBe(result.schemaPath);
@@ -373,6 +388,7 @@ describe('simWriter.persistSimulationRun', () => {
       },
     });
     expect(manifest.provenance.schema_version).toBeDefined();
+    expect(manifest.jwt.allowed_issuers).toEqual(['https://issuer.example']);
 
     const fairPayload = JSON.parse(await fs.readFile(result.fairPath, 'utf8'));
     expect(fairPayload.dataset.csv_sha256).toBe(result.csvHash);

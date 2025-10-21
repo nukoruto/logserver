@@ -147,7 +147,7 @@
    ```
 
 ### 4.2 データ配置
-- `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` 列には収集時の生 Cookie 値（または実験用擬似 Cookie）を入力に `hex(HMAC_SHA256(K_cookie, raw_cookie || salt))` で導出した擬似匿名化セッション識別子を保存する。uid からの決定的再生成は禁止する。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。
+- `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` 列には収集時の生 Cookie 値（または実験用擬似 Cookie）を入力に `hex(HMAC_SHA256(K_cookie, raw_cookie || salt))` で導出した擬似匿名化セッション識別子を保存する。uid からの決定的再生成は禁止する。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。また、JWT の `iss` は許可リストと厳密一致させる。許可 Issuer はシミュレータ CLI の `--jwt-issuer` または manifest.parameters.jwt.allowed_issuers で管理する。
   - `path` 列は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で正規化する。同ヘルパーは (1) ASCII 英字の大文字/小文字を保持（小文字化する場合は SRS でサーバ挙動を明記し、テストでバイト一致を保証）、(2) スキーム・ホスト除去と先頭 `/` 付与、(3) 連続スラッシュ圧縮と末尾スラッシュ除去、(4) RFC 3986 の unreserved 文字のみをデコードし予約文字（例: `%2F`）は再エンコードしない、(5) クエリパラメータのキー/値を UTF-8 コード順で安定ソートし `+` を `%20` に統一、(6) 正規化後に空クエリなら `?` を削除、(7) `#fragment` を破棄、を順に適用し、Node/Python 両実装で 100 ケース以上のプロパティテストによりバイト一致を検証する。
 - CSV 作成後は `python tools/audit_missing.py <csv-path> --output <report-path>` を実行し、必須列の comp(c) が 1.0 未満であれば修正する。CI でも同スクリプトを用いて自動検証する。
 - セッション化 (`trainer.scripts.preprocess`) では `method` / `path` / `op_category` から `template_id` を決定的に導出し、`AUTH::GET::dashboard` のような形式で `template_id` 列と `event` 列の双方に保存する。TypeScript 側の `@logserver/dt-preproc` も同じテンプレート生成ロジックを利用するため、Python/Node 間でテンプレート語彙が一致する。
@@ -332,7 +332,9 @@ pnpm exec ts-node scripts/simulate.ts \
   `--time-anomaly-mode auto|propagate|local` で挙動を切り替え可能。
   auto 時の伝搬比率は `--time-anomaly-prop-weight`（0.0..1.0、既定 0.7）で制御する。
   各注入ごとの選択モードと重みは `meta.jsonl` に JSON Lines 形式で記録され、
-  manifest の `output.meta_path` および `params.time_anomaly` にも保存される。
+  manifest の `output.meta.path` / `output.meta.sha256`（`output.dir` からの相対パスと SHA-256）および `params.time_anomaly` にも保存される。
+- `--jwt-issuer https://issuer.example` を指定すると、JWT の `iss` が許可リスト外の場合は UID 派生が行われず、該当イベントは `uid` 未設定のままフィルタされる。複数 Issuer を許可する場合はオプションを複数回指定する。
+- `output.meta.sha256` は `sha256sum -c` で検証できる。例: `cd $(jq -r '.output.dir' manifest.json)` の後に `SHA=$(jq -r '.output.meta.sha256' manifest.json)`、`PATH=$(jq -r '.output.meta.path' manifest.json)` を評価し、`echo "${SHA}  ${PATH}" | sha256sum -c -` を実行する。
 
 ## 5. 使い方（CLI の一例）
 
