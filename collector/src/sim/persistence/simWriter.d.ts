@@ -49,6 +49,7 @@ export interface PersistSimulationInput extends Record<string, unknown> {
   includeFeaturesCsv?: boolean;
   kid?: string | null;
   crypto?: SessionCryptoMetadata | null;
+  allowedIssuers?: readonly string[] | null;
 }
 
 export interface PersistSimulationResult {
@@ -56,6 +57,7 @@ export interface PersistSimulationResult {
   featuresCsvPath: string | null;
   manifestPath: string;
   metaPath: string | null;
+  metaSha256: string | null;
   runMetaPath: string;
   auditPath: string;
   schemaPath: string;

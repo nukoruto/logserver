@@ -13,6 +13,13 @@
     "cookie": "string (deterministic pseudonymous session cookie)",
     "op_category": "string ∈ {AUTH, READ, UPDATE}"
   },
+  "files": {
+    "meta": {
+      "path": "meta.jsonl (relative to manifest.output.dir)",
+      "sha256": "sha256:<computed at generation time>",
+      "note": "Authoritative values are recorded in manifest.output.meta"
+    }
+  },
   "collection_purpose": "Reproduce Δt-aware LSTM anomaly detection experiments for session operations, aligning with SRS.md section 1.",
   "pseudonymization": {
     "method": "HKDF-SHA256 + HMAC-SHA256",
@@ -21,6 +28,13 @@
     "kid": "sid-fixture-202406",
     "formula": "uid = hex( HMAC_SHA256(key=K_ds, message=raw_jwt_utf8) )",
     "deterministic": true
+  },
+  "jwt_validation": {
+    "allowed_issuers": [
+      "https://issuer.example"
+    ],
+    "clock_skew_sec": 0,
+    "notes": "UID derivation rejects tokens whose iss claim is absent or outside the allow-list"
   },
   "ntp_reference": {
     "standard": "RFC 5905 (NTPv4)",

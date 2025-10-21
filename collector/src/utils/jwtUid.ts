@@ -1,4 +1,5 @@
 import crypto from 'node:crypto';
+import logger from './logger';
 
 const BEARER_PREFIX = /^Bearer\s+/i;
 
@@ -6,6 +7,8 @@ export interface JwtUidOptions {
   secretHex: string;
   now?: number;
   requiredAudience?: string | string[];
+  allowedIssuers?: string[];
+  clockSkewSec?: number;
 }
 
 const toBase64Url = (value: string): string =>
@@ -47,6 +50,42 @@ const ensureAudience = (
     return false;
   }
   return targets.every((target) => candidate.includes(target));
+};
+
+const normalizeIssuerList = (issuers: unknown): string[] => {
+  if (!issuers) {
+    return [];
+  }
+  const values: string[] = [];
+  if (Array.isArray(issuers)) {
+    for (const value of issuers) {
+      if (typeof value === 'string') {
+        values.push(value.trim());
+      }
+    }
+  } else if (typeof issuers === 'string') {
+    for (const part of issuers.split(',')) {
+      const trimmed = part.trim();
+      if (trimmed) {
+        values.push(trimmed);
+      }
+    }
+  }
+  const unique = new Set(values.filter((value) => value.length > 0));
+  return Array.from(unique);
+};
+
+const resolveClockSkew = (value: unknown): number => {
+  if (typeof value !== 'number' || !Number.isFinite(value)) {
+    return 0;
+  }
+  if (value <= 0) {
+    return 0;
+  }
+  if (value > 60) {
+    return 60;
+  }
+  return value;
 };
 
 const parseSecretHex = (secretHex: string): Buffer => {
@@ -97,13 +136,25 @@ export const deriveUidFromAuthorization = (
   }
 
   const nowSeconds = options.now ?? Math.floor(Date.now() / 1000);
+  const clockSkew = resolveClockSkew(options.clockSkewSec);
   const exp = payload.exp;
-  if (typeof exp !== 'number' || !Number.isFinite(exp) || exp <= nowSeconds) {
+  if (typeof exp !== 'number' || !Number.isFinite(exp) || exp + clockSkew <= nowSeconds) {
     return null;
   }
   const nbf = payload.nbf;
-  if (typeof nbf === 'number' && Number.isFinite(nbf) && nbf > nowSeconds) {
+  if (typeof nbf === 'number' && Number.isFinite(nbf) && nbf - clockSkew > nowSeconds) {
     return null;
+  }
+  const allowedIssuers = normalizeIssuerList(options.allowedIssuers);
+  if (allowedIssuers.length > 0) {
+    const issuer = typeof payload.iss === 'string' ? payload.iss.trim() : '';
+    if (!issuer || !allowedIssuers.includes(issuer)) {
+      logger.debug('deriveUidFromAuthorization rejected token', {
+        reason: 'issuer_mismatch',
+        issuer,
+      });
+      return null;
+    }
   }
   if (!ensureAudience(payload, options.requiredAudience)) {
     return null;

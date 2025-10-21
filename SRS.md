@@ -45,7 +45,9 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - タイムゾーン: UTC で統一
 - 収集直後に `tools/audit_missing.py` で必須列ごとの comp(c) = 1 - missing_count(c) / N を計測し、全必須列で 1.0 を満たさない場合は CI を失敗させる。
 - 永続化時に `fair.json`, `datasheet.json`, `provenance.json` を同時生成し、`csv_sha256`, `schema_sha256`, `git_commit`, `seed`, `gpu_mode` を記録する。
+- `meta.jsonl` を生成した場合は manifest.output.dir を基準とする相対パスと SHA-256 を `manifest.output.meta = { path, sha256 }` に記録し、存在しない場合は `manifest.output.meta = null` とする。
 - Authorization ヘッダ（Bearer JWT）は取り込み時のみ必須とし、`uid = hex(HMAC_SHA256(secret, jwt_utf8))` を導出した直後に破棄する。CSV や metadata には保存せず、CI でも流出を検知して失敗させる。
+- JWT の `iss` は manifest.parameters.jwt.allowed_issuers または CLI で指定した許可リストと厳密一致させる。不一致や欠落が発生したトークンは UID 派生を行わず廃棄する。
 
 ### 6.2 基本データ契約（10 列）
 - timestamp_utc（UTC epoch 秒 double。必要に応じて別途 RFC 3339 文字列を派生保存）

@@ -10,8 +10,13 @@ describe('deriveUidFromAuthorization', () => {
   ): string => `Bearer ${mintTestToken(payload, secretHex, headerOverrides)}`;
 
   it('returns uid for a valid bearer token', () => {
-    const header = bearer({ sub: 'user-1', exp: now + 120, aud: 'logserver' });
-    const uid = deriveUidFromAuthorization(header, { secretHex, now, requiredAudience: 'logserver' });
+    const header = bearer({ sub: 'user-1', exp: now + 120, aud: 'logserver', iss: 'https://issuer.example' });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      requiredAudience: 'logserver',
+      allowedIssuers: ['https://issuer.example'],
+    });
     expect(uid).toBeTruthy();
     expect(uid).toMatch(/^[0-9a-f]{64}$/);
   });
@@ -32,6 +37,79 @@ describe('deriveUidFromAuthorization', () => {
     const header = bearer({ sub: 'user-1', exp: now + 60, aud: 'other-service' });
     const uid = deriveUidFromAuthorization(header, { secretHex, now, requiredAudience: 'logserver' });
     expect(uid).toBeNull();
+  });
+
+  it('rejects tokens when issuer does not match allowed list', () => {
+    const header = bearer({ sub: 'user-1', exp: now + 120, iss: 'https://issuer.invalid' });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      allowedIssuers: ['https://issuer.example'],
+    });
+    expect(uid).toBeNull();
+  });
+
+  it('rejects tokens missing issuer when allowed issuers are configured', () => {
+    const header = bearer({ sub: 'user-1', exp: now + 120 });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      allowedIssuers: ['https://issuer.example'],
+    });
+    expect(uid).toBeNull();
+  });
+
+  it('trims issuer and matches case-sensitive entries', () => {
+    const header = bearer({ sub: 'user-1', exp: now + 120, iss: ' https://issuer.example ' });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      allowedIssuers: ['https://issuer.example'],
+    });
+    expect(uid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('accepts array audience when all entries match requirements', () => {
+    const header = bearer({ sub: 'user-1', exp: now + 120, aud: ['logserver', 'extra'], iss: 'https://issuer.example' });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      requiredAudience: ['logserver', 'extra'],
+      allowedIssuers: ['https://issuer.example'],
+    });
+    expect(uid).toMatch(/^[0-9a-f]{64}$/);
+  });
+
+  it('rejects tokens outside configured clock skew window', () => {
+    const header = bearer({
+      sub: 'user-1',
+      exp: now - 10,
+      nbf: now + 10,
+      iss: 'https://issuer.example',
+    });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      allowedIssuers: ['https://issuer.example'],
+      clockSkewSec: 5,
+    });
+    expect(uid).toBeNull();
+  });
+
+  it('accepts tokens within configured clock skew window for exp and nbf', () => {
+    const header = bearer({
+      sub: 'user-1',
+      exp: now - 10,
+      nbf: now + 5,
+      iss: 'https://issuer.example',
+    });
+    const uid = deriveUidFromAuthorization(header, {
+      secretHex,
+      now,
+      allowedIssuers: ['https://issuer.example'],
+      clockSkewSec: 15,
+    });
+    expect(uid).toMatch(/^[0-9a-f]{64}$/);
   });
 
   it('rejects malformed headers', () => {
