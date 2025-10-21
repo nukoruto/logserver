@@ -56,16 +56,19 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - referer（参照元 URL。欠損は空文字も可）
 - user_agent（クライアント識別子）
 - ip（IPv4/IPv6。疑似化済み）
-- cookie（擬似匿名化済みセッションクッキー。uid から決定的生成し、生 JWT/生クッキーは保存しない）
+- cookie（擬似匿名化済みセッションクッキー値。収集時の生 Cookie 文字列（または実験用生成 Cookie）を入力に `cookie = hex(HMAC_SHA256(K_cookie, raw_cookie || salt))` のように導出し、uid 由来で決定的再生成しない）
 - op_category（AUTH / READ / UPDATE の 3 区分）
 
 - path 正規化は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で行い、以下の規則を統一適用する。
-  1. ASCII 英字は小文字化する（大文字を保持するケースは `preserve_case=True` 指定時のみ）。
+  1. ASCII 英字の大文字/小文字は入力のまま保持する（小文字化を前提とする実験サーバでのみ `preserve_case=False` を SRS に明記した設定テストで使用する）。
   2. スキームとホスト部分を除去し、先頭 `/` 付きパスのみを残す。
   3. 連続スラッシュを 1 つに圧縮し、末尾スラッシュはルート以外では除去する。
-  4. 安全文字 (`A-Z`, `a-z`, `0-9`, `-._~`) はデコードしてから RFC 3986 準拠で再エンコードする（`%` は大文字）。
-  5. クエリパラメータはキーを UTF-8 コード順に、値をキー内で昇順にソートし、`+` ではなく `%20` を用いる。
+  4. RFC 3986 の unreserved 文字（`ALPHA / DIGIT / "-" / "." / "_" / "~"`）に対応する `%` エンコードのみデコードし、その他の予約文字（例: `%2F`）は再エンコードせず保持する。再エンコード時は `%` を大文字に統一する。
+  5. クエリパラメータはキーを UTF-8 コード順に安定ソートし、同一キー内では値を安定ソートする。`+` は `%20` に揃える。
   6. 正規化後にクエリが空なら `?` を削除する。
+  7. フラグメント（`#fragment`）は常に破棄する。
+
+- TypeScript/Python 双方で 100 ケース以上のプロパティテストを用意し、上記正規化ルールの結果がバイト一致することを CI で保証する。
 
 ### 6.3 派生特徴・ラベル（別工程）
 - Δt 系列（dt_sec, log_dt, delta_z, delta_robust_z, delta_quantile_0_25/0_5/0_75 等）
