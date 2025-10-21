@@ -17,17 +17,18 @@
 - **スキーマ**:
   | 列名 | 型 | 説明 |
   | ---- | --- | ---- |
-  | `timestamp_utc` | string | RFC 3339, UTC (Chrony 安定化後取得)
-  | `uid` | string | `base64url(HMAC_SHA256(K_ds, raw_jwt))`
-  | `session_id` | string | セッション化後の一意キー (`user`+`timestamp`)
-  | `method` | string | HTTP 動詞 (`GET/POST/PUT/DELETE`)
-  | `path` | string | リクエストパス
-  | `referer` | string | HTTP Referer
-  | `user_agent` | string | ユーザエージェント
-  | `ip` | string | RFC5737 のドキュメントレンジ (例: 198.51.100.0/24)
-  | `op_category` | string | `AUTH/READ/UPDATE`
-- **派生列**: Δt 系列、latency、異常スコア、ラベル等は 9 列契約 CSV を `dt-preproc`→`trainer.scripts.score`→`trainer.scripts.threshold` で生成し、`data/processed/` に保存する。
-- **契約遵守**: CSV 本体は常に 9 列固定。派生特徴や監査メタは `run_meta.json` / `audit.jsonl` / `schema.json` のサイドカーで提供し、`manifest.schema_sha256` に `schema.json` のハッシュを格納する。
+  | `timestamp_utc` | double | UTC epoch 秒（Chrony 安定化後取得）。必要に応じて派生物として RFC 3339 文字列を別途保存する。 |
+  | `uid` | string | `hex(HMAC_SHA256(K_ds, raw_jwt_utf8))` による擬似匿名化済みユーザ ID。 |
+  | `session_id` | string | セッション化後の一意キー (`user`+`timestamp`)。 |
+  | `method` | string | HTTP 動詞 (`GET/POST/PUT/DELETE`)。 |
+  | `path` | string | リクエストパス。`normalize_request_path` ヘルパーで正規化した値を格納する。 |
+  | `referer` | string | HTTP Referer。 |
+  | `user_agent` | string | ユーザエージェント。 |
+  | `ip` | string | RFC5737 のドキュメントレンジ (例: 198.51.100.0/24)。 |
+  | `cookie` | string | `uid` から決定的に導出した擬似匿名化セッションクッキー。 |
+  | `op_category` | string | `AUTH/READ/UPDATE`。 |
+- **派生列**: 10 列契約 CSV から生成（`dt-preproc`→`trainer.scripts.score`→`trainer.scripts.threshold` の決定的パイプライン）。
+- **契約遵守**: CSV 本体は常に 10 列固定。派生特徴や監査メタは `run_meta.json` / `audit.jsonl` / `schema.json` のサイドカーで提供し、`manifest.schema_sha256` に `schema.json` のハッシュを格納する。
 
 ## 4. 再利用性 (Reusable)
 - **収集目的**: Web セッション操作系列の Δt を含む LSTM 制御モデル評価 (SRS.md §1, §6-§8)。
@@ -40,7 +41,7 @@
   - PyTorch 2.x (CUDA モードは `.env` の `GPU_MODE` で切替)
 
 ## 5. データ収集と前処理
-- **擬似匿名化**: `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")`、`uid = base64url(HMAC_SHA256(key=K_ds, message=raw_jwt))`。`JWT_HMAC_KEY` は 256bit を推奨し、`kid=sid-fixture-202406` を `metadata.json` に記録。
+- **擬似匿名化**: `K_ds = HKDF_SHA256(JWT_HMAC_KEY, info="sid")`、`uid = hex(HMAC_SHA256(key=K_ds, message=raw_jwt_utf8))`。`JWT_HMAC_KEY` は 256bit を推奨し、`kid=sid-fixture-202406` を `metadata.json` に記録。
 - **時刻同期 (NTP 基準)**: `chronyc tracking` で `Last offset` と `RMS offset` が ±0.050s 以内。証跡は `logs/ntp-*.txt` に保存。
 - **セッション化**: `python -m trainer.scripts.preprocess --config trainer/configs/default.yaml` が `delta_t` を算出。
 - **乱数種**:

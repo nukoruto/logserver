@@ -59,6 +59,14 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - cookie（擬似匿名化済みセッションクッキー。uid から決定的生成し、生 JWT/生クッキーは保存しない）
 - op_category（AUTH / READ / UPDATE の 3 区分）
 
+- path 正規化は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で行い、以下の規則を統一適用する。
+  1. ASCII 英字は小文字化する（大文字を保持するケースは `preserve_case=True` 指定時のみ）。
+  2. スキームとホスト部分を除去し、先頭 `/` 付きパスのみを残す。
+  3. 連続スラッシュを 1 つに圧縮し、末尾スラッシュはルート以外では除去する。
+  4. 安全文字 (`A-Z`, `a-z`, `0-9`, `-._~`) はデコードしてから RFC 3986 準拠で再エンコードする（`%` は大文字）。
+  5. クエリパラメータはキーを UTF-8 コード順に、値をキー内で昇順にソートし、`+` ではなく `%20` を用いる。
+  6. 正規化後にクエリが空なら `?` を削除する。
+
 ### 6.3 派生特徴・ラベル（別工程）
 - Δt 系列（dt_sec, log_dt, delta_z, delta_robust_z, delta_quantile_0_25/0_5/0_75 等）
 - 応答時間統計（latency_ms、移動平均・分位点）

@@ -147,7 +147,8 @@
    ```
 
 ### 4.2 データ配置
-  - `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` は uid から決定的に生成した擬似匿名化セッションクッキーとし、生 JWT は永続化しない。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。
+- `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` は uid から決定的に生成した擬似匿名化セッションクッキーとし、生 JWT は永続化しない。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。
+  - `path` 列は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で正規化する。同ヘルパーは (1) ASCII 英字の小文字化、(2) スキーム・ホスト除去と先頭 `/` 付与、(3) 連続スラッシュ圧縮と末尾スラッシュ除去、(4) 安全文字のデコードと RFC 3986 準拠の再エンコード（`%` 大文字）、(5) クエリパラメータのキー/値ソートと `%20` 固定、(6) 空クエリ削除 を順に適用し、Node/Python 両実装でバイト一致させる。
 - CSV 作成後は `python tools/audit_missing.py <csv-path> --output <report-path>` を実行し、必須列の comp(c) が 1.0 未満であれば修正する。CI でも同スクリプトを用いて自動検証する。
 - セッション化 (`trainer.scripts.preprocess`) では `method` / `path` / `op_category` から `template_id` を決定的に導出し、`AUTH::GET::dashboard` のような形式で `template_id` 列と `event` 列の双方に保存する。TypeScript 側の `@logserver/dt-preproc` も同じテンプレート生成ロジックを利用するため、Python/Node 間でテンプレート語彙が一致する。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
