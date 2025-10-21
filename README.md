@@ -1,3 +1,5 @@
+# 2025.10.22　このリポジトリは、コードが膨れすぎたため、後継repoへ移行しました。
+
 # Δt-aware Session Log Anomaly Detection (LSTM) with Simulink Visualization
 
 本リポジトリは、**セッション操作系列の行動モデル化**に基づく異常検知を目的に、
