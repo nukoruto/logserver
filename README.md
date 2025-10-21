@@ -25,11 +25,11 @@
 ## 2. 主な機能
 - **シナリオ駆動シミュレーション**：`collector/src/services/simulationService.ts` が正常／異常シナリオを決定的に生成し、Δt と操作イベントを含むログ系列を CSV + manifest で永続化
 - **セッション化 / 前処理**：生成済みログをセッション単位へ分割し、操作カテゴリ（抽象化）と Δt を特徴量として付与
-- **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力、次イベント／Δt 予測による**予測誤差型**の異常検知
-- **異常スコア**：予測確率の逸脱 + Δt 予測誤差/尤度を統合
+- **LSTM モデル**：イベント埋め込み＋Δt 連続値/ビニングを入力し、各ステップで **BOS** を挿入した入力系列から「次イベント」と「次Δt」を同時予測する**予測誤差型**の異常検知（`--target-mode same` で旧来の同時刻ターゲットへ切替可）
+- **異常スコア**：次イベント対数尤度の負値 `s_ev(i+1) = -log p(y_{i+1} | h_i)` と Δt 回帰誤差 `s_time(i+1) = |\hat z_{i+1} - z_{i+1}|` を合算し、既存の移動平均平滑化を適用
 - **閾値設計**：分位点（例えば上位 p%）/ EVT-POT による自動しきい化、セッション単位/イベント単位いずれも可
 - **閾値メタ生成**：セッション分割 CLI は `meta.json` にアルゴリズムバージョン、Δt 関連統計、データセット SHA-256 を保存し、追試・監査を支援
-- **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（9 列 raw / 派生 features のスキーマ定義）を出力し、`manifest.schema_sha256` に `schema.json` の SHA-256 を記録
+- **監査・再現メタ**：シミュレーション永続化時に `run_meta.json`（run_id/seed/環境/ハッシュ）、`audit.jsonl`（idx・sid_final・op_category・anomaly_type・reason）、`schema.json`（10 列 raw / 派生 features のスキーマ定義）、`fair.json`（FAIR 要約）、`datasheet.json`（データセット仕様）、`provenance.json`（git_commit/seed/gpu_mode 等）を出力し、`manifest.schema_sha256` および各メタファイルの SHA-256 を記録
 - **説明可能性**：Δt 統計（分布・区間）および特徴寄与度の算出、ケース単位の簡易説明レポート
 - **Simulink 連携**：学習済み LSTM の重みをエクスポートして Simulink に取り込み、**PID** と**同一条件**で追従・外乱応答・過渡応答を比較
 - **ユーザ別制御ブロック**：ユーザセグメントごとにコントローラを切替／分離し、セグメント特性（操作テンポなど）に最適化
@@ -147,13 +147,15 @@
    ```
 
 ### 4.2 データ配置
-- `data/raw/` には **9 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, op_category` で固定し、RFC 3339 UTC と HKDF-HMAC 擬似匿名化を前提とする。
+- `data/raw/` には **10 列固定の基本契約 CSV** を配置する。列順は `timestamp_utc, uid, session_id, method, path, referer, user_agent, ip, cookie, op_category` で固定し、`timestamp_utc` は UTC epoch 秒（double）で保存する。可読性が必要な場合は別ファイルで RFC 3339 文字列を補助出力する。`cookie` 列には収集時の生 Cookie 値（または実験用擬似 Cookie）を入力に `hex(HMAC_SHA256(K_cookie, raw_cookie || salt))` で導出した擬似匿名化セッション識別子を保存する。uid からの決定的再生成は禁止する。`Authorization: Bearer <JWT>` は収集時に必須だが uid=hex(HMAC_SHA256(secret, jwt_utf8)) を導出した直後に破棄され、CSV/metadata には一切保存されない。また、JWT の `iss` は許可リストと厳密一致させる。許可 Issuer はシミュレータ CLI の `--jwt-issuer` または manifest.parameters.jwt.allowed_issuers で管理する。
+  - `path` 列は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で正規化する。同ヘルパーは (1) ASCII 英字の大文字/小文字を保持（小文字化する場合は SRS でサーバ挙動を明記し、テストでバイト一致を保証）、(2) スキーム・ホスト除去と先頭 `/` 付与、(3) 連続スラッシュ圧縮と末尾スラッシュ除去、(4) RFC 3986 の unreserved 文字のみをデコードし予約文字（例: `%2F`）は再エンコードしない、(5) クエリパラメータのキー/値を UTF-8 コード順で安定ソートし `+` を `%20` に統一、(6) 正規化後に空クエリなら `?` を削除、(7) `#fragment` を破棄、を順に適用し、Node/Python 両実装で 100 ケース以上のプロパティテストによりバイト一致を検証する。
+- CSV 作成後は `python tools/audit_missing.py <csv-path> --output <report-path>` を実行し、必須列の comp(c) が 1.0 未満であれば修正する。CI でも同スクリプトを用いて自動検証する。
 - セッション化 (`trainer.scripts.preprocess`) では `method` / `path` / `op_category` から `template_id` を決定的に導出し、`AUTH::GET::dashboard` のような形式で `template_id` 列と `event` 列の双方に保存する。TypeScript 側の `@logserver/dt-preproc` も同じテンプレート生成ロジックを利用するため、Python/Node 間でテンプレート語彙が一致する。
 - 付随情報（severity, module, params）は `meta` に JSON として保持してもよい。
-- 派生特徴は別工程で生成する。9 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
+- 派生特徴は別工程で生成する。10 列 CSV を `dt-preproc fit` → `dt-preproc transform` → `python -m trainer.scripts.score` → `python -m trainer.scripts.threshold` に投入し、`data/processed/` や `outputs/` に Δt・ロバスト統計・異常ラベル列を追加した成果物を保存する。
 - `trainer/configs/default.yaml` の `data.feature_merge.patterns` で `*-features.csv` を指定すると、`trainer.scripts.train` が `uid/session_id/timestamp_utc/template_id` をキーとして自動マージし、新しい特徴列のみを結合する。
 - `data/sim/` はシミュレーション API やシナリオ生成結果の既定保管先（`SIM_LOG_DIR` 未設定時）。CSV（`simEvents-<run-id>.csv`）、マニフェスト（`scenario-<run-id>.json`）、監査メタ（`run_meta.json` / `audit.jsonl` / `schema.json`）が保存され、`manifest.schema_sha256` に `schema.json` のハッシュが追記される。
-- `logs/` には 9 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
+- `logs/` には 10 列契約に従った参照ログ `sample.csv` を同梱している。初期動作確認では次のように生データ領域へ複製する。
 
   ```bash
   mkdir -p data/raw
@@ -330,7 +332,9 @@ pnpm exec ts-node scripts/simulate.ts \
   `--time-anomaly-mode auto|propagate|local` で挙動を切り替え可能。
   auto 時の伝搬比率は `--time-anomaly-prop-weight`（0.0..1.0、既定 0.7）で制御する。
   各注入ごとの選択モードと重みは `meta.jsonl` に JSON Lines 形式で記録され、
-  manifest の `output.meta_path` および `params.time_anomaly` にも保存される。
+  manifest の `output.meta.path` / `output.meta.sha256`（`output.dir` からの相対パスと SHA-256）および `params.time_anomaly` にも保存される。
+- `--jwt-issuer https://issuer.example` を指定すると、JWT の `iss` が許可リスト外の場合は UID 派生が行われず、該当イベントは `uid` 未設定のままフィルタされる。複数 Issuer を許可する場合はオプションを複数回指定する。
+- `output.meta.sha256` は `sha256sum -c` で検証できる。例: `cd $(jq -r '.output.dir' manifest.json)` の後に `SHA=$(jq -r '.output.meta.sha256' manifest.json)`、`PATH=$(jq -r '.output.meta.path' manifest.json)` を評価し、`echo "${SHA}  ${PATH}" | sha256sum -c -` を実行する。
 
 ## 5. 使い方（CLI の一例）
 
@@ -354,19 +358,22 @@ python -m trainer.scripts.explain --config trainer/configs/default.yaml
 
 `trainer.scripts.train` はセッション単位の分割から学習用統計を `fit` し、検証/テストは `transform` のみで再計算します。`--features dt` を指定すると、Δt 前処理 (`dt-preproc`) が生成した列のうち `delta_robust_z`, `delta_z_deseas_clipped`, `delta_log_burst`, `delta_quantile_0_25`（`delta_m25`）, `delta_quantile_0_5`（`delta_m50`）, `delta_quantile_0_75`（`delta_m75`）を検出し、存在する場合のみ LSTM 入力に連結します（未生成の列は自動的にスキップし、旧来の特徴にフォールバックします）。
 
+既定のターゲットモードは `next` であり、DataLoader は各セッション先頭に **BOS** を挿入して入力系列を 1 ステップ左へシフトし、分類・Δt 回帰の双方で「次イベント」を教師信号とします。末尾ステップは損失・スコアから自動的にマスクされ、`model_config.json` / `repro.json` に使用モードが記録されます。旧来の「同時刻ターゲット」を再現したい場合は `python -m trainer.scripts.train ... --target-mode same`（または YAML の `training.target_mode: same`）を指定してください。
+
 - `TrainerConfig.device` は `auto` が既定で、`GPU_MODE=ada6000`（RTX 6000 Ada）または `GPU_MODE=4060`（RTX 4060）を指定すると、自動で `cuda:0` と最適化済みの `num_workers` / `prefetch_factor` / `pin_memory` / `persistent_workers` を適用します。`GPU_MODE` を未設定か、対応表に存在しない値の場合は CUDA 利用可否を判定し `cuda:0` または `cpu` を選択します。
 - `data.feature_merge.patterns` に `*-features.csv` を設定すると、`trainer.scripts.train` が該当 CSV を探索し、`uid` / `session_id` / `timestamp_utc` / `template_id` をキーに追加列のみを結合する。テンプレート語彙の一致は Python/TypeScript 共通のテンプレート ID 生成ヘルパーで保証する。
 - DataLoader は IterableDataset ベースで、メモリ常駐の numpy 配列だけでなく `numpy.memmap` やスライス呼び出し可能オブジェクトから必要なセッションのみを読み出してバッチ化します。学習実行後は `model.pt` / `features.json` / `model_config.json` に加えて乱数種・DataLoader パラメタ・Git コミットを記録した `repro.json` が生成され、再現性監査を支援します。
 
 - 前処理 CLI 実行後は `data/processed/preproc_report.json` が生成され、前処理前後の統計量・欠損/"unknown" 件数・分位差・単位不変性判定、任意 5 ユーザの変換トレースを含む監査レポートとして保存されます。
 - `trainer.scripts.preprocess` は `data.chunksize`（既定 100,000）と `data.use_pyarrow` に従って CSV/JSON/Parquet をチャンク単位で読み込み、Δt 計算・セッション化した結果を `events.csv` / `events.parquet` へ追記します。監査レポート用のサンプルは `report.max_rows` で上限制御され、`null` を指定すると全行を統計用に読み込み、`0` 以下でサンプル取得を完全に無効化します。
-- `trainer.scripts.score` は `scoring.chunksize` と `scoring.use_pyarrow` を用いて Parquet ストリーミング推論を行い、セッションが分割されないようにチャンク境界の carry-over を保持しつつ `scores.csv` に追記します。既存の `runs/latest` ディレクトリ構造は変更せず、モデル読込と異常スコア平滑化は従来どおりです。
+- `trainer.scripts.score` は `scoring.chunksize` と `scoring.use_pyarrow` を用いて Parquet ストリーミング推論を行い、セッションが分割されないようにチャンク境界の carry-over を保持しつつ `scores.csv` に追記します。既存の `runs/latest` ディレクトリ構造は変更せず、モデル読込と異常スコア平滑化は従来どおりです。学習時に保存した `target_mode` を読み出し、次イベント基準の `s_ev + s_time` を再計算して元のイベント長と一致するスコア系列を出力します。
 - 100 万行のモックデータを対象にした統合テスト（`trainer/tests/test_streaming_large.py`）で処理時間（180 秒以内）とメモリ上限（約 1.2 GB 未満）を検証しており、チャンク処理に失敗した場合はテストが失敗するようになっています。
 
 - 閾値 CLI は入力スコア CSV の SHA-256 を冒頭で計算し、`threshold.json` のメタ情報に保存します。フォールバック理由（NaN/空グループなど）も JSON ログおよびメタに明記されます。
 - `--on-error` は `abort`（既定、部分成果物を削除）と `keep-partial`（`.partial` 拡張子で保持）を切替でき、運用事故時の調査を容易にします。
 - `--dump-eval` オプションを指定すると、`boundary_annotation` 等のアノテーション列が存在する場合に境界検出の F1 / Jaccard / Variation of Information を JSON で出力します（図表生成用）。
 - `--dump-hist` を指定すると、異常スコアのヒストグラム（bin 辺・中心・密度・要約統計）を JSON 形式で保存し、二峰性の可視化にそのまま利用できます。`--hist-bins` でビン数を調整できます。
+- `threshold` セクションでは `method` に `quantile` / `spot` / `otsu` / `knee` を指定でき、`side`（`upper` / `lower` / `both`）、`transform`（`score` / `raw_dt` / `log_dt`）、`group_keys`（既定は `[uid, op_category]`）を組み合わせて閾値学習を行います。`spot` は `q`（監視尾リスク）、`u_quantile`、`calib_frac`、`min_exceed` 等を制御でき、`otsu` は Freedman–Diaconis のビン幅とヒストグラム二峰性チェック、`knee` は距離最大法による肘検出をサポートします。いずれの方式でも `(uid, op_category)` → `(uid)` → `global` の順にバックオフし、閾値とメタ情報は `threshold.json` と `thresholds.json` に保存されます。
 
 ### 5.1 Δt ロバスト統計フィッティング CLI（Fit / Transform ランブック）
 
@@ -924,8 +931,10 @@ tscv search \
 ```
 
 - `--splits`: foldごとの `train_sessions` / `validation_sessions` を記述したYAML。`dataset.processed_dir` `label_column` `timestamp_column` を含める。
-- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。
-- 出力: ベスト構成を `--out` にJSONで書き出し、同階層に `<out>.jsonl` の全試行ログ（各trialのseed・fold指標・AP/ROC-AUC）を生成。種を固定すればベスト構成が再現できます。
+- `--space`: `trainer`/`model`/`features` セクションで乱数探索するハイパーパラメータ分布を定義したYAML。`--config random_search.yaml` を併用すると `search.base_seed` / `search.parallel` / `search.resume` / `search.dedup` や `objective.primary` / `objective.aggregator`、`device.gpu_mode` をまとめて指定でき、探索空間も `space.*` として同ファイルに内包できる。
+- `--metric`: `ap` / `roc_auc` / `f1` から一次指標を選択。`--aggregator mean_minus_std --lambda-std 1.0` のようにフォールド集約器を切り替えられる。
+- `--parallel` / `--dedup` / `--resume` / `--gpu-mode`: 並列実行数、重複パラメータのスキップ、途中再開、RTX6000 Ada / RTX4060 の固定を制御。いずれも決定論的な `trial_seed = base_seed + trial_index` を維持する。
+- 出力: ベスト構成を `--out`（任意のファイル名）と `summary.json` に保存し、同階層に `best.json` と `<out_basename>.jsonl` を生成。JSONL には `trial_id` / `trial_seed` / `params` / `fold_metrics`（AP・ROC-AUC・F1・最適しきい値・n_pos/n_neg）/ `aggregated`（平均・標準偏差・有効fold数・集約値）/ `valid_mask` / `status`（ok/invalid/failed/skipped）が記録される。AP/F1 は正例ゼロ fold を自動で除外し、`dedup` 有効時は重複試行が `status="skipped"` として記録される。
 
 探索中の特徴エンコーダはfoldごとの学習データでfit→検証へ凍結適用され、リークを防止します。
 

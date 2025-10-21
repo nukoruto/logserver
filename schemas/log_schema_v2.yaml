@@ -1,0 +1,19 @@
+version: 2
+required_columns:
+  - timestamp_utc      # epoch seconds (UTC, double precision)
+  - uid
+  - session_id
+  - method
+  - path
+  - referer
+  - user_agent
+  - ip
+  - cookie
+  - op_category
+notes:
+  - "authorization ヘッダは受信後に uid 生成へ使用したら即時破棄する"
+  - "cookie 列には擬似匿名化済みセッションクッキー (例: uid 派生 ID) を格納し、生値は保存しない"
+  - "timestamp_utc は UTC の epoch 秒 (double) で保存し、必要なら別ファイルで RFC3339 を補助提供する"
+  - "uid は hex(HMAC_SHA256(secret, jwt_utf8)) で生成する (secret は CSPRNG 128bit 以上)"
+  - "metadata から authorization/cookie/token 系フィールドは自動除去し、Bearer/JWT 文字列は保存しない"
+  - "欠損監査: comp(c) = 1 - missing_count(c) / N が全列で 1.0 であること"

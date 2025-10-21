@@ -35,11 +35,12 @@ CONTRACT_COLUMNS = {
     "referer",
     "user_agent",
     "ip",
+    "cookie",
     "op_category",
     "template_id",
 }
 ALTERNATE_TIMESTAMP_COLUMNS = ("timestamp_utc",)
-FORBIDDEN_COLUMNS = {"jwt", "authorization", "cookie", "cookies"}
+FORBIDDEN_COLUMNS = {"jwt", "authorization", "cookies", "Cookie"}
 OPTIONAL_COLUMNS = {
     "session_id",
     "method",
@@ -220,7 +221,8 @@ def load_events(
 def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
     df = df.copy()
     for column in df.columns:
-        if column.lower() in FORBIDDEN_COLUMNS:
+        lowered = column.lower()
+        if lowered in FORBIDDEN_COLUMNS or column in FORBIDDEN_COLUMNS:
             raise SessionizeError(
                 f"Forbidden column '{column}' detected. Ensure tokens are removed prior to preprocessing."
             )
@@ -231,9 +233,18 @@ def _normalise_columns(df: pd.DataFrame) -> pd.DataFrame:
                 break
     if "timestamp" not in df.columns:
         raise SessionizeError("Column 'timestamp_utc' is required for sessionization")
-    timestamp_strings = df["timestamp"].astype(str).str.strip()
-    df["timestamp"] = timestamp_strings
-    df["timestamp_utc"] = timestamp_strings
+    raw_timestamp = df["timestamp"]
+    numeric_candidate = pd.to_numeric(raw_timestamp, errors="coerce")
+    if numeric_candidate.notna().all():
+        timestamps = pd.to_datetime(numeric_candidate, utc=True, unit="s", errors="coerce")
+    else:
+        timestamp_strings = raw_timestamp.astype(str).str.strip()
+        timestamps = pd.to_datetime(timestamp_strings, utc=True, errors="coerce")
+    if timestamps.isna().any():
+        raise SessionizeError("Column 'timestamp' contains invalid values")
+    canonical_strings = timestamps.dt.tz_convert("UTC").dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+    df["timestamp"] = canonical_strings
+    df["timestamp_utc"] = canonical_strings
     if "status_code" in df.columns and "status" not in df.columns:
         df.rename(columns={"status_code": "status"}, inplace=True)
     if "meta" in df.columns and "metadata" not in df.columns:

@@ -13,8 +13,8 @@ import torch.nn.functional as F
 
 from ..features.batching import (
     build_sessions,
-    collate_examples,
     create_array_session_loader,
+    make_collate_fn,
 )
 from ..features.encoders import FeaturePack
 from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
@@ -27,11 +27,23 @@ class ScoringConfig:
 
 
 class AnomalyScorer:
-    def __init__(self, model: DeltaAwareLSTM, feature_pack: FeaturePack, config: ScoringConfig):
+    def __init__(
+        self,
+        model: DeltaAwareLSTM,
+        feature_pack: FeaturePack,
+        config: ScoringConfig,
+        *,
+        target_mode: str = "next",
+    ):
         self.model = model.to(config.device)
         self.model.eval()
         self.feature_pack = feature_pack
         self.config = config
+        mode = str(target_mode).lower()
+        if mode not in {"next", "same"}:
+            raise ValueError("target_mode must be 'next' or 'same'")
+        self.target_mode = mode
+        self._bos_index = feature_pack.bos_index
 
     @classmethod
     def from_run(cls, run_dir: Path, config: ScoringConfig) -> "AnomalyScorer":
@@ -48,17 +60,27 @@ class AnomalyScorer:
         )
         state_dict = torch.load(run_dir / "model.pt", map_location=config.device)
         model.load_state_dict(state_dict)
-        return cls(model, feature_pack, config)
+        target_mode = metadata.get("target_mode", "same")
+        return cls(model, feature_pack, config, target_mode=target_mode)
 
     def score(self, encoded: Dict[str, np.ndarray], session_ids: List[str]) -> Dict[str, np.ndarray]:
         slices, _, ordered_numeric = build_sessions(
             encoded, session_ids, self.feature_pack.numeric_features
         )
+        try:
+            delta_index = ordered_numeric.index("delta_t")
+        except ValueError as error:
+            raise RuntimeError("numeric features must include delta_t for Δt regression") from error
+        collate_fn = make_collate_fn(
+            target_mode=self.target_mode,
+            bos_index=self._bos_index,
+            delta_index=delta_index,
+        )
         loader = create_array_session_loader(encoded, ordered_numeric)
         scores: Dict[str, np.ndarray] = {}
         for descriptor in slices:
             example = loader(descriptor)
-            batch = collate_examples([example])
+            batch = collate_fn([example])
             scores[descriptor.key] = self._score_batch(batch)
         return scores
 
@@ -70,10 +92,14 @@ class AnomalyScorer:
             outputs = self.model(batch["events"], batch["numeric"])
             log_probs = F.log_softmax(outputs["event_logits"], dim=-1)
             chosen = torch.gather(log_probs, 2, batch["targets"].unsqueeze(-1)).squeeze(-1)
-            delta_error = torch.abs(outputs["delta_pred"] - batch["numeric"][:, :, 0])
-            score = -(chosen) + delta_error
-            score = score * batch["mask"].float()
-            smoothed = _moving_average(score.cpu().numpy().reshape(-1), self.config.smoothing_window)
+            delta_error = torch.abs(outputs["delta_pred"] - batch["delta_target"])
+            score = (-chosen) + delta_error
+            mask = batch["mask"]
+            valid_scores = score.masked_select(mask)
+            values = valid_scores.detach().cpu().numpy().astype(np.float32, copy=False)
+            if values.size == 0:
+                return values
+            smoothed = _moving_average(values, self.config.smoothing_window)
         return smoothed
 
 

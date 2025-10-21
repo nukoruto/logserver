@@ -10,7 +10,7 @@ import random
 from dataclasses import dataclass
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Dict, List, Optional, Sequence, Tuple
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
 import numpy as np
 import torch
@@ -18,11 +18,12 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader
 
 from ..features.batching import (
+    SessionExample,
     SessionDataset,
     SessionSlice,
     build_sessions,
-    collate_examples,
     create_array_session_loader,
+    make_collate_fn,
 )
 from ..features.encoders import FeaturePack
 from ..models.lstm_delta import DeltaAwareLSTM, LSTMConfig
@@ -45,8 +46,12 @@ class TrainerConfig:
     prefetch_factor: Optional[int] = None
     pin_memory: Optional[bool] = None
     persistent_workers: Optional[bool] = None
+    target_mode: str = "next"
 
     def __post_init__(self) -> None:
+        self.target_mode = str(self.target_mode).lower()
+        if self.target_mode not in {"next", "same"}:
+            raise ValueError("target_mode must be 'next' or 'same'")
         profile = self.device.lower()
         gpu_mode = os.getenv("GPU_MODE", "").lower()
         preset = None
@@ -261,26 +266,40 @@ def _split_sessions(
 def _prepare_dataloaders(
     encoded: Dict[str, np.ndarray],
     session_ids: List[str],
+    feature_pack: FeaturePack,
     config: TrainerConfig,
-    numeric_keys: Sequence[str],
     split: Optional[SessionSplit] = None,
 ) -> Tuple[DataLoader, DataLoader, List[str]]:
+    numeric_keys = feature_pack.numeric_features
     slices, session_keys, ordered_numeric = build_sessions(encoded, session_ids, numeric_keys)
     train_slices, val_slices = _split_sessions(slices, session_keys, config, split)
     loader = create_array_session_loader(encoded, ordered_numeric)
+    try:
+        delta_index = ordered_numeric.index("delta_t")
+    except ValueError as error:
+        raise RuntimeError("numeric features must include delta_t for Δt regression") from error
+    collate_fn = make_collate_fn(
+        target_mode=config.target_mode,
+        bos_index=feature_pack.bos_index,
+        delta_index=delta_index,
+    )
     train_dataset = SessionDataset(train_slices, loader, shuffle=True, seed=config.seed)
     eval_slices = val_slices if val_slices else train_slices
     val_dataset = SessionDataset(eval_slices, loader, shuffle=False, seed=config.seed)
 
-    train_loader = _create_dataloader(train_dataset, config)
-    val_loader = _create_dataloader(val_dataset, config)
+    train_loader = _create_dataloader(train_dataset, config, collate_fn)
+    val_loader = _create_dataloader(val_dataset, config, collate_fn)
     return train_loader, val_loader, ordered_numeric
 
 
-def _create_dataloader(dataset: SessionDataset, config: TrainerConfig) -> DataLoader:
+def _create_dataloader(
+    dataset: SessionDataset,
+    config: TrainerConfig,
+    collate_fn: Callable[[Iterable[SessionExample]], Dict[str, torch.Tensor]],
+) -> DataLoader:
     kwargs: Dict[str, object] = {
         "batch_size": config.batch_size,
-        "collate_fn": collate_examples,
+        "collate_fn": collate_fn,
         "num_workers": config.num_workers,
         "pin_memory": config.pin_memory,
     }
@@ -307,7 +326,6 @@ def _build_worker_init_fn(seed: int):
 def _compute_losses(
     outputs: Dict[str, torch.Tensor],
     batch: Dict[str, torch.Tensor],
-    delta_index: int,
 ) -> Tuple[torch.Tensor, torch.Tensor, torch.Tensor]:
     mask = batch["mask"].float()
     vocab_size = outputs["event_logits"].size(-1)
@@ -319,8 +337,7 @@ def _compute_losses(
     ).view_as(batch["targets"])
     event_loss = (event_loss * mask).sum() / mask.sum().clamp_min(1.0)
 
-    delta_target = batch["numeric"][:, :, delta_index]
-    delta_loss = torch.abs(outputs["delta_pred"] - delta_target) * mask
+    delta_loss = torch.abs(outputs["delta_pred"] - batch["delta_target"]) * mask
     delta_loss = delta_loss.sum() / mask.sum().clamp_min(1.0)
 
     total_loss = event_loss + delta_loss
@@ -335,14 +352,9 @@ def fit_model(
     split: Optional[SessionSplit] = None,
 ) -> Tuple[DeltaAwareLSTM, Dict[str, List[float]], List[str], float, int]:
     _set_seed(config.seed)
-    numeric_keys = feature_pack.numeric_features
     train_loader, val_loader, ordered_numeric = _prepare_dataloaders(
-        encoded, session_ids, config, numeric_keys, split
+        encoded, session_ids, feature_pack, config, split
     )
-    try:
-        delta_index = ordered_numeric.index("delta_t")
-    except ValueError as error:
-        raise RuntimeError("Feature pack must include delta_t in numeric features") from error
 
     model = DeltaAwareLSTM(
         LSTMConfig(
@@ -377,7 +389,7 @@ def fit_model(
                 batch[key] = batch[key].to(config.device)
             optimizer.zero_grad()
             outputs = model(batch["events"], batch["numeric"])
-            loss, event_loss, delta_loss = _compute_losses(outputs, batch, delta_index)
+            loss, event_loss, delta_loss = _compute_losses(outputs, batch)
             loss.backward()
             optimizer.step()
             train_totals["loss"] += float(loss.item())
@@ -392,7 +404,7 @@ def fit_model(
                 for key in batch:
                     batch[key] = batch[key].to(config.device)
                 outputs = model(batch["events"], batch["numeric"])
-                loss, event_loss, delta_loss = _compute_losses(outputs, batch, delta_index)
+                loss, event_loss, delta_loss = _compute_losses(outputs, batch)
                 val_totals["loss"] += float(loss.item())
                 val_totals["event"] += float(event_loss.item())
                 val_totals["delta"] += float(delta_loss.item())
@@ -481,6 +493,7 @@ def _persist_artifacts(
             "pin_memory": config.pin_memory,
             "persistent_workers": config.persistent_workers,
             "numeric_features": list(numeric_keys),
+            "target_mode": config.target_mode,
         }, handle, indent=2)
     _write_repro_metadata(run_dir, config)
     latest = output_dir / "latest"
@@ -504,6 +517,7 @@ def _write_repro_metadata(run_dir: Path, config: TrainerConfig) -> None:
         "prefetch_factor": config.prefetch_factor,
         "pin_memory": config.pin_memory,
         "persistent_workers": config.persistent_workers,
+        "target_mode": config.target_mode,
         "python_version": platform.python_version(),
         "numpy_version": np.__version__,
         "torch_version": torch.__version__,

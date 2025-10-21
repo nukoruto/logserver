@@ -10,7 +10,8 @@ import yaml
 _ROOT = Path(__file__).resolve().parents[2]
 sys.path.insert(0, str(_ROOT / "trainer" / "src"))
 
-from logserver.training.search import _apply_temporal_exclusions
+from logserver.metrics import AggregatorConfig, ObjectiveConfig, SearchDeviceConfig, SearchExecutionConfig
+from logserver.training.search import CVConfig, _apply_temporal_exclusions, load_search_space, load_split_plan, run_random_search
 
 
 def _create_processed_dataset(root: Path) -> Path:
@@ -140,9 +141,10 @@ def test_tscv_search_cli_produces_results(tmp_path: Path) -> None:
     assert out_path.exists(), "Summary JSON not created"
     with out_path.open("r", encoding="utf-8") as handle:
         summary = json.load(handle)
-    assert summary["metric"] == "ap"
-    assert summary["best_trial"]["status"] == "ok"
-    assert summary["best_trial"]["metrics"]["ap"] is not None
+    assert summary["objective"] == "AP"
+    best_trial = summary["best_trial"]
+    assert best_trial["status"] == "ok"
+    assert best_trial["aggregated"]["AP"]["n_valid"] >= 1
     log_path = tmp_path / "result.jsonl"
     assert log_path.exists(), "JSONL log not created"
     with log_path.open("r", encoding="utf-8") as handle:
@@ -150,8 +152,8 @@ def test_tscv_search_cli_produces_results(tmp_path: Path) -> None:
     assert len(lines) == 2
     record = json.loads(lines[0])
     assert record["status"] == "ok"
-    assert len(record["folds"]) == 2
-    assert record["folds"][0]["metrics"]["ap"] is not None
+    assert len(record["fold_metrics"]) == 2
+    assert record["fold_metrics"][0]["metrics"]["AP"] is not None
 
 
 def test_apply_temporal_exclusions_removes_purge_and_embargo() -> None:
@@ -203,3 +205,116 @@ def test_tscv_cli_help() -> None:
         text=True,
     )
     assert "cross-validation" in result.stdout.lower()
+
+
+def test_random_search_deterministic_jsonl(tmp_path: Path) -> None:
+    processed_dir = _create_processed_dataset(tmp_path)
+    splits = _write_split_file(tmp_path, processed_dir)
+    plan = load_split_plan(splits)
+    df = pd.read_csv(processed_dir / "events.csv")
+    space_path = _write_search_space(tmp_path)
+    search_space = load_search_space(space_path)
+
+    exec_cfg = SearchExecutionConfig(n_trials=2, base_seed=99, parallel=1, resume=False, dedup=False)
+    objective_cfg = ObjectiveConfig(primary="AP", aggregator=AggregatorConfig(name="mean"))
+    device_cfg = SearchDeviceConfig(gpu_mode="auto")
+
+    out1 = tmp_path / "summary1.json"
+    log1 = tmp_path / "log1.jsonl"
+    run_random_search(
+        df.copy(),
+        plan,
+        search_space,
+        out_path=out1,
+        log_path=log1,
+        execution=exec_cfg,
+        objective=objective_cfg,
+        cv_cfg=CVConfig(),
+        device_cfg=device_cfg,
+    )
+
+    out2 = tmp_path / "summary2.json"
+    log2 = tmp_path / "log2.jsonl"
+    run_random_search(
+        df.copy(),
+        plan,
+        load_search_space(space_path),
+        out_path=out2,
+        log_path=log2,
+        execution=exec_cfg,
+        objective=objective_cfg,
+        cv_cfg=CVConfig(),
+        device_cfg=device_cfg,
+    )
+
+    assert log1.read_bytes() == log2.read_bytes()
+    assert out1.read_bytes() == out2.read_bytes()
+
+
+def test_random_search_dedup_skips_duplicates(tmp_path: Path) -> None:
+    processed_dir = _create_processed_dataset(tmp_path)
+    splits = _write_split_file(tmp_path, processed_dir)
+    plan = load_split_plan(splits)
+    df = pd.read_csv(processed_dir / "events.csv")
+    space = {"trainer": {"batch_size": {"type": "choice", "values": [2]}}}
+
+    exec_cfg = SearchExecutionConfig(n_trials=3, base_seed=10, parallel=1, resume=False, dedup=True)
+    objective_cfg = ObjectiveConfig(primary="AP", aggregator=AggregatorConfig(name="mean"))
+    device_cfg = SearchDeviceConfig(gpu_mode="auto")
+
+    out_path = tmp_path / "dedup_summary.json"
+    log_path = tmp_path / "dedup_log.jsonl"
+    run_random_search(
+        df,
+        plan,
+        space,
+        out_path=out_path,
+        log_path=log_path,
+        execution=exec_cfg,
+        objective=objective_cfg,
+        cv_cfg=CVConfig(),
+        device_cfg=device_cfg,
+    )
+
+    with log_path.open("r", encoding="utf-8") as handle:
+        records = [json.loads(line) for line in handle if line.strip()]
+    statuses = [record["status"] for record in records]
+    assert statuses.count("skipped") == exec_cfg.n_trials - 1
+
+
+def test_random_search_handles_zero_positive_fold(tmp_path: Path) -> None:
+    processed_dir = _create_processed_dataset(tmp_path)
+    splits = _write_split_file(tmp_path, processed_dir)
+    plan = load_split_plan(splits)
+    df = pd.read_csv(processed_dir / "events.csv")
+    df.loc[df["session_id"] == "s2", "anomaly_label"] = 0
+    space_path = _write_search_space(tmp_path)
+    search_space = load_search_space(space_path)
+
+    exec_cfg = SearchExecutionConfig(n_trials=1, base_seed=123, parallel=1, resume=False, dedup=False)
+    objective_cfg = ObjectiveConfig(primary="AP", aggregator=AggregatorConfig(name="mean"))
+    device_cfg = SearchDeviceConfig(gpu_mode="auto")
+
+    out_path = tmp_path / "zero_summary.json"
+    log_path = tmp_path / "zero_log.jsonl"
+    run_random_search(
+        df,
+        plan,
+        search_space,
+        out_path=out_path,
+        log_path=log_path,
+        execution=exec_cfg,
+        objective=objective_cfg,
+        cv_cfg=CVConfig(),
+        device_cfg=device_cfg,
+    )
+
+    with log_path.open("r", encoding="utf-8") as handle:
+        record = json.loads(handle.readline())
+    fold_metrics = {item["name"]: item for item in record["fold_metrics"]}
+    zero_fold = fold_metrics["fold0"]
+    assert zero_fold["metrics"]["AP"] is None
+    assert zero_fold["metrics"]["F1"] is None
+    aggregated_ap = record["aggregated"]["AP"]
+    assert aggregated_ap["n_valid"] == 1
+    assert record["status"] == "ok"

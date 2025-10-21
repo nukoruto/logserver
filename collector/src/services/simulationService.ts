@@ -238,6 +238,7 @@ export interface SimulationEvent extends Record<string, unknown> {
   referer?: string | null;
   user_agent?: string | null;
   ip?: string | null;
+  cookie?: string | null;
   op_category?: string | null;
   anomaly?: boolean;
   anomaly_type?: string;
@@ -307,6 +308,7 @@ export interface GenerateScenarioOptions extends Record<string, unknown> {
   ntpStatePath?: string | null;
   healthNow?: number | string | Date | null;
   healthValidated?: boolean;
+  jwtIssuers?: Iterable<string> | string | null;
 }
 
 export interface SimulationParameters extends Record<string, unknown> {
@@ -359,6 +361,9 @@ export interface SimulationParameters extends Record<string, unknown> {
     last_measured_at: string;
   } | null;
   kid?: string | null;
+  jwt?: {
+    allowed_issuers: string[];
+  } | null;
 }
 
 export interface SimulationResult {
@@ -386,6 +391,7 @@ interface SessionIdentifiers {
   userAgent: string;
   ip: string;
   refererHost: string;
+  cookie: string;
 }
 
 interface DefaultParameterInput {
@@ -413,6 +419,7 @@ interface DefaultParameterInput {
   timeAnomalyMode: TimeDeviationMode;
   timeAnomalyPropWeight: number;
   kid: string | null;
+  allowedIssuers: readonly string[];
 }
 
 const normalizeString = (value: unknown): string => {
@@ -428,6 +435,36 @@ const normalizeNullableString = (value: unknown): string | null => {
   }
   const trimmed = value.trim();
   return trimmed.length > 0 ? trimmed : null;
+};
+
+const normalizeIssuerListOption = (value: unknown): string[] => {
+  if (value === null || value === undefined) {
+    return [];
+  }
+  const collected: string[] = [];
+  const appendValue = (entry: unknown): void => {
+    if (typeof entry !== 'string') {
+      return;
+    }
+    const trimmed = entry.trim();
+    if (trimmed.length > 0) {
+      collected.push(trimmed);
+    }
+  };
+  if (typeof value === 'string') {
+    value.split(',').forEach(appendValue);
+  } else if (Array.isArray(value)) {
+    value.forEach(appendValue);
+  } else if (typeof value === 'object') {
+    try {
+      for (const entry of value as Iterable<unknown>) {
+        appendValue(entry);
+      }
+    } catch {
+      // ignore non-iterable objects
+    }
+  }
+  return Array.from(new Set(collected));
 };
 
 const ensureLeadingSlash = (value: string | null): string | null => {
@@ -659,6 +696,7 @@ const createSessionIdentifiers = (seed: string, index: number): SessionIdentifie
   const cryptoMaterial = resolveSessionCryptoMaterial();
   const rawToken = mintSessionJwt(seed, index, cryptoMaterial.datasetKey);
   const uid = crypto.createHmac('sha256', cryptoMaterial.datasetKey).update(rawToken, 'utf8').digest('hex');
+  const cookie = `sid=${uid.slice(0, 32)}.${suffix}; Path=/; HttpOnly; Secure`;
   return {
     sessionId: `sess-${sanitizedBase}-${suffix}`,
     userId: `user-${sanitizedBase}-${suffix}`,
@@ -666,6 +704,7 @@ const createSessionIdentifiers = (seed: string, index: number): SessionIdentifie
     userAgent: computeSessionUserAgent(index),
     ip: computeSessionIp(index),
     refererHost: computeRefererHost(index),
+    cookie,
   };
 };
 
@@ -762,6 +801,7 @@ const decorateEvent = ({
     op_category: resolvedCategory ?? null,
     user_agent: normalizeNullableString(event.user_agent) ?? session.userAgent,
     ip: normalizeNullableString(event.ip) ?? session.ip,
+    cookie: normalizeNullableString(event.cookie) ?? session.cookie,
   };
 
   if (event.protocolViolationFlag === true) {
@@ -900,6 +940,9 @@ const defaultParameters = (input: DefaultParameterInput): SimulationParameters =
   },
   ntp_health: null,
   kid: input.kid,
+  jwt: {
+    allowed_issuers: Array.from(new Set(input.allowedIssuers || [])),
+  },
 });
 
 export const generateScenario = async (options: GenerateScenarioOptions = {}): Promise<SimulationResult> => {
@@ -963,6 +1006,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
   const resolvedDeltaEpsilon = resolveDeltaEpsilonOption(options.deltaEpsilon, DEFAULT_DELTA_EPSILON);
   const includeFeaturesCsv = parseBoolean(options.includeFeaturesCsv, false);
   const featureCsvFileName = normalizeNullableString(options.featureCsvFileName ?? null);
+  const allowedJwtIssuers = normalizeIssuerListOption(options.jwtIssuers ?? null);
 
   const sessionCryptoMaterial = resolveSessionCryptoMaterial();
   const derivedKid = sessionCryptoMaterial.kid;
@@ -1071,6 +1115,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
     timeAnomalyMode: resolvedTimeAnomalyMode,
     timeAnomalyPropWeight: resolvedTimeAnomalyPropWeight,
     kid: resolvedKid,
+    allowedIssuers: allowedJwtIssuers,
   });
   parameters.ntp_health = {
     p95_ms: ntpMeasurement.ntpP95Ms,
@@ -1197,6 +1242,7 @@ export const generateScenario = async (options: GenerateScenarioOptions = {}): P
       includeFeaturesCsv,
       kid: resolvedKid,
       crypto: cryptoMetadata,
+      allowedIssuers: allowedJwtIssuers,
       extraMetadata: lastTimeDeviationResult
         ? {
             time_deviation: {

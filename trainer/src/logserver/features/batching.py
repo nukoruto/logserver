@@ -7,12 +7,15 @@ import itertools
 import random
 from dataclasses import dataclass
 from typing import Callable, Dict, Iterable, Iterator, List, MutableSequence, Optional, Sequence, Tuple
+from typing import Literal
 
 import numpy as np
 import torch
 from torch.utils.data import IterableDataset, get_worker_info
 
 PAD_INDEX = 0
+
+TargetMode = Literal["next", "same"]
 
 
 @dataclass
@@ -85,29 +88,81 @@ class SessionDataset(IterableDataset[SessionExample]):
         return cls(slices, loader, shuffle=shuffle, seed=seed)
 
 
-def collate_examples(batch: Iterable[SessionExample]) -> Dict[str, torch.Tensor]:
-    batch = list(batch)
-    lengths = [example.event_ids.shape[0] for example in batch]
-    max_len = max(lengths)
+def make_collate_fn(*, target_mode: TargetMode, bos_index: int, delta_index: int) -> Callable[[Iterable[SessionExample]], Dict[str, torch.Tensor]]:
+    mode = str(target_mode).lower()
+    if mode not in {"next", "same"}:
+        raise ValueError("target_mode must be 'next' or 'same'")
 
-    event_tensor = torch.full((len(batch), max_len), PAD_INDEX, dtype=torch.long)
-    numeric_tensor = torch.zeros(len(batch), max_len, batch[0].numeric.shape[1], dtype=torch.float32)
-    target_tensor = torch.full((len(batch), max_len), PAD_INDEX, dtype=torch.long)
-    mask_tensor = torch.zeros(len(batch), max_len, dtype=torch.bool)
+    def _collate(batch_iterable: Iterable[SessionExample]) -> Dict[str, torch.Tensor]:
+        batch = list(batch_iterable)
+        if not batch:
+            raise ValueError("Batch must contain at least one session example")
 
-    for row, example in enumerate(batch):
-        length = example.event_ids.shape[0]
-        event_tensor[row, :length] = torch.from_numpy(example.event_ids)
-        numeric_tensor[row, :length] = torch.from_numpy(example.numeric)
-        target_tensor[row, :length] = torch.from_numpy(example.target_event)
-        mask_tensor[row, :length] = True
+        numeric_dim = batch[0].numeric.shape[1] if batch[0].numeric.ndim == 2 else 0
+        lengths: List[int] = []
+        for example in batch:
+            base_len = example.event_ids.shape[0]
+            lengths.append(base_len + 1 if mode == "next" else base_len)
+        max_len = max(lengths) if lengths else 0
 
-    return {
-        "events": event_tensor,
-        "numeric": numeric_tensor,
-        "targets": target_tensor,
-        "mask": mask_tensor,
-    }
+        event_tensor = torch.full((len(batch), max_len), PAD_INDEX, dtype=torch.long)
+        numeric_tensor = torch.zeros(len(batch), max_len, numeric_dim, dtype=torch.float32)
+        target_tensor = torch.full((len(batch), max_len), PAD_INDEX, dtype=torch.long)
+        mask_tensor = torch.zeros(len(batch), max_len, dtype=torch.bool)
+        delta_target_tensor = torch.zeros(len(batch), max_len, dtype=torch.float32)
+
+        for row, example in enumerate(batch):
+            events = example.event_ids
+            numeric = example.numeric
+            if numeric_dim and numeric.shape[1] != numeric_dim:
+                raise ValueError("All examples must share identical numeric feature dimension")
+
+            if mode == "next":
+                base_len = events.shape[0]
+                length = base_len + 1
+                event_seq = np.empty(length, dtype=np.int64)
+                event_seq[0] = int(bos_index)
+                event_seq[1:] = events
+                if numeric_dim:
+                    numeric_seq = np.zeros((length, numeric_dim), dtype=np.float32)
+                    numeric_seq[1:, :] = numeric
+                    delta_values = numeric[:, delta_index]
+                else:
+                    numeric_seq = np.zeros((length, 0), dtype=np.float32)
+                    delta_values = np.zeros(base_len, dtype=np.float32)
+                target_seq = np.full(length, PAD_INDEX, dtype=np.int64)
+                target_seq[:-1] = events
+                delta_seq = np.zeros(length, dtype=np.float32)
+                delta_seq[:-1] = delta_values
+                mask_seq = np.zeros(length, dtype=bool)
+                mask_seq[:-1] = True
+            else:
+                length = events.shape[0]
+                event_seq = events
+                numeric_seq = numeric if numeric_dim else np.zeros((length, 0), dtype=np.float32)
+                target_seq = example.target_event
+                if numeric_dim:
+                    delta_seq = numeric[:, delta_index].astype(np.float32)
+                else:
+                    delta_seq = np.zeros(length, dtype=np.float32)
+                mask_seq = np.ones(length, dtype=bool)
+
+            event_tensor[row, :length] = torch.from_numpy(event_seq)
+            if numeric_dim:
+                numeric_tensor[row, :length] = torch.from_numpy(numeric_seq)
+            target_tensor[row, :length] = torch.from_numpy(target_seq)
+            mask_tensor[row, :length] = torch.from_numpy(mask_seq)
+            delta_target_tensor[row, :length] = torch.from_numpy(delta_seq)
+
+        return {
+            "events": event_tensor,
+            "numeric": numeric_tensor,
+            "targets": target_tensor,
+            "mask": mask_tensor,
+            "delta_target": delta_target_tensor,
+        }
+
+    return _collate
 
 
 def build_sessions(

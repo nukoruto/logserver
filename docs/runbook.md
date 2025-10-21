@@ -195,7 +195,7 @@ with src.open() as f:
     reader = csv.DictReader(f)
     fieldnames = [
         'timestamp_utc','uid','session_id','method','path',
-        'referer','user_agent','op_category',
+        'referer','user_agent','ip','cookie','op_category',
         'dt_sec','log_dt','z','z_clipped','z_deseas'
     ]
     rows = []
@@ -212,6 +212,8 @@ with src.open() as f:
             'path': row['path'],
             'referer': row['referer'],
             'user_agent': row['user_agent'],
+            'ip': row['ip'],
+            'cookie': row['cookie'],
             'op_category': row['op_category'],
             'dt_sec': f"{dt:.6f}",
             'log_dt': f"{math.log(max(dt, 1e-9)):.6f}",

@@ -14,12 +14,7 @@ def test_generate_preproc_report(tmp_path: Path) -> None:
     raw_path = tmp_path / "raw.csv"
     df = pd.DataFrame(
         {
-            "timestamp_utc": [
-                "2024-01-01T00:00:00Z",
-                "2024-01-01T00:00:05Z",
-                "2024-01-01T00:00:08Z",
-                "2024-01-01T00:00:16Z",
-            ],
+            "timestamp_utc": [1704067200, 1704067205, 1704067208, 1704067216],
             "uid": ["u1", "u1", "u2", "u2"],
             "event": ["login", "view", "login", "logout"],
             "session_id": ["s1", "s1", "s2", "s2"],
@@ -28,6 +23,12 @@ def test_generate_preproc_report(tmp_path: Path) -> None:
             "referer": ["", "", "", ""],
             "user_agent": ["ua", "ua", "ua", "ua"],
             "ip": ["127.0.0.1", "127.0.0.1", "127.0.0.2", "127.0.0.2"],
+            "cookie": [
+                "sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.001; Path=/; HttpOnly; Secure",
+                "sid=aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.001; Path=/; HttpOnly; Secure",
+                "sid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.002; Path=/; HttpOnly; Secure",
+                "sid=bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb.002; Path=/; HttpOnly; Secure",
+            ],
             "op_category": ["AUTH", "READ", "AUTH", "AUTH"],
             "latency_ms": [100, 120, 80, 90],
             "response_bytes": [512, 256, 128, 64],

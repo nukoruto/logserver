@@ -69,6 +69,7 @@ describe('simulationService.generateScenario', () => {
       startTime: '2024-01-01T00:00:00.000Z',
       sessionSpacingSeconds: 30,
       kid: 'SERVICE-KID-001',
+      jwtIssuers: [' https://issuer.example '],
     });
 
     expect(result.events).toHaveLength(12);
@@ -104,6 +105,7 @@ describe('simulationService.generateScenario', () => {
       expect(manifest.output.run_meta_path).toBe(result.files?.runMetaPath);
       expect(manifest.output.schema_path).toBe(result.files?.schemaPath);
       expect(manifest.output.audit_path).toBe(result.files?.auditPath);
+      expect(manifest.output.dir).toBe(tempDir);
       expect(manifest.kid).toBe('SERVICE-KID-001');
       expect(manifest.crypto).toEqual({
         kid: result.run_meta?.crypto.kid,
@@ -114,8 +116,13 @@ describe('simulationService.generateScenario', () => {
         algo_ver: 'sid-hkdf-sha256-v1',
       });
       if (result.files.metaPath) {
-        expect(manifest.output.meta_path).toBe(result.files.metaPath);
+        expect(manifest.output.meta).toBeDefined();
+        const metaSection = manifest.output.meta as { path: string; sha256: string };
+        const relativeMeta = path.relative(tempDir, result.files.metaPath) || path.basename(result.files.metaPath);
+        expect(metaSection.path).toBe(relativeMeta.split(path.sep).join('/'));
+        expect(metaSection.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
       }
+      expect(manifest.jwt?.allowed_issuers).toEqual(['https://issuer.example']);
     }
     expect(result.run_meta).toBeDefined();
     if (result.run_meta) {
@@ -146,6 +153,12 @@ describe('simulationService.generateScenario', () => {
       const firstMeta = JSON.parse(metaContent[0]);
       expect(firstMeta).toHaveProperty('propagation_mode');
       expect(firstMeta).toHaveProperty('weights');
+      const manifestContent = readFileSync(result.files.manifestPath!, 'utf8');
+      const manifest = JSON.parse(manifestContent);
+      const metaSection = manifest.output.meta as { path: string; sha256: string };
+      const expectedRelative = path.relative(manifest.output.dir, result.files.metaPath) || path.basename(result.files.metaPath);
+      expect(metaSection.path).toBe(expectedRelative.split(path.sep).join('/'));
+      expect(metaSection.sha256).toMatch(/^sha256:[0-9a-f]{64}$/);
     }
   });
 

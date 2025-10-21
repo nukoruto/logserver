@@ -1,4 +1,5 @@
 import { promises as fs } from 'node:fs';
+import { createHash } from 'node:crypto';
 import path from 'node:path';
 import os from 'node:os';
 import {
@@ -37,13 +38,14 @@ const DEFAULT_FEATURE_COLUMNS = [
 
 const CSV_BASE_COLUMNS = [
   'timestamp_utc',
-  'session_id',
   'uid',
+  'session_id',
   'method',
   'path',
   'referer',
   'user_agent',
   'ip',
+  'cookie',
   'op_category',
 ];
 
@@ -112,25 +114,39 @@ describe('simWriter.persistSimulationRun', () => {
         timestamp_utc: '2024-05-01T00:00:01.000Z',
         session_id: 'sess-001',
         user_id: 'user-001',
+        uid: '4d2f8f23ad604d5bb9d6c3d2f9ab31ff',
         event: 'login',
         method: 'POST' as const,
         path: '/auth/login',
         status: 200,
         latency_ms: 120,
         deltaSeconds: 1.5,
-        metadata: { op_category: 'AUTH', timezone_offset_seconds: 0 },
+        cookie: 'sid=4d2f8f23ad604d5bb9d6c3d2f9ab31ff.001; Path=/; HttpOnly; Secure',
+        metadata: {
+          op_category: 'AUTH',
+          timezone_offset_seconds: 0,
+          headers: {
+            Authorization: 'Bearer eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.fake.payload.signature',
+            'Set-Cookie': 'session=raw-token; HttpOnly',
+          },
+          cookie: 'session=raw-token; HttpOnly',
+          tokens: { jwt: 'eyJraWQiOiIxMjMifQ.fake.payload.signature' },
+        },
+        op_category: 'AUTH',
       },
       {
         timestamp: '2024-05-01T00:00:05.000Z',
         timestamp_utc: '2024-05-01T00:00:05.000Z',
         session_id: 'sess-001',
         user_id: 'user-001',
+        uid: '4d2f8f23ad604d5bb9d6c3d2f9ab31ff',
         event: 'delete',
         method: 'DELETE' as const,
         path: '/projects/alpha',
         status: 403,
         latency_ms: 210,
         deltaSeconds: 3.5,
+        cookie: 'sid=4d2f8f23ad604d5bb9d6c3d2f9ab31ff.001; Path=/; HttpOnly; Secure',
         protocolViolationFlag: true,
         protocolViolationReasons: ['disallowedTransition'],
       },
@@ -140,12 +156,14 @@ describe('simWriter.persistSimulationRun', () => {
         session_id: 'sess-099',
         sid_final: 'explicit-sid-099',
         user_id: 'user-314',
+        uid: '2c5c2f3adab04d969e9a5c2a12acb7d0',
         event: 'browse',
         method: 'GET' as const,
         path: '/reports/daily',
         status: 200,
         latency_ms: 90,
         deltaSeconds: 4.0,
+        cookie: 'sid=2c5c2f3adab04d969e9a5c2a12acb7d0.099; Path=/; HttpOnly; Secure',
         timeDeviationFlag: true,
       },
     ];
@@ -163,17 +181,22 @@ describe('simWriter.persistSimulationRun', () => {
       includeFeaturesCsv: true,
       kid: 'KID-UNIT-001',
       crypto: DEFAULT_CRYPTO_METADATA,
+      allowedIssuers: [' https://issuer.example ', 'https://issuer.example'],
     });
 
     expect(result.runId).toBe('unit-test-001');
     expect(path.basename(result.csvPath)).toBe('simEvents-unit-test-001.csv');
     expect(path.basename(result.manifestPath)).toBe('scenario-unit-test-001.json');
+    expect(path.basename(result.fairPath)).toBe('fair.json');
+    expect(path.basename(result.datasheetPath)).toBe('datasheet.json');
+    expect(path.basename(result.provenancePath)).toBe('provenance.json');
 
     const csvContent = await fs.readFile(result.csvPath, 'utf8');
     const baseRows = csvContent.trim().split('\n');
     const baseHeader = baseRows[0].split(',');
     expect(baseHeader).toEqual(CSV_BASE_COLUMNS);
     expect(baseRows).toHaveLength(events.length + 1);
+    expect(csvContent.toLowerCase()).not.toContain('authorization');
 
     const baseHeaderIndex = new Map<string, number>();
     baseHeader.forEach((name, index) => baseHeaderIndex.set(name, index));
@@ -186,7 +209,11 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const baseParsedRows = baseRows.slice(1).map(parseCsvRow);
-    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'uid'))).toEqual(['null', 'null', 'null']);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'uid'))).toEqual([
+      '4d2f8f23ad604d5bb9d6c3d2f9ab31ff',
+      '4d2f8f23ad604d5bb9d6c3d2f9ab31ff',
+      '2c5c2f3adab04d969e9a5c2a12acb7d0',
+    ]);
     expect(baseParsedRows.map((columns) => baseValueAt(columns, 'session_id'))).toEqual([
       'sess-001',
       'sess-001',
@@ -201,12 +228,18 @@ describe('simWriter.persistSimulationRun', () => {
     expect(baseParsedRows.map((columns) => baseValueAt(columns, 'referer'))).toEqual(['null', 'null', 'null']);
     expect(baseParsedRows.map((columns) => baseValueAt(columns, 'user_agent'))).toEqual(['null', 'null', 'null']);
     expect(baseParsedRows.map((columns) => baseValueAt(columns, 'ip'))).toEqual(['null', 'null', 'null']);
-    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'op_category'))).toEqual(['null', 'null', 'null']);
-    const timestampUtcValues = baseParsedRows.map((columns) => {
-      const raw = baseValueAt(columns, 'timestamp_utc');
-      return raw.replace(/^"/, '').replace(/"$/, '').replace(/""/g, '"');
-    });
-    expect(timestampUtcValues.every((value) => typeof value === 'string' && value.endsWith('Z'))).toBe(true);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'cookie'))).toEqual([
+      'sid=4d2f8f23ad604d5bb9d6c3d2f9ab31ff.001; Path=/; HttpOnly; Secure',
+      'sid=4d2f8f23ad604d5bb9d6c3d2f9ab31ff.001; Path=/; HttpOnly; Secure',
+      'sid=2c5c2f3adab04d969e9a5c2a12acb7d0.099; Path=/; HttpOnly; Secure',
+    ]);
+    expect(baseParsedRows.map((columns) => baseValueAt(columns, 'op_category'))).toEqual([
+      'AUTH',
+      'null',
+      'null',
+    ]);
+    const timestampUtcValues = baseParsedRows.map((columns) => Number(baseValueAt(columns, 'timestamp_utc')));
+    expect(timestampUtcValues).toEqual([1714521601, 1714521605, 1714521609]);
 
     expect(result.featuresCsvPath).not.toBeNull();
     if (!result.featuresCsvPath) {
@@ -237,6 +270,9 @@ describe('simWriter.persistSimulationRun', () => {
     expect(metadataRows[0].anomaly).toBe('normal');
     expect(metadataRows[1].anomaly).toBe('protocol_violation');
     expect(metadataRows[2].anomaly).toBe('time_deviation');
+    expect(metadataRows[0]).not.toHaveProperty('cookie');
+    expect(metadataRows[0]).not.toHaveProperty('headers');
+    expect(metadataRows[0]).not.toHaveProperty('tokens');
     const dtValues = featureParsedRows.map((columns) => featureValueAt(columns, 'dt_sec'));
     expect(dtValues).toEqual(['', '3.5', '']);
     const logDtValues = featureParsedRows.map((columns) => featureValueAt(columns, 'log_dt'));
@@ -279,16 +315,38 @@ describe('simWriter.persistSimulationRun', () => {
     expect(manifest.anomaly_summary).toEqual({ normal: 1, protocol_violation: 1, time_deviation: 1 });
     expect(manifest.session_event_counts).toEqual({ 'sess-001': 2, 'sess-099': 1 });
     expect(manifest.session_ids.sort()).toEqual(['sess-001', 'sess-099']);
+    expect(manifest.output.dir).toBe(tempDir);
     expect(manifest.output.csv_path).toBe(result.csvPath);
     expect(manifest.output.manifest_path).toBe(result.manifestPath);
     expect(manifest.output.csv_sha256).toBe(result.csvHash);
     expect(manifest.output.features_csv_path).toBe(result.featuresCsvPath);
     expect(manifest.output.features_csv_sha256).toBe(result.featuresCsvHash);
-    expect(manifest.output.meta_path).toBe(result.metaPath);
+    expect(manifest.output).not.toHaveProperty('meta_path');
+    expect(manifest.output).not.toHaveProperty('meta_sha256');
+    expect(manifest.output.meta).toBeTruthy();
+    if (!result.metaPath || !result.metaSha256) {
+      throw new Error('metaPath and metaSha256 should be defined when meta records exist');
+    }
+    const expectedMetaRel = path.relative(tempDir, result.metaPath) || path.basename(result.metaPath);
+    expect(manifest.output.meta).toEqual({ path: expectedMetaRel, sha256: result.metaSha256 });
+    const metaContent = await fs.readFile(result.metaPath, 'utf8');
+    const computedMetaSha = `sha256:${createHash('sha256').update(metaContent, 'utf8').digest('hex')}`;
+    expect(result.metaSha256).toMatch(/^sha256:[0-9a-f]{64}$/);
+    expect(result.metaSha256).toBe(computedMetaSha);
+    expect(manifest.output.meta.sha256).toBe(computedMetaSha);
     expect(manifest.output.run_meta_path).toBe(result.runMetaPath);
     expect(manifest.output.audit_path).toBe(result.auditPath);
     expect(manifest.output.schema_path).toBe(result.schemaPath);
+    expect(manifest.output.fair_path).toBe(result.fairPath);
+    expect(manifest.output.fair_sha256).toBe(result.fairSha256);
+    expect(manifest.output.datasheet_path).toBe(result.datasheetPath);
+    expect(manifest.output.datasheet_sha256).toBe(result.datasheetSha256);
+    expect(manifest.output.provenance_path).toBe(result.provenancePath);
+    expect(manifest.output.provenance_sha256).toBe(result.provenanceSha256);
     expect(manifest.schema_sha256).toBe(result.schemaSha256);
+    expect(result.fairSha256).toHaveLength(64);
+    expect(result.datasheetSha256).toHaveLength(64);
+    expect(result.provenanceSha256).toHaveLength(64);
     expect(manifest.crypto).toEqual({
       kid: DEFAULT_CRYPTO_METADATA.kid,
       kdf: DEFAULT_CRYPTO_METADATA.kdf,
@@ -329,6 +387,19 @@ describe('simWriter.persistSimulationRun', () => {
         log_burst_z: { min: -5, max: 5 },
       },
     });
+    expect(manifest.provenance.schema_version).toBeDefined();
+    expect(manifest.jwt.allowed_issuers).toEqual(['https://issuer.example']);
+
+    const fairPayload = JSON.parse(await fs.readFile(result.fairPath, 'utf8'));
+    expect(fairPayload.dataset.csv_sha256).toBe(result.csvHash);
+    expect(fairPayload.privacy.authorization_header_retained).toBe(false);
+
+    const datasheetPayload = JSON.parse(await fs.readFile(result.datasheetPath, 'utf8'));
+    expect(datasheetPayload.hashing.csv_sha256).toBe(result.csvHash);
+
+    const provenancePayload = JSON.parse(await fs.readFile(result.provenancePath, 'utf8'));
+    expect(provenancePayload.csv_sha256).toBe(result.csvHash);
+    expect(provenancePayload.schema_version).toBeDefined();
 
     expect(result.runMetaPath).toBeDefined();
     const runMetaContent = await fs.readFile(result.runMetaPath, 'utf8');
@@ -364,7 +435,7 @@ describe('simWriter.persistSimulationRun', () => {
     const schemaDoc = JSON.parse(schemaContent);
     expect(schemaDoc.$id).toBeDefined();
     expect(schemaDoc.version).toBe('1.0.0');
-    expect(schemaDoc.raw_schema.columns).toHaveLength(9);
+    expect(schemaDoc.raw_schema.columns).toHaveLength(10);
     expect(schemaDoc.features_schema.columns.length).toBe(
       CSV_BASE_COLUMNS.length + FEATURE_FILE_ADDITIONAL_COLUMNS.length + DEFAULT_FEATURE_COLUMNS.length + 1,
     );
@@ -720,6 +791,8 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const csvLine = formatCsvAugmented(row as AugmentedSimulationEvent, DEFAULT_FEATURE_COLUMNS);
+    expect(csvLine.startsWith('"')).toBe(false);
+    expect(csvLine.split(',', 1)[0]).toBe('1719792000');
     const parsed = parseCsvRow(csvLine);
     expect(parsed).toHaveLength(CSV_BASE_COLUMNS.length);
     const index = (name: string): number => {
@@ -729,7 +802,7 @@ describe('simWriter.persistSimulationRun', () => {
       }
       return position;
     };
-    expect(parsed[index('timestamp_utc')]).toBe('2024-07-01T00:00:00.000Z');
+    expect(parsed[index('timestamp_utc')]).toBe('1719792000');
     expect(parsed[index('session_id')]).toBe('sess,comma');
     expect(parsed[index('method')]).toBe('POST');
     expect(parsed[index('path')]).toBe('/auth/login');

@@ -55,20 +55,23 @@ type AuditSummary = {
   sid_final_transition_checks: number;
 };
 
-const RFC3339_PATTERN = /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?Z$/;
 const HTTP_METHODS = new Set(['GET', 'POST', 'PUT', 'DELETE']);
 const OP_CATEGORIES = new Set(['AUTH', 'READ', 'UPDATE']);
 const CSV_EXTENSION = '.csv';
 const EPSILON = 1e-6;
+const FORBIDDEN_HEADER_PATTERN = /^(authorization|jwt|token|id_token|access_token|refresh_token|set-cookie)$/i;
+const SENSITIVE_METADATA_KEY_PATTERN = /^(authorization|cookie|cookies|set-cookie|jwt|token|id_token|access_token|refresh_token)$/i;
+const SENSITIVE_METADATA_VALUE_PATTERN = /(bearer\s+[a-z0-9._~-]+\.[a-z0-9._~-]+\.[a-z0-9._~-]+|eyJ[a-zA-Z0-9_-]{10,}\.[a-zA-Z0-9_-]{10,})/i;
 const REQUIRED_HEADER_COLUMNS = [
   'timestamp_utc',
-  'session_id',
   'uid',
+  'session_id',
   'method',
   'path',
   'referer',
   'user_agent',
   'ip',
+  'cookie',
   'op_category',
 ];
 
@@ -238,6 +241,24 @@ const parseNumber = (value: unknown): number | null => {
   if (value === undefined || value === null) {
     return null;
   }
+  if (typeof value === 'string') {
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      return null;
+    }
+    const lowered = trimmed.toLowerCase();
+    if (lowered === 'null' || lowered === 'nan' || lowered === 'none') {
+      return null;
+    }
+    const numeric = Number(trimmed);
+    if (!Number.isFinite(numeric)) {
+      return null;
+    }
+    return numeric;
+  }
+  if (typeof value === 'number') {
+    return Number.isFinite(value) ? value : null;
+  }
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) {
     return null;
@@ -246,8 +267,12 @@ const parseNumber = (value: unknown): number | null => {
 };
 
 const parseTimestampMs = (value: string | undefined): number | null => {
-  if (!value) {
+  if (value === undefined || value === null) {
     return null;
+  }
+  const numeric = parseNumber(value);
+  if (numeric !== null) {
+    return numeric * 1000;
   }
   const date = new Date(value);
   const time = date.getTime();
@@ -274,6 +299,30 @@ const safeParseJson = (input: string): Record<string, unknown> | null => {
     return null;
   }
   return null;
+};
+
+const metadataContainsSensitive = (value: unknown): boolean => {
+  if (value === null || value === undefined) {
+    return false;
+  }
+  if (typeof value === 'string') {
+    return SENSITIVE_METADATA_VALUE_PATTERN.test(value);
+  }
+  if (typeof value === 'number' || typeof value === 'boolean') {
+    return false;
+  }
+  if (Array.isArray(value)) {
+    return value.some((entry) => metadataContainsSensitive(entry));
+  }
+  if (typeof value === 'object') {
+    return Object.entries(value as Record<string, unknown>).some(([key, entry]) => {
+      if (SENSITIVE_METADATA_KEY_PATTERN.test(key)) {
+        return true;
+      }
+      return metadataContainsSensitive(entry);
+    });
+  }
+  return false;
 };
 
 const loadMetaForDirectory = async (
@@ -415,6 +464,12 @@ const validateHeader = (
     }
   }
 
+  header.forEach((column) => {
+    if (FORBIDDEN_HEADER_PATTERN.test(column)) {
+      findings.push({ file, line: 1, message: `Forbidden column detected: ${column}` });
+    }
+  });
+
   if (!header.includes('sid_final') && !header.includes('generated_session_id')) {
     findings.push({
       file,
@@ -445,8 +500,9 @@ const validateRow = (
   const method = row.method || '';
   const category = row.op_category || '';
 
-  if (row.timestamp_utc && !RFC3339_PATTERN.test(row.timestamp_utc)) {
-    findings.push({ file, line: lineNumber, message: `timestamp_utc not RFC3339: ${row.timestamp_utc}` });
+  const epochSeconds = parseNumber(row.timestamp_utc);
+  if (epochSeconds === null || epochSeconds < 0) {
+    findings.push({ file, line: lineNumber, message: `timestamp_utc must be epoch seconds: ${row.timestamp_utc}` });
   }
   if (method && !HTTP_METHODS.has(method)) {
     findings.push({ file, line: lineNumber, message: `Invalid HTTP method: ${method}` });
@@ -471,10 +527,25 @@ const validateRow = (
     findings.push({ file, line: lineNumber, message: `Invalid IP address: ${row.ip ?? 'null'}` });
   }
 
+  if (isNullLike(row.cookie)) {
+    findings.push({ file, line: lineNumber, message: 'Missing cookie value' });
+  }
+
   if (options.allowDerived && header.includes('status_code')) {
     const statusCode = parseNumber(row.status_code);
     if (statusCode === null || !Number.isInteger(statusCode) || statusCode < 0) {
       findings.push({ file, line: lineNumber, message: `Invalid status_code: ${row.status_code}` });
+    }
+  }
+
+  if (typeof row.metadata === 'string' && row.metadata.trim().length > 0) {
+    const metadata = safeParseJson(row.metadata);
+    if (metadata && metadataContainsSensitive(metadata)) {
+      findings.push({
+        file,
+        line: lineNumber,
+        message: 'metadata contains forbidden authorization/cookie/token fields',
+      });
     }
   }
 };

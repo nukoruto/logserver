@@ -41,19 +41,36 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 ### 6.1 収集
 - ランタイム: Node.js v20 以上（シミュレーション CLI）  
 - 収集対象: テストシナリオに基づく正常ログ、自動/半自動生成の異常ログ（順序逸脱、再送、Δt 異常など）  
-- 保存形式: CSV または Parquet（列指向推奨）  
+- 保存形式: CSV または Parquet（列指向推奨）
 - タイムゾーン: UTC で統一
+- 収集直後に `tools/audit_missing.py` で必須列ごとの comp(c) = 1 - missing_count(c) / N を計測し、全必須列で 1.0 を満たさない場合は CI を失敗させる。
+- 永続化時に `fair.json`, `datasheet.json`, `provenance.json` を同時生成し、`csv_sha256`, `schema_sha256`, `git_commit`, `seed`, `gpu_mode` を記録する。
+- `meta.jsonl` を生成した場合は manifest.output.dir を基準とする相対パスと SHA-256 を `manifest.output.meta = { path, sha256 }` に記録し、存在しない場合は `manifest.output.meta = null` とする。
+- Authorization ヘッダ（Bearer JWT）は取り込み時のみ必須とし、`uid = hex(HMAC_SHA256(secret, jwt_utf8))` を導出した直後に破棄する。CSV や metadata には保存せず、CI でも流出を検知して失敗させる。
+- JWT の `iss` は manifest.parameters.jwt.allowed_issuers または CLI で指定した許可リストと厳密一致させる。不一致や欠落が発生したトークンは UID 派生を行わず廃棄する。
 
-### 6.2 基本データ契約（9 列）
-- timestamp_utc（RFC 3339 UTC 文字列）
-- uid（擬似匿名化済みユーザ ID。HKDF-SHA256 で導出した K_ds による HMAC-SHA256 を base64url 化）
+### 6.2 基本データ契約（10 列）
+- timestamp_utc（UTC epoch 秒 double。必要に応じて別途 RFC 3339 文字列を派生保存）
+- uid（擬似匿名化済みユーザ ID。HKDF-SHA256 で導出した K_ds による HMAC-SHA256 を hex エンコード）
 - session_id（文字列）
 - method（HTTP メソッド）
 - path（リソース識別子）
 - referer（参照元 URL。欠損は空文字も可）
 - user_agent（クライアント識別子）
 - ip（IPv4/IPv6。疑似化済み）
+- cookie（擬似匿名化済みセッションクッキー値。収集時の生 Cookie 文字列（または実験用生成 Cookie）を入力に `cookie = hex(HMAC_SHA256(K_cookie, raw_cookie || salt))` のように導出し、uid 由来で決定的再生成しない）
 - op_category（AUTH / READ / UPDATE の 3 区分）
+
+- path 正規化は `normalize_request_path` ヘルパー（TypeScript 実装: `normalisePathTemplate` in `packages/dt-preproc/src/template.ts`, Python 実装: `_normalise_path_template` in `trainer/src/logserver/dataio/sessionize.py`）で行い、以下の規則を統一適用する。
+  1. ASCII 英字の大文字/小文字は入力のまま保持する（小文字化を前提とする実験サーバでのみ `preserve_case=False` を SRS に明記した設定テストで使用する）。
+  2. スキームとホスト部分を除去し、先頭 `/` 付きパスのみを残す。
+  3. 連続スラッシュを 1 つに圧縮し、末尾スラッシュはルート以外では除去する。
+  4. RFC 3986 の unreserved 文字（`ALPHA / DIGIT / "-" / "." / "_" / "~"`）に対応する `%` エンコードのみデコードし、その他の予約文字（例: `%2F`）は再エンコードせず保持する。再エンコード時は `%` を大文字に統一する。
+  5. クエリパラメータはキーを UTF-8 コード順に安定ソートし、同一キー内では値を安定ソートする。`+` は `%20` に揃える。
+  6. 正規化後にクエリが空なら `?` を削除する。
+  7. フラグメント（`#fragment`）は常に破棄する。
+
+- TypeScript/Python 双方で 100 ケース以上のプロパティテストを用意し、上記正規化ルールの結果がバイト一致することを CI で保証する。
 
 ### 6.3 派生特徴・ラベル（別工程）
 - Δt 系列（dt_sec, log_dt, delta_z, delta_robust_z, delta_quantile_0_25/0_5/0_75 等）
@@ -62,7 +79,7 @@ Web セッションの操作系列を制御工学の枠組みで再解釈し、L
 - 異常スコア（Score_total, neglog10_p 等）
 - 異常ラベル（anomaly_label, alarm, alarm_reason 等）
 
-これらの派生列は 9 列 CSV を入力として `dt-preproc fit/transform` → `trainer.scripts.score` → `trainer.scripts.threshold` の順に生成し、成果物は data/processed/, outputs/, reports/ 以下へ保存する。
+これらの派生列は 10 列 CSV を入力として `dt-preproc fit/transform` → `trainer.scripts.score` → `trainer.scripts.threshold` の順に生成し、成果物は data/processed/, outputs/, reports/ 以下へ保存する。
 
 ## 7. 前処理要件
 - セッション整形: session_id 単位で時系列ソート  

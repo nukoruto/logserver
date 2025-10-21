@@ -6,7 +6,7 @@ import hashlib
 import json
 import logging
 from pathlib import Path
-from typing import Callable, Dict, Iterable, Optional
+from typing import Dict, List, Optional, Sequence, Tuple
 
 import numpy as np
 import pandas as pd
@@ -16,10 +16,13 @@ from trainer.logserver.eval import (
     compute_binary_classification_metrics,
     compute_boundary_metrics,
 )
-from trainer.logserver.scoring.threshold import (
+from trainer.logserver.thresholds import (
     ThresholdConfig,
-    apply_threshold,
-    compute_threshold,
+    ThresholdResult,
+    ThresholdStatus,
+    compute_hierarchical_thresholds,
+    prepare_delta_columns,
+    resolve_threshold,
 )
 
 LOGGER = logging.getLogger("trainer.scripts.threshold")
@@ -106,12 +109,127 @@ def _build_histogram_payload(scores: pd.Series, bins: int) -> Dict[str, object]:
     }
 
 
+def _parse_threshold_config(cfg: Dict[str, object]) -> ThresholdConfig:
+    fallback_methods = tuple(cfg.get("fallback_methods", ("quantile",)))
+    group_keys = tuple(cfg.get("group_keys", ("uid", "op_category")))
+    refit_period_cfg = cfg.get("refit_period")
+    if refit_period_cfg is None:
+        refit_period = None
+    elif isinstance(refit_period_cfg, str):
+        refit_period = None if refit_period_cfg.lower() in {"none", "inf"} else int(refit_period_cfg)
+    else:
+        refit_period = int(refit_period_cfg)
+    bins_value = cfg.get("bins", "fd")
+    alpha = float(cfg.get("alpha", cfg.get("target_alpha", 0.005)))
+    return ThresholdConfig(
+        method=str(cfg.get("method", "quantile")),
+        side=str(cfg.get("side", "upper")),
+        transform=str(cfg.get("transform", "raw_dt")),
+        alpha=alpha,
+        fallback_methods=fallback_methods,
+        epsilon=float(cfg.get("epsilon", 1e-3)),
+        group_keys=group_keys,
+        session_key=str(cfg.get("session_key", "session_id")),
+        timestamp_key=str(cfg.get("timestamp_key", "timestamp_utc")),
+        dt_column=str(cfg.get("dt_column", "dt_sec")),
+        score_column=str(cfg.get("score_column", "anomaly_score")),
+        n_min=int(cfg.get("n_min", 200)),
+        calib_frac=float(cfg.get("calib_frac", 0.5)),
+        u_quantile=float(cfg.get("u_quantile", 0.95)),
+        min_exceed=int(cfg.get("min_exceed", 50)),
+        q=float(cfg.get("q", 1e-3)),
+        solver=str(cfg.get("solver", "mle")),
+        refit_period=refit_period,
+        bins=bins_value,
+        knee_curve=str(cfg.get("knee_curve", "cdf")),
+        knee_normalize=bool(cfg.get("knee_normalize", True)),
+        knee_method=str(cfg.get("knee_method", "distance_max")),
+        allow_quantile_fallback=bool(cfg.get("allow_quantile_fallback", True)),
+    )
+
+
+def _metric_column_name(config: ThresholdConfig) -> str:
+    if config.transform == "score":
+        return config.score_column
+    if config.transform == "raw_dt":
+        return config.dt_column
+    if config.transform == "log_dt":
+        return f"__{config.dt_column}_log"
+    raise ValueError(f"Unsupported transform: {config.transform}")
+
+
+def _metric_series(df: pd.DataFrame, config: ThresholdConfig) -> pd.Series:
+    column = _metric_column_name(config)
+    if column not in df.columns:
+        raise KeyError(f"Metric column '{column}' not found in dataframe")
+    return pd.to_numeric(df[column], errors="coerce")
+
+
+def _stringify_values(series: pd.Series) -> pd.Series:
+    return series.astype("object").map(lambda value: str(value))
+
+
+def _build_group_keys(df: pd.DataFrame, columns: Sequence[str]) -> List[Tuple[str, ...]]:
+    if not columns:
+        return [tuple() for _ in range(len(df))]
+    serialized = [_stringify_values(df[col]) for col in columns]
+    return [tuple(values) for values in zip(*[s.tolist() for s in serialized])]
+
+
+def _decide_flag(value: float, result: ThresholdResult) -> int:
+    if not np.isfinite(value):
+        return 0
+    flagged = False
+    if result.tau_hi is not None and value >= result.tau_hi:
+        flagged = True
+    if result.tau_lo is not None and value <= result.tau_lo:
+        flagged = True
+    return int(flagged)
+
+
+def _apply_thresholds_to_frame(
+    df: pd.DataFrame,
+    metric: pd.Series,
+    config: ThresholdConfig,
+    result_map: Dict[Tuple[str, ...], ThresholdResult],
+    top_level: Sequence[str],
+) -> Tuple[pd.DataFrame, List[int]]:
+    keys = _build_group_keys(df, top_level)
+    global_result = result_map.get(tuple())
+    if global_result is None:
+        raise ValueError("Global threshold result missing")
+
+    tau_hi_values: List[Optional[float]] = []
+    tau_lo_values: List[Optional[float]] = []
+    applied_methods: List[str] = []
+    applied_levels: List[str] = []
+    labels: List[int] = []
+
+    metric_values = metric.to_numpy(dtype=np.float64)
+    for key, value in zip(keys, metric_values, strict=True):
+        result = result_map.get(key, global_result)
+        tau_hi_values.append(result.tau_hi)
+        tau_lo_values.append(result.tau_lo)
+        applied_methods.append(result.applied_method)
+        applied_levels.append("::".join(result.group_level) if result.group_level else "global")
+        labels.append(_decide_flag(value, result))
+
+    enriched = df.copy()
+    metric_column = _metric_column_name(config)
+    enriched["threshold_metric"] = metric
+    enriched["tau_hi"] = tau_hi_values
+    enriched["tau_lo"] = tau_lo_values
+    enriched["threshold_applied_method"] = applied_methods
+    enriched["threshold_group_level"] = applied_levels
+    enriched["anomaly_label"] = labels
+    enriched["threshold_metric_column"] = metric_column
+    return enriched, labels
+
+
 def run(
     config_path: Path,
     *,
     on_error: str = "abort",
-    threshold_fn: Callable[[Iterable[float], ThresholdConfig], tuple[Optional[float], Dict[str, object]]] = compute_threshold,
-    apply_threshold_fn: Callable[[Iterable[float], float], Iterable[int]] = apply_threshold,
     dump_eval_path: Optional[Path] = None,
     dump_hist_path: Optional[Path] = None,
     hist_bins: int = 64,
@@ -135,30 +253,60 @@ def run(
     scores_hash = _sha256(scores_path)
     df = pd.read_csv(scores_path)
 
-    target_alpha = threshold_cfg.get("target_alpha")
-    quantile_value = float(threshold_cfg.get("quantile", 0.995))
-    if target_alpha is None:
-        target_alpha = 1.0 - quantile_value
-    threshold_config = ThresholdConfig(
-        method=threshold_cfg.get("method", "quantile"),
-        quantile=quantile_value,
-        target_alpha=float(target_alpha),
-        max_relative_deviation=float(threshold_cfg.get("max_relative_deviation", 0.2)),
-        fallback_methods=tuple(threshold_cfg.get("fallback_methods", ("quantile_adjust", "spot"))),
-        spot_tail_fraction=float(threshold_cfg.get("spot_tail_fraction", 0.02)),
-        min_tail_samples=int(threshold_cfg.get("min_tail_samples", 30)),
-    )
-    threshold, meta = threshold_fn(df["anomaly_score"].tolist(), threshold_config)
+    threshold_config = _parse_threshold_config(threshold_cfg)
+    prepared_df = prepare_delta_columns(df, threshold_config)
+    metric_series = _metric_series(prepared_df, threshold_config)
+    metric_values = metric_series.to_numpy(dtype=np.float64)
+    global_result = resolve_threshold(metric_values, threshold_config, allow_small_sample=True)
+    global_result.group_key = tuple()
+    global_result.group_level = tuple()
+
+    hierarchical_results: List[ThresholdResult] = []
+    result_map: Dict[Tuple[str, ...], ThresholdResult] = {tuple(): global_result}
+    df_with_labels: Optional[pd.DataFrame] = None
+    labels: List[int] = []
+
+    top_level = tuple(key for key in threshold_config.group_keys if key in prepared_df.columns)
+
+    if global_result.status == ThresholdStatus.OK:
+        hierarchical_results = compute_hierarchical_thresholds(prepared_df, threshold_config)
+        for result in hierarchical_results:
+            result_map[tuple(result.group_key)] = result
+        df_with_labels, labels = _apply_thresholds_to_frame(
+            prepared_df,
+            metric_series,
+            threshold_config,
+            result_map,
+            top_level,
+        )
+
+    threshold_value: Optional[float]
+    if threshold_config.side == "lower":
+        threshold_value = global_result.tau_lo
+    elif threshold_config.side == "both":
+        threshold_value = global_result.tau_hi
+    else:
+        threshold_value = global_result.tau_hi
 
     payload: Dict[str, object] = {
-        **meta,
-        "threshold": threshold,
+        "status": global_result.status,
+        "method": threshold_config.method,
+        "applied_method": global_result.applied_method,
+        "side": threshold_config.side,
+        "transform": threshold_config.transform,
+        "alpha": float(threshold_config.alpha),
+        "q": float(threshold_config.q),
+        "threshold": threshold_value,
+        "tau_hi": global_result.tau_hi,
+        "tau_lo": global_result.tau_lo,
         "data_path": str(scores_path),
         "data_sha256": scores_hash,
         "scoring_config": scoring_cfg,
+        "group_keys": list(top_level),
+        "anomaly_label_applied": global_result.status == ThresholdStatus.OK,
     }
 
-    status = payload.get("status")
+    status = payload["status"]
 
     reference_name = threshold_cfg.get("normal_reference", DEFAULT_REFERENCE_FILENAME)
     reference_path = Path(reference_name)
@@ -167,7 +315,7 @@ def run(
     payload["reference_dataset"] = str(reference_path)
 
     if dump_hist_path is not None:
-        hist_payload = _build_histogram_payload(df["anomaly_score"], hist_bins)
+        hist_payload = _build_histogram_payload(metric_series, hist_bins)
         _write_json_with_policy(dump_hist_path, hist_payload, keep_partial=on_error == "keep-partial")
 
     if status == "ok":
@@ -183,6 +331,9 @@ def run(
     threshold_path = processed_dir / "threshold.json"
     threshold_partial = threshold_path.with_suffix(threshold_path.suffix + ".partial")
     outputs[threshold_path] = threshold_partial
+    thresholds_path = processed_dir / "thresholds.json"
+    thresholds_partial = thresholds_path.with_suffix(thresholds_path.suffix + ".partial")
+    outputs[thresholds_path] = thresholds_partial
 
     annotation_column = _detect_annotation_column(df)
     eval_payload: Optional[Dict[str, object]] = None
@@ -198,21 +349,18 @@ def run(
                         final_path.unlink()
 
     try:
-        if status == "ok" and threshold is not None:
-            labels_path = processed_dir / "scores_with_labels.csv"
-            labels_partial = labels_path.with_suffix(labels_path.suffix + ".partial")
-            outputs[labels_path] = labels_partial
-            df_with_labels = df.copy()
-            labels = list(apply_threshold_fn(df_with_labels["anomaly_score"].tolist(), threshold))
-            df_with_labels["anomaly_label"] = labels
-            df_with_labels.to_csv(labels_partial, index=False)
-            payload["anomaly_label_applied"] = True
+        if status == "ok" and threshold_value is not None:
+            if df_with_labels is not None:
+                labels_path = processed_dir / "scores_with_labels.csv"
+                labels_partial = labels_path.with_suffix(labels_path.suffix + ".partial")
+                outputs[labels_path] = labels_partial
+                df_with_labels.to_csv(labels_partial, index=False)
 
-            if reference_path.exists():
+            if reference_path.exists() and global_result.status == ThresholdStatus.OK:
                 reference_payload = _evaluate_reference_fpr(
                     reference_path,
-                    threshold,
-                    apply_threshold_fn,
+                    threshold_config,
+                    global_result,
                 )
                 if reference_payload is not None:
                     payload["reference_fpr"] = reference_payload["metrics"].get("fpr")
@@ -228,15 +376,15 @@ def run(
                 )
 
             if dump_eval_path is not None:
-                if annotation_column is None:
+                if annotation_column is None or df_with_labels is None:
                     eval_payload = {
                         "status": "skipped",
-                        "reason": "annotation_column_missing",
+                        "reason": "annotation_column_missing" if annotation_column is None else "threshold_not_available",
                     }
                 else:
                     try:
                         metrics = compute_boundary_metrics(
-                            [int(value) for value in labels],
+                            labels,
                             [
                                 int(value)
                                 for value in df_with_labels[annotation_column]
@@ -264,6 +412,20 @@ def run(
                     "status": "skipped",
                     "reason": "threshold_not_available",
                 }
+        thresholds_payload = {
+            "thresholds": [result.to_payload() for result in hierarchical_results] + [global_result.to_payload()],
+            "config": {
+                "method": threshold_config.method,
+                "side": threshold_config.side,
+                "transform": threshold_config.transform,
+                "group_keys": list(threshold_config.group_keys),
+                "alpha": float(threshold_config.alpha),
+                "q": float(threshold_config.q),
+            },
+        }
+        payload["thresholds_path"] = str(thresholds_path)
+        with thresholds_partial.open("w", encoding="utf-8") as handle:
+            json.dump(thresholds_payload, handle, ensure_ascii=False, indent=2)
         with threshold_partial.open("w", encoding="utf-8") as handle:
             json.dump(payload, handle, ensure_ascii=False, indent=2)
     except Exception:
@@ -285,31 +447,44 @@ def run(
 
 def _evaluate_reference_fpr(
     reference_path: Path,
-    threshold: float,
-    apply_threshold_fn: Callable[[Iterable[float], float], Iterable[int]],
+    config: ThresholdConfig,
+    result: ThresholdResult,
 ) -> Optional[Dict[str, object]]:
     try:
         df_reference = pd.read_csv(reference_path)
     except FileNotFoundError:
         return None
 
-    if "anomaly_score" not in df_reference.columns:
+    try:
+        prepared = prepare_delta_columns(df_reference, config)
+        metric_series = _metric_series(prepared, config)
+    except (KeyError, ValueError):
         return {
             "status": "skipped",
-            "reason": "missing_anomaly_score_column",
+            "reason": "metric_column_missing",
             "path": str(reference_path),
         }
 
-    scores = df_reference["anomaly_score"].tolist()
-    predicted = list(apply_threshold_fn(scores, threshold))
+    metric_values = metric_series.to_numpy(dtype=np.float64)
+    if metric_values.size == 0:
+        return {
+            "status": "skipped",
+            "reason": "no_finite_scores",
+            "path": str(reference_path),
+        }
+
+    predicted = [_decide_flag(value, result) for value in metric_values]
     actual = [0 for _ in predicted]
     metrics = compute_binary_classification_metrics(predicted, actual)
     counts = metrics.get("counts", {})
     payload = {
         "status": "ok",
         "path": str(reference_path),
-        "samples": len(scores),
-        "threshold": threshold,
+        "samples": int(metric_values.size),
+        "threshold": {
+            "tau_hi": result.tau_hi,
+            "tau_lo": result.tau_lo,
+        },
         "counts": counts,
         "metrics": metrics.get("metrics", {}),
     }
