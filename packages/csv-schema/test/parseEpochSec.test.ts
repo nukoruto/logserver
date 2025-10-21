@@ -2,6 +2,16 @@ import { test } from 'node:test';
 import assert from 'node:assert/strict';
 import { parseEpochSec, CsvSchemaError } from '../src/index.js';
 
+test('parses numeric epoch seconds from string', () => {
+  const value = parseEpochSec('1722528896.123');
+  assert.equal(value, 1722528896.123);
+});
+
+test('parses numeric epoch seconds from number', () => {
+  const value = parseEpochSec(1722528896.5);
+  assert.equal(value, 1722528896.5);
+});
+
 test('parses RFC3339 timestamps with microseconds precisely', () => {
   const ts = '2024-08-01T12:34:56.123456Z';
   const value = parseEpochSec(ts);

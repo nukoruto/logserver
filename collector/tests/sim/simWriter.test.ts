@@ -791,6 +791,8 @@ describe('simWriter.persistSimulationRun', () => {
     };
 
     const csvLine = formatCsvAugmented(row as AugmentedSimulationEvent, DEFAULT_FEATURE_COLUMNS);
+    expect(csvLine.startsWith('"')).toBe(false);
+    expect(csvLine.split(',', 1)[0]).toBe('1719792000');
     const parsed = parseCsvRow(csvLine);
     expect(parsed).toHaveLength(CSV_BASE_COLUMNS.length);
     const index = (name: string): number => {

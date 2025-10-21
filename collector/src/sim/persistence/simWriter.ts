@@ -1098,8 +1098,11 @@ const toCsvField = (value: unknown): string => {
   if (value === undefined || value === null) {
     return '""';
   }
-  if (typeof value === 'number' && Number.isFinite(value)) {
-    return `"${value}"`;
+  if (typeof value === 'number') {
+    if (!Number.isFinite(value)) {
+      return '""';
+    }
+    return String(value);
   }
   if (typeof value === 'string') {
     const escaped = value.replace(/"/g, '""');
