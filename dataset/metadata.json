@@ -2,14 +2,15 @@
   "dataset_name": "logserver-session-seed",
   "version": "2024-06-01",
   "schema": {
-    "timestamp_utc": "string (RFC 3339, UTC)",
-    "uid": "string (HMAC-SHA256(K_ds, jwt) base64url)",
+    "timestamp_utc": "double (UTC epoch seconds)",
+    "uid": "string (hex(HMAC_SHA256(K_ds, jwt_utf8)))",
     "session_id": "string",
     "method": "string (HTTP verb)",
-    "path": "string",
+    "path": "string (normalized by normalize_request_path)",
     "referer": "string",
     "user_agent": "string",
     "ip": "string (RFC 5737 documentation range)",
+    "cookie": "string (deterministic pseudonymous session cookie)",
     "op_category": "string ∈ {AUTH, READ, UPDATE}"
   },
   "collection_purpose": "Reproduce Δt-aware LSTM anomaly detection experiments for session operations, aligning with SRS.md section 1.",
@@ -18,7 +19,7 @@
     "key_derivation": "K_ds = HKDF(digest=SHA256, ikm=JWT_HMAC_KEY, salt=\"\", info=\"sid\", length=32)",
     "hkdf_info": "sid",
     "kid": "sid-fixture-202406",
-    "formula": "uid = base64url( HMAC_SHA256(key=K_ds, message=raw_jwt) )",
+    "formula": "uid = hex( HMAC_SHA256(key=K_ds, message=raw_jwt_utf8) )",
     "deterministic": true
   },
   "ntp_reference": {
@@ -38,7 +39,7 @@
     "python_version": "3.11"
   },
   "downstream_derivations": {
-    "description": "Derived features such as Δt statistics, latency summaries, anomaly_score, and anomaly_label are produced from the 9-column contract CSV via deterministic preprocessing and trainer pipelines.",
+    "description": "Derived features such as Δt statistics, latency summaries, anomaly_score, and anomaly_label are produced from the 10-column contract CSV via deterministic preprocessing and trainer pipelines.",
     "pipeline": [
       "pnpm --filter @logserver/dt-preproc run build",
       "pnpm exec dt-preproc fit --in data/train/*.csv --out stats/preproc_stats.json --meta stats/preproc_meta.json",
