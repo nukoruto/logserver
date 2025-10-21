@@ -12,11 +12,14 @@ export const expectedColumns = [
   'referer',
   'user_agent',
   'ip',
+  'cookie',
   'op_category'
 ] as const;
 
 const RFC3339_REGEX =
   /^(\d{4})-(\d{2})-(\d{2})T(\d{2}):(\d{2}):(\d{2})(?:\.(\d{1,9}))?(Z|([+-])(\d{2}):(\d{2}))$/;
+
+const NUMERIC_TIMESTAMP_REGEX = /^[+-]?\d+(?:\.\d+)?$/;
 
 export type OpCategory = 'AUTH' | 'READ' | 'UPDATE';
 
@@ -34,7 +37,7 @@ export interface InvalidRowInfo {
 }
 
 export interface CsvRow {
-  timestamp_utc: string;
+  timestamp_utc: number;
   timestamp_epoch_seconds: number;
   uid: string;
   session_id: string;
@@ -43,6 +46,7 @@ export interface CsvRow {
   referer: string;
   user_agent: string;
   ip: string;
+  cookie: string;
   op_category: OpCategory;
   row_index: number;
 }
@@ -114,8 +118,32 @@ function assertFinite(value: number, message: string, cause?: string): void {
   }
 }
 
-export function parseEpochSec(timestamp: string): number {
-  const match = RFC3339_REGEX.exec(timestamp);
+export function parseEpochSec(timestamp: string | number): number {
+  if (typeof timestamp === 'number') {
+    if (!Number.isFinite(timestamp)) {
+      throw new CsvSchemaError('invalid_timestamp_value', timestamp);
+    }
+    return timestamp;
+  }
+
+  if (typeof timestamp !== 'string') {
+    throw new CsvSchemaError('invalid_timestamp_format', timestamp);
+  }
+
+  const trimmed = timestamp.trim();
+  if (trimmed.length === 0) {
+    throw new CsvSchemaError('missing_timestamp', timestamp);
+  }
+
+  if (NUMERIC_TIMESTAMP_REGEX.test(trimmed)) {
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      throw new CsvSchemaError('invalid_timestamp_value', timestamp);
+    }
+    return parsed;
+  }
+
+  const match = RFC3339_REGEX.exec(trimmed);
   if (!match) {
     throw new CsvSchemaError('invalid_timestamp_format', timestamp);
   }
@@ -196,11 +224,37 @@ export function parseEpochSec(timestamp: string): number {
 
 const optionalString = z.string().optional().transform((value) => value ?? '');
 
+const timestampEpochSchema = z
+  .union([
+    z
+      .number({ invalid_type_error: 'invalid_timestamp_type' })
+      .refine((value) => Number.isFinite(value), { message: 'invalid_timestamp_value' }),
+    z.string().min(1, { message: 'missing_timestamp' })
+  ])
+  .transform((value, ctx) => {
+    if (typeof value === 'number') {
+      if (!Number.isFinite(value)) {
+        ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid_timestamp_value' });
+        return Number.NaN;
+      }
+      return value;
+    }
+
+    const trimmed = value.trim();
+    if (trimmed.length === 0) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'missing_timestamp' });
+      return Number.NaN;
+    }
+    const parsed = Number(trimmed);
+    if (!Number.isFinite(parsed)) {
+      ctx.addIssue({ code: z.ZodIssueCode.custom, message: 'invalid_timestamp_value' });
+      return Number.NaN;
+    }
+    return parsed;
+  });
+
 const rowSchema = z.object({
-  timestamp_utc: z
-    .string()
-    .nonempty({ message: 'missing_timestamp' })
-    .refine((value) => RFC3339_REGEX.test(value), { message: 'invalid_timestamp_format' }),
+  timestamp_utc: timestampEpochSchema,
   uid: z.string().min(1, { message: 'missing_value:uid' }),
   session_id: z.string().min(1, { message: 'missing_value:session_id' }),
   method: z.string().min(1, { message: 'missing_value:method' }),
@@ -208,6 +262,7 @@ const rowSchema = z.object({
   referer: optionalString,
   user_agent: optionalString,
   ip: z.string().min(1, { message: 'missing_value:ip' }),
+  cookie: z.string().min(1, { message: 'missing_value:cookie' }),
   op_category: z.custom<OpCategory>((value) => value === 'AUTH' || value === 'READ' || value === 'UPDATE', {
     message: 'invalid_value:op_category'
   })
@@ -340,6 +395,7 @@ class CsvStreamParser implements AsyncIterable<CsvRow> {
           referer: normalized.referer,
           user_agent: normalized.user_agent,
           ip: normalized.ip,
+          cookie: normalized.cookie,
           op_category: normalized.op_category
         }
       };
